@@ -130,7 +130,7 @@
                     "type": "number",
                     "minimum": 1000,
                     "maximum": 600000,
-                    "default": 60000
+                    "default": 300000
                   },
                   "wait_for": {
                     "type": "number",
@@ -200,7 +200,7 @@
                         "type": "number",
                         "minimum": 1000,
                         "maximum": 600000,
-                        "default": 60000
+                        "default": 300000
                       },
                       "wait_for": {
                         "type": "number",
@@ -1270,7 +1270,7 @@
                     "type": "number",
                     "minimum": 1000,
                     "maximum": 600000,
-                    "default": 60000
+                    "default": 300000
                   },
                   "retry": {
                     "type": "boolean",
@@ -1644,10 +1644,15 @@
                     "type": "string"
                   },
                   "limit": {
-                    "type": "number"
+                    "type": "number",
+                    "minimum": 1,
+                    "maximum": 100,
+                    "default": 10
                   },
                   "offset": {
-                    "type": "number"
+                    "type": "number",
+                    "minimum": 0,
+                    "default": 0
                   },
                   "pages": {
                     "type": "number",
@@ -1656,6 +1661,87 @@
                   },
                   "lang": {},
                   "country": {},
+                  "scrape_options": {
+                    "type": "object",
+                    "properties": {
+                      "proxy": {
+                        "type": "string",
+                        "format": "uri"
+                      },
+                      "formats": {
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "enum": [
+                            "markdown",
+                            "html",
+                            "text",
+                            "screenshot",
+                            "screenshot@fullPage",
+                            "rawHtml",
+                            "json"
+                          ]
+                        },
+                        "default": [
+                          "markdown"
+                        ]
+                      },
+                      "timeout": {
+                        "type": "number",
+                        "minimum": 1000,
+                        "maximum": 600000,
+                        "default": 300000
+                      },
+                      "wait_for": {
+                        "type": "number",
+                        "minimum": 1,
+                        "maximum": 60000
+                      },
+                      "include_tags": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      "exclude_tags": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      "json_options": {
+                        "type": "object",
+                        "properties": {
+                          "schema": {
+                            "description": "JSON Schema specification object (docs-only placeholder to avoid circular refs)"
+                          },
+                          "user_prompt": {
+                            "type": "string"
+                          },
+                          "schema_name": {
+                            "type": "string"
+                          },
+                          "schema_description": {
+                            "type": "string"
+                          }
+                        },
+                        "additionalProperties": false
+                      },
+                      "engine": {
+                        "type": "string",
+                        "enum": [
+                          "playwright",
+                          "cheerio",
+                          "puppeteer"
+                        ],
+                        "description": "Scraping engine used to enrich each search result URL",
+                        "example": "cheerio"
+                      }
+                    },
+                    "required": [
+                      "engine"
+                    ]
+                  },
                   "safeSearch": {
                     "type": [
                       "number",
@@ -1666,7 +1752,8 @@
                   }
                 },
                 "required": [
-                  "query"
+                  "query",
+                  "scrape_options"
                 ]
               }
             }
@@ -1744,7 +1831,7 @@
                           }
                         ]
                       },
-                      "description": "Array of search results and suggestions - can be empty if no results found",
+                      "description": "Array of search results and suggestions - can be empty if no results found. When scrape_options is used, additional enriched fields (e.g., html, markdown, metadata, status, jobId) may be present on each result.",
                       "example": [
                         {
                           "title": "The Investment Case for Digital Infrastructure",

@@ -61,10 +61,13 @@ async function runJob(job: Job) {
     if (jobType === JOB_TYPE_CRAWL) {
         options = { ...job.data.options.scrape_options };
     }
+    // Use queue job ID for status updates, but pass parentId for result recording
     const currentJobId = job.id as string;
+    const parentId = job.data.parentId || currentJobId; // Use provided parentId for result recording
     const uniqueKey = await engineQueueManager.addRequest(engineType, job.data.url,
         {
-            jobId: currentJobId,
+            jobId: currentJobId, // Use queue job ID for status updates
+            parentId: parentId, // Use parent job ID for result recording
             queueName: job.data.queueName,
             type: jobType,
             options: options || {},

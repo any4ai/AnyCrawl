@@ -124,6 +124,12 @@ export class GoogleSearchEngine implements SearchEngine {
             async: this.generateAsyncParam(start),
         });
 
+        // Respect per-page limit when provided (cap at 100 for Google)
+        if (typeof options.limit === 'number' && options.limit > 0) {
+            const perPage = Math.min(Math.max(options.limit, 1), 100);
+            params.append("num", String(perPage));
+        }
+
         // Add time range if specified
         if (options.timeRange && this.timeRangeMap[options.timeRange]) {
             params.append("tbs", `qdr:${this.timeRangeMap[options.timeRange]}`);
@@ -168,7 +174,10 @@ export class GoogleSearchEngine implements SearchEngine {
     async search(options: SearchOptions): Promise<SearchTask> {
         const { query, offset = 0, page = 1 } = options;
         try {
-            const start = offset + (page - 1) * this.limit;
+            const perPage = (typeof options.limit === 'number' && options.limit > 0)
+                ? Math.min(Math.max(options.limit, 1), 100)
+                : this.limit;
+            const start = offset + (page - 1) * perPage;
             const url = this.buildSearchUrl(query, start, options);
             return {
                 url: url,
@@ -226,18 +235,18 @@ export class GoogleSearchEngine implements SearchEngine {
             }
         });
 
-        // Parse suggestions using the specific XPath selector
-        $("div.EIaa9b a").each((_, element) => {
-            const $element = $(element);
-            const text = $element.find(".dg6jd").text().trim();
+        // // Parse suggestions using the specific XPath selector
+        // $("div.EIaa9b a").each((_, element) => {
+        //     const $element = $(element);
+        //     const text = $element.find(".dg6jd").text().trim();
 
-            if (text) {
-                results.push({
-                    title: text,
-                    source: "Google Suggestions",
-                });
-            }
-        });
+        //     if (text) {
+        //         results.push({
+        //             title: text,
+        //             source: "Google Suggestions",
+        //         });
+        //     }
+        // });
 
         return results;
     }

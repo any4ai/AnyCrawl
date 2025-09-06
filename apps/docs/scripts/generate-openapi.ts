@@ -88,6 +88,49 @@ const scrapeSchemaForOpenAPI = withOpenApi(
     { description: 'Request schema for web scraping' }
 );
 
+// Centralized docs-safe scrape options (without engine) to reuse across endpoints
+const scrapeOptionsForOpenAPI: any = (() => {
+    const picked: any = (scrapeInputSchema as any).pick({
+        proxy: true,
+        formats: true,
+        timeout: true,
+        wait_for: true,
+        include_tags: true,
+        exclude_tags: true,
+        json_options: true,
+    });
+
+    return withOpenApi(
+        (picked as any).extend({
+            proxy: withOpenApi((picked as any).shape.proxy, {
+                description: 'Proxy URL to route the request through',
+                example: 'http://user:pass@host:port'
+            }),
+            formats: withOpenApi((picked as any).shape.formats, {
+                description: 'Output formats to return',
+                example: ['markdown']
+            }),
+            timeout: withOpenApi((picked as any).shape.timeout, {
+                description: 'Request timeout in milliseconds',
+                example: 60000,
+                default: 60000
+            }),
+            wait_for: withOpenApi((picked as any).shape.wait_for, {
+                description: 'Delay before processing (ms)',
+                example: 1000
+            }),
+            include_tags: withOpenApi((picked as any).shape.include_tags, {
+                description: 'Only include elements with these CSS selectors'
+            }),
+            exclude_tags: withOpenApi((picked as any).shape.exclude_tags, {
+                description: 'Exclude elements with these CSS selectors'
+            }),
+            json_options: (jsonOptionsSchemaForDocs as any).optional(),
+        }).partial(),
+        { description: 'Per-URL scraping options used during enrichment and crawling' }
+    );
+})();
+
 const searchSchemaForOpenAPI = withOpenApi(
     (searchSchema as any).extend({
         engine: withOpenApi((searchSchema as any).shape.engine, {
@@ -99,7 +142,7 @@ const searchSchemaForOpenAPI = withOpenApi(
             example: 'OpenAI ChatGPT'
         }),
         limit: withOpenApi((searchSchema as any).shape.limit, {
-            description: 'Maximum number of results per page',
+            description: 'Maximum number of results per page. If scrape_options is provided, this also acts as a global cap on the number of result URLs to scrape across all pages.',
             example: 10,
             default: 10
         }),
@@ -127,23 +170,24 @@ const searchSchemaForOpenAPI = withOpenApi(
             enum: [0, 1, 2],
             nullable: true
         }),
+        // Reuse crawl scrape options and add engine for search enrichment (no duplication)
+        scrape_options: withOpenApi(
+            (scrapeOptionsForOpenAPI as any).extend({
+                engine: z.enum(ALLOWED_ENGINES as any).openapi({
+                    description: 'Scraping engine used to enrich each search result URL',
+                    example: 'cheerio'
+                })
+            }),
+            {
+                description:
+                    'Optional scraping options. If provided, the service scrapes result URLs (capped by limit across all pages) and merges outputs (e.g., html, markdown, metadata) into each item.'
+            }
+        )
     }),
     { description: 'Request schema for web search' }
 );
 
-// Reuse scrape input fields for nested scrape_options (keep in sync with API: exclude retry)
-// Then override json_options to the docs-safe version to avoid circular refs
-const scrapeOptionsForOpenAPI: any = (scrapeInputSchema as any).pick({
-    proxy: true,
-    formats: true,
-    timeout: true,
-    wait_for: true,
-    include_tags: true,
-    exclude_tags: true,
-    json_options: true,
-}).extend({
-    json_options: (jsonOptionsSchemaForDocs as any).optional(),
-}).partial();
+// scrapeOptionsForOpenAPI defined above
 
 // Use crawl schema from API and peel off the effects layer to get the input schema,
 // then override only json_options to avoid circular refs in docs
@@ -300,7 +344,7 @@ const searchSuccessResponseSchema = z.object({
             description: 'Search suggestion without URL'
         })
     ])).openapi({
-        description: 'Array of search results and suggestions - can be empty if no results found',
+        description: 'Array of search results and suggestions - can be empty if no results found. When scrape_options is used, additional enriched fields (e.g., html, markdown, metadata, status, jobId) may be present on each result.',
         example: [
             {
                 "title": "The Investment Case for Digital Infrastructure",

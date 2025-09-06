@@ -172,10 +172,13 @@ export class EngineConfigurator {
             }
         };
 
-        // set request timeout for each request
+        // set request timeout and faster navigation for each request
         const requestTimeoutHook = async ({ request }: any, gotoOptions: any) => {
-            log.debug(`Setting request timeout for ${request.url} to ${request.userData.options.timeout || 30_000}`);
-            gotoOptions.timeout = request.userData.options.timeout || 30_000;
+            const timeoutMs = request.userData.options.timeout || (process.env.ANYCRAWL_NAV_TIMEOUT ? parseInt(process.env.ANYCRAWL_NAV_TIMEOUT) : 30_000);
+            const waitUntil = (request.userData.options.waitUntil || process.env.ANYCRAWL_NAV_WAIT_UNTIL || 'domcontentloaded') as any;
+            log.debug(`Setting navigation for ${request.url} to timeout=${timeoutMs}ms waitUntil=${waitUntil}`);
+            gotoOptions.timeout = timeoutMs;
+            gotoOptions.waitUntil = waitUntil;
         };
 
         // Handle authentication to allow accessing 401 pages

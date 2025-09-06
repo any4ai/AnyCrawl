@@ -536,8 +536,9 @@ export abstract class BaseEngine {
 
                 // Extract data using DataExtractor
                 data = await this.dataExtractor.extractData(context);
-                // insert job result
-                await insertJobResult(context.request.userData.jobId, context.request.url, data, JOB_RESULT_STATUS.SUCCESS);
+                // insert job result - use parentId if available (for search scrape), otherwise use jobId
+                const resultJobId = context.request.userData.parentId || context.request.userData.jobId;
+                await insertJobResult(resultJobId, context.request.url, data, JOB_RESULT_STATUS.SUCCESS);
                 // Handle crawl logic if this is a crawl job
 
                 if (context.request.userData.type === JOB_TYPE_CRAWL) {

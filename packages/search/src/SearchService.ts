@@ -12,6 +12,7 @@ export class SearchService {
     private crawler: Engine | null = null;
     private searchQueue: any | null = null;
     private requestsToOnPage: Map<string, (page: number, results: SearchResult[], uniqueKey: string, success: boolean) => void>;
+    private requestsToLimit: Map<string, number | undefined>;
 
     constructor() {
         this.engines = new Map();
@@ -19,6 +20,7 @@ export class SearchService {
         this.partialResults = new Map();
         this.pendingRequests = new Map();
         this.requestsToOnPage = new Map();
+        this.requestsToLimit = new Map();
     }
 
     private createEngine(name: string): SearchEngine {
@@ -87,11 +89,17 @@ export class SearchService {
                                 const callback = this.requestsToResponses.get(uniqueKey);
                                 if (callback) {
                                     log.info(`All requests complete for uniqueKey: ${uniqueKey}`);
-                                    callback(this.partialResults.get(uniqueKey) || []);
+                                    const limit = this.requestsToLimit.get(uniqueKey);
+                                    const aggregated = this.partialResults.get(uniqueKey) || [];
+                                    const finalResults = typeof limit === 'number' && limit > 0
+                                        ? aggregated.slice(0, limit)
+                                        : aggregated;
+                                    callback(finalResults);
                                     this.requestsToResponses.delete(uniqueKey);
                                     this.partialResults.delete(uniqueKey);
                                     this.pendingRequests.delete(uniqueKey);
                                     this.requestsToOnPage.delete(uniqueKey);
+                                    this.requestsToLimit.delete(uniqueKey);
                                 }
                             }
                         } catch (error) {
@@ -124,11 +132,17 @@ export class SearchService {
                                     log.info(
                                         `All requests complete for uniqueKey: ${uniqueKey} (including failed ones)`
                                     );
-                                    callback(this.partialResults.get(uniqueKey) || []);
+                                    const limit = this.requestsToLimit.get(uniqueKey);
+                                    const aggregated = this.partialResults.get(uniqueKey) || [];
+                                    const finalResults = typeof limit === 'number' && limit > 0
+                                        ? aggregated.slice(0, limit)
+                                        : aggregated;
+                                    callback(finalResults);
                                     this.requestsToResponses.delete(uniqueKey);
                                     this.partialResults.delete(uniqueKey);
                                     this.pendingRequests.delete(uniqueKey);
                                     this.requestsToOnPage.delete(uniqueKey);
+                                    this.requestsToLimit.delete(uniqueKey);
                                 }
                             }
                         } catch (error) {
@@ -155,10 +169,19 @@ export class SearchService {
             log.info(`Created uniqueKey for search: ${uniqueKey}`);
             this.requestsToResponses.set(uniqueKey, resolve);
             this.partialResults.set(uniqueKey, []);
-            this.pendingRequests.set(uniqueKey, options.pages ?? 1);
+            // Determine effective pages based on limit if provided
+            let effectivePages = options.pages ?? 1;
+            if (typeof options.limit === 'number' && options.limit > 0) {
+                const perPage = 10; // Google default page size
+                effectivePages = Math.ceil(options.limit / perPage);
+                this.requestsToLimit.set(uniqueKey, options.limit);
+            } else {
+                this.requestsToLimit.set(uniqueKey, undefined);
+            }
+            this.pendingRequests.set(uniqueKey, effectivePages);
             if (onPage) this.requestsToOnPage.set(uniqueKey, onPage);
 
-            await this.executeSearch(engineName, options, uniqueKey);
+            await this.executeSearch(engineName, { ...options, pages: effectivePages }, uniqueKey);
         });
     }
 

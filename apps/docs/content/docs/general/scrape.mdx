@@ -166,19 +166,19 @@ print(result['data']['markdown'])
 
 ## Request Parameters
 
-| Parameter           | Type             | Required | Default        | Description                                                                                                                            |
-| ------------------- | ---------------- | -------- | -------------- | -------------------------------------------------------------------------------------------------------------------------------------- | --------- | -------- | ---------------------------------------------------------------- |
-| `url`               | string           | Yes      | -              | URL to scrape, must be a valid HTTP/HTTPS address                                                                                      |
-| `engine`            | enum             | No       | `cheerio`      | Scraping engine type, options: `cheerio`, `playwright`, `puppeteer`                                                                    |
-| `formats`           | array            | No       | `["markdown"]` | Output formats, options: `markdown`, `html`, `text`, `screenshot`, `screenshot@fullPage`, `rawHtml`, `json`                            |
-| `timeout`           | number           | No       | `30000`        | Timeout in milliseconds, default: 30000                                                                                                |
-| `wait_for`          | number           | No       | -              | Delay before extraction (ms); browser engines only; lower priority than `wait_for_selector`                                            |
-| `wait_for_selector` | string or object | No       | -              | Wait for a specific selector (browser engines only). String form is CSS selector; object form: `{ selector: string, state?: "attached" | "visible" | "hidden" | "detached", timeout?: number }`. Takes priority over `wait_for`. |
-| `include_tags`      | array            | No       | -              | Include tags, like: `h1`                                                                                                               |
-| `exclude_tags`      | array            | No       | -              | Exclude tags, like: `h1`                                                                                                               |
-| `proxy`             | string (URI)     | No       | -              | Proxy server address, format: `http://proxy:port` or `https://proxy:port`                                                              |
-| `json_options`      | json             | No       | -              | JSON options, like: `{"schema": {}, "prompt": true}`                                                                                   |
-| `extract_source`    | enum             | No       | `markdown`     | Source to extract JSON from: `markdown` (default) or `html`                                                                            |
+| Parameter           | Type                     | Required | Default        | Description                                                                                                                                 |
+| ------------------- | ------------------------ | -------- | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------- | --------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `url`               | string                   | Yes      | -              | URL to scrape, must be a valid HTTP/HTTPS address                                                                                           |
+| `engine`            | enum                     | No       | `cheerio`      | Scraping engine type, options: `cheerio`, `playwright`, `puppeteer`                                                                         |
+| `formats`           | array                    | No       | `["markdown"]` | Output formats, options: `markdown`, `html`, `text`, `screenshot`, `screenshot@fullPage`, `rawHtml`, `json`                                 |
+| `timeout`           | number                   | No       | `30000`        | Timeout in milliseconds, default: 30000                                                                                                     |
+| `wait_for`          | number                   | No       | -              | Delay before extraction (ms); browser engines only; lower priority than `wait_for_selector`                                                 |
+| `wait_for_selector` | string, object, or array | No       | -              | Wait for one or multiple selectors (browser engines only). Accepts a CSS selector string, an object `{ selector: string, state?: "attached" | "visible" | "hidden" | "detached", timeout?: number }`, or an array mixing strings/objects. Each entry is awaited sequentially. Takes priority over `wait_for`. |
+| `include_tags`      | array                    | No       | -              | Include tags, like: `h1`                                                                                                                    |
+| `exclude_tags`      | array                    | No       | -              | Exclude tags, like: `h1`                                                                                                                    |
+| `proxy`             | string (URI)             | No       | -              | Proxy server address, format: `http://proxy:port` or `https://proxy:port`                                                                   |
+| `json_options`      | json                     | No       | -              | JSON options, like: `{"schema": {}, "prompt": true}`                                                                                        |
+| `extract_source`    | enum                     | No       | `markdown`     | Source to extract JSON from: `markdown` (default) or `html`                                                                                 |
 
 ### Engine Types
 

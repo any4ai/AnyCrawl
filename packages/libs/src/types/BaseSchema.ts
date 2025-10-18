@@ -75,6 +75,12 @@ export const baseSchema = z.object({
     wait_for: z.number().min(1).max(60_000).optional(),
 
     /**
+     * Navigation wait condition for browser engines. Mirrors Playwright/Puppeteer goto waitUntil.
+     * Field name is 'wait_until'.
+     */
+    wait_until: z.enum(["load", "domcontentloaded", "networkidle", "commit"]).optional(),
+
+    /**
      * The selector to wait for in browser engines. String or object form.
      * Only effective for Playwright/Puppeteer; ignored for Cheerio.
      */
@@ -86,8 +92,19 @@ export const baseSchema = z.object({
                 timeout: z.number().min(1).max(120000).optional(),
                 state: z.enum(["attached", "visible", "hidden", "detached"]).optional(),
             }).strict(),
+            z.array(
+                z.union([
+                    z.string(),
+                    z.object({
+                        selector: z.string(),
+                        timeout: z.number().min(1).max(120000).optional(),
+                        state: z.enum(["attached", "visible", "hidden", "detached"]).optional(),
+                    }).strict(),
+                ])
+            ).nonempty()
         ])
         .optional(),
+
 
     /**
      * The retry to be used

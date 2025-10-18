@@ -11,7 +11,14 @@ export interface RequestTaskOptions {
     timeout?: number;
     retry?: boolean;
     wait_for?: number;
-    wait_for_selector?: string | { selector: string; timeout?: number; state?: "attached" | "visible" | "hidden" | "detached" };
+    wait_until?: 'load' | 'domcontentloaded' | 'networkidle' | 'commit';
+    wait_for_selector?:
+    | string
+    | { selector: string; timeout?: number; state?: "attached" | "visible" | "hidden" | "detached" }
+    | Array<
+        | string
+        | { selector: string; timeout?: number; state?: "attached" | "visible" | "hidden" | "detached" }
+    >;
     include_tags?: string[];
     exclude_tags?: string[];
     extract_source?: "html" | "markdown";

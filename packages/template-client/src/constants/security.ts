@@ -52,7 +52,8 @@ export const DANGEROUS_PATTERNS = [
  */
 export const DEFAULT_ALLOWED_PAGE_METHODS = [
     // Navigation & waiting
-    'goto', 'waitForSelector', 'waitForTimeout', 'waitForLoadState', 'waitForNavigation', 'waitForEvent',
+    'goto', 'reload', 'waitForSelector', 'waitForTimeout', 'waitForLoadState', 'waitForNavigation', 'waitForEvent',
+    "waitForRequest", "waitForResponse",
     // Interaction
     'click', 'fill', 'type', 'press', 'hover', 'focus', 'blur', 'check', 'uncheck', 'selectOption',
     // Evaluation
@@ -71,6 +72,6 @@ export const DEFAULT_ALLOWED_PAGE_METHODS = [
     // Window management & events
     'bringToFront', 'on',
     // Misc / Safe utilities
-    'toJSON', 'isClosed',
+    'toJSON', 'isClosed'
 ] as const;
 

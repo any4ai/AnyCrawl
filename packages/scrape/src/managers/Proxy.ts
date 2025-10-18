@@ -571,7 +571,17 @@ const proxyConfiguration = new ProxyConfiguration({
             return options?.request?.userData?.options?.proxy;
         }
 
-        // Third priority: fallback to ANYCRAWL_PROXY_URL (handled by tieredProxyUrls)
+        // Next: proxy rule matching should use original_url first if available
+        const matchUrl = (options?.request?.userData as any)?.original_url || options?.request?.url;
+        if (matchUrl) {
+            const matched = findProxyForUrl(matchUrl);
+            if (matched) {
+                log.info(`Found proxy for URL ${matchUrl}: ${matched} By matching a rule.`);
+                return matched;
+            }
+        }
+
+        // Fallback to ANYCRAWL_PROXY_URL (handled by tieredProxyUrls)
         return null;
     },
     // Fallback proxy configuration from ANYCRAWL_PROXY_URL environment variable

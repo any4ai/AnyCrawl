@@ -26,6 +26,7 @@ export type ScrapeOptionsInput = {
     timeout?: number;
     retry?: boolean;
     wait_for?: number;
+    wait_until?: 'load' | 'domcontentloaded' | 'networkidle' | 'commit';
     include_tags?: string[];
     exclude_tags?: string[];
     json_options?: JsonOptions;

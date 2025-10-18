@@ -218,6 +218,7 @@ export class QuickJSSandbox {
 
         // Create secure page proxy
         const securePage = context.page ? this.createSecurePageProxy(context.page, stats) : undefined;
+        const rawPage = context.page;
 
         // Create sandboxed console
         const sandboxConsole = this.createSandboxConsole();
@@ -249,7 +250,18 @@ export class QuickJSSandbox {
                 html,
                 variables: context.variables,
                 httpClient: createHttpCrawlee(context.executionContext.userData?.options?.proxy ?? undefined),
-                userData: context.executionContext.userData
+                userData: context.executionContext.userData,
+                // Safe helper to read cookies without exposing page.context()
+                cookies: async () => {
+                    try {
+                        if (!rawPage || typeof rawPage.context !== 'function') return [];
+                        const ctx = rawPage.context();
+                        if (!ctx || typeof ctx.cookies !== 'function') return [];
+                        return await ctx.cookies();
+                    } catch {
+                        return [];
+                    }
+                }
             },
             context.template,
             context.variables,
@@ -308,6 +320,7 @@ export class QuickJSSandbox {
     private async executeWithVM(code: string, context: SandboxContext): Promise<any> {
         const templateId = context.template?.templateId || 'unknown';
         const startTime = Date.now();
+        const rawPage = context.page;
 
         // Resolve HTML using original page
         const html = await this.resolveFullHtml(context, context.page);
@@ -321,7 +334,18 @@ export class QuickJSSandbox {
                 variables: context.variables,
                 html,
                 page: context.page,
-                userData: context.executionContext.userData
+                userData: context.executionContext.userData,
+                // Safe helper to read cookies without exposing page.context()
+                cookies: async () => {
+                    try {
+                        if (!rawPage || typeof rawPage.context !== 'function') return [];
+                        const ctx = rawPage.context();
+                        if (!ctx || typeof ctx.cookies !== 'function') return [];
+                        return await ctx.cookies();
+                    } catch {
+                        return [];
+                    }
+                }
             },
             // Direct access to common objects
             template: context.template,

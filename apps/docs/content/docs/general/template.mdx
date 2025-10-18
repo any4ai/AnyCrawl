@@ -316,6 +316,38 @@ Write JavaScript/TypeScript code to:
 - **`requestHandler`**: Post-process scrape results and add custom fields
 - **`failedRequestHandler`**: Handle failures with custom retry logic
 - **`queryTransform`** (search only): Transform queries before searching
+- **`urlTransform`** (scrape/crawl only): Transform URLs before processing
+
+Both transforms support:
+
+- Template mode with placeholders (query: `{{query}}`, url: `{{url}}`)
+- Append mode with `prefix` and `suffix`
+- Optional `regexExtract` to pre-extract a substring before applying the mode
+
+Example regex extraction for TikTok profiles:
+
+```json
+{
+    "customHandlers": {
+        "urlTransform": {
+            "enabled": true,
+            "mode": "append",
+            "prefix": "",
+            "suffix": "",
+            "regexExtract": {
+                "pattern": "^(https?:\\/\\/www\\.tiktok\\.com\\/@[^\\/?#]+)",
+                "flags": "i",
+                "group": 1
+            }
+        }
+    }
+}
+```
+
+This extracts `https://www.tiktok.com/@piperrockelle` from inputs like:
+
+- `https://www.tiktok.com/@piperrockelle?abb=ccc`
+- `https://www.tiktok.com/@piperrockelle`
 
 Example `requestHandler`:
 

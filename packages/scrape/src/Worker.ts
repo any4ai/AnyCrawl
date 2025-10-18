@@ -70,6 +70,8 @@ async function runJob(job: Job) {
             parentId: parentId, // Use parent job ID for result recording
             queueName: job.data.queueName,
             type: jobType,
+            // Ensure template variables are available to the engine context
+            templateVariables: job.data.templateVariables,
             options: options || {},
             crawl_options: jobType === JOB_TYPE_CRAWL ? job.data.options : null,
         }

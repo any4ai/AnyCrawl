@@ -146,6 +146,20 @@ export class EngineConfigurator {
     }
 
     private static configureBrowserEngine(options: any, engineType: ConfigurableEngineType): void {
+        // Enforce viewport for browser engines
+        const viewportHook = async ({ page }: any) => {
+            try {
+                if (!page) return;
+                if ((page as any).__viewportApplied) return;
+                (page as any).__viewportApplied = true;
+                if (engineType === ConfigurableEngineType.PLAYWRIGHT) {
+                    await page.setViewportSize({ width: 1920, height: 1080 });
+                } else if (engineType === ConfigurableEngineType.PUPPETEER) {
+                    try { await page.setViewport({ width: 1920, height: 1080 }); } catch { }
+                }
+            } catch { }
+        };
+
         // Ad blocking configuration
         const adBlockingHook = async ({ page }: any) => {
             const shouldBlock = (url: string) => AD_DOMAINS.some(domain => url.includes(domain));
@@ -176,7 +190,7 @@ export class EngineConfigurator {
         // set request timeout and faster navigation for each request
         const requestTimeoutHook = async ({ request }: any, gotoOptions: any) => {
             const timeoutMs = request.userData.options.timeout || (process.env.ANYCRAWL_NAV_TIMEOUT ? parseInt(process.env.ANYCRAWL_NAV_TIMEOUT) : 30_000);
-            const waitUntil = (request.userData.options.waitUntil || process.env.ANYCRAWL_NAV_WAIT_UNTIL || 'domcontentloaded') as any;
+            const waitUntil = (request.userData.options.wait_until || process.env.ANYCRAWL_NAV_WAIT_UNTIL || 'domcontentloaded') as any;
             log.debug(`Setting navigation for ${request.url} to timeout=${timeoutMs}ms waitUntil=${waitUntil}`);
             gotoOptions.timeout = timeoutMs;
             gotoOptions.waitUntil = waitUntil;
@@ -247,7 +261,7 @@ export class EngineConfigurator {
 
         // Add browser-specific hooks to preNavigationHooks
         const existingHooks = options.preNavigationHooks || [];
-        options.preNavigationHooks = [adBlockingHook, requestTimeoutHook, authenticationHook, ...existingHooks];
+        options.preNavigationHooks = [viewportHook, adBlockingHook, requestTimeoutHook, authenticationHook, ...existingHooks];
 
         log.debug(`[EngineConfigurator] Browser-specific hooks configured for ${engineType}: total=${options.preNavigationHooks.length}, existingHooks=${existingHooks.length}`);
 

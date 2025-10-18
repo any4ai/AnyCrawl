@@ -147,18 +147,18 @@ curl -X DELETE -H "Authorization: Bearer <YOUR_API_KEY>" \
 
 ### `scrape_options` fields
 
-| Field               | Type             | Default        | Notes                                                                                                                                  |
-| ------------------- | ---------------- | -------------- | -------------------------------------------------------------------------------------------------------------------------------------- | --------- | -------- | ---------------------------------------------------------------- |
-| `formats`           | array of enum    | `["markdown"]` | Output formats: `markdown`, `html`, `text`, `screenshot`, `screenshot@fullPage`, `rawHtml`, `json`                                     |
-| `timeout`           | number           | `60000`        | Per-request timeout (ms)                                                                                                               |
-| `retry`             | boolean          | `false`        | Whether to retry on failure                                                                                                            |
-| `wait_for`          | number           | -              | Delay before extraction (ms); browser engines only; lower priority than `wait_for_selector`                                            |
-| `wait_for_selector` | string or object | -              | Wait for a specific selector (browser engines only). String form is CSS selector; object form: `{ selector: string, state?: "attached" | "visible" | "hidden" | "detached", timeout?: number }`. Takes priority over `wait_for`. |
-| `include_tags`      | array of string  | -              | Only include elements that match CSS selectors                                                                                         |
-| `exclude_tags`      | array of string  | -              | Exclude elements that match CSS selectors                                                                                              |
-| `proxy`             | string (URI)     | -              | Optional proxy URL                                                                                                                     |
-| `json_options`      | object           | -              | Options for structured JSON extraction (schema, user_prompt, schema_name, schema_description)                                          |
-| `extract_source`    | enum             | `markdown`     | Source to extract JSON from: `markdown` (default) or `html`                                                                            |
+| Field               | Type                     | Default        | Notes                                                                                                                                       |
+| ------------------- | ------------------------ | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------- | --------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `formats`           | array of enum            | `["markdown"]` | Output formats: `markdown`, `html`, `text`, `screenshot`, `screenshot@fullPage`, `rawHtml`, `json`                                          |
+| `timeout`           | number                   | `60000`        | Per-request timeout (ms)                                                                                                                    |
+| `retry`             | boolean                  | `false`        | Whether to retry on failure                                                                                                                 |
+| `wait_for`          | number                   | -              | Delay before extraction (ms); browser engines only; lower priority than `wait_for_selector`                                                 |
+| `wait_for_selector` | string, object, or array | -              | Wait for one or multiple selectors (browser engines only). Accepts a CSS selector string, an object `{ selector: string, state?: "attached" | "visible" | "hidden" | "detached", timeout?: number }`, or an array mixing strings/objects. Each entry is awaited sequentially. Takes priority over `wait_for`. |
+| `include_tags`      | array of string          | -              | Only include elements that match CSS selectors                                                                                              |
+| `exclude_tags`      | array of string          | -              | Exclude elements that match CSS selectors                                                                                                   |
+| `proxy`             | string (URI)             | -              | Optional proxy URL                                                                                                                          |
+| `json_options`      | object                   | -              | Options for structured JSON extraction (schema, user_prompt, schema_name, schema_description)                                               |
+| `extract_source`    | enum                     | `markdown`     | Source to extract JSON from: `markdown` (default) or `html`                                                                                 |
 
 ## Response Format
 

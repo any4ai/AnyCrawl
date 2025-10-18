@@ -9,6 +9,7 @@ const scrapeOptionsInputSchema = baseSchema
         proxy: true,
         formats: true,
         timeout: true,
+        wait_until: true,
         wait_for: true,
         wait_for_selector: true,
         include_tags: true,

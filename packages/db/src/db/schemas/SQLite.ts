@@ -93,6 +93,11 @@ export const jobs = p.sqliteTable("jobs", {
     failed: p.integer("failed").notNull().default(0),
     // Number of credits consumed
     creditsUsed: p.integer("credits_used").notNull().default(0),
+    // Network traffic usage (application layer bytes)
+    trafficBytes: p.integer("traffic_bytes").notNull().default(0),
+    trafficRequestBytes: p.integer("traffic_request_bytes").notNull().default(0),
+    trafficResponseBytes: p.integer("traffic_response_bytes").notNull().default(0),
+    trafficRequestCount: p.integer("traffic_request_count").notNull().default(0),
     // Origin, playground or api
     origin: p.text("origin").notNull(),
     // status of job

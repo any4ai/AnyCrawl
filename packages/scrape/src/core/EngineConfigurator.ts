@@ -5,6 +5,7 @@ import { BrowserName } from "crawlee";
 import { ProgressManager } from "../managers/Progress.js";
 import { JOB_TYPE_CRAWL } from "@anycrawl/libs";
 import { CrawlLimitReachedError } from "../errors/index.js";
+import { getOrCreateBandwidthTracker } from "./BandwidthTracker.js";
 
 export enum ConfigurableEngineType {
     CHEERIO = 'cheerio',
@@ -160,6 +161,17 @@ export class EngineConfigurator {
                     try { await page.setViewport({ width: 1920, height: 1080 }); } catch { }
                 }
             } catch { }
+        };
+
+        const bandwidthHook = async ({ page, request }: any) => {
+            try {
+                const jobId = request?.userData?.jobId;
+                if (!jobId || !page) return;
+                const tracker = await getOrCreateBandwidthTracker(page, engineType);
+                tracker?.setJobContext(String(jobId));
+            } catch {
+                // ignore bandwidth tracking errors
+            }
         };
 
         // Ad blocking configuration
@@ -462,9 +474,9 @@ export class EngineConfigurator {
 
         // Add browser-specific hooks to preNavigationHooks
         const existingHooks = options.preNavigationHooks || [];
-        options.preNavigationHooks = [viewportHook, adBlockingHook, requestTimeoutHook, authenticationHook, preNavHook, ...existingHooks];
+        options.preNavigationHooks = [viewportHook, bandwidthHook, adBlockingHook, requestTimeoutHook, authenticationHook, preNavHook, ...existingHooks];
 
-        log.info(`[EngineConfigurator] Browser-specific hooks configured for ${engineType}: total=${options.preNavigationHooks.length}, hooks=[viewport, adBlocking, requestTimeout, authentication, preNav], existingHooks=${existingHooks.length}`);
+        log.info(`[EngineConfigurator] Browser-specific hooks configured for ${engineType}: total=${options.preNavigationHooks.length}, hooks=[viewport, bandwidth, adBlocking, requestTimeout, authentication, preNav], existingHooks=${existingHooks.length}`);
 
         // Apply headless configuration from environment
         if (options.headless === undefined) {

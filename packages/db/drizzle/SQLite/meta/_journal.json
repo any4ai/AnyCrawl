@@ -29,6 +29,13 @@
       "when": 1767174937704,
       "tag": "0003_free_guardian",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1769408240848,
+      "tag": "0004_fluffy_firestar",
+      "breakpoints": true
     }
   ]
 }

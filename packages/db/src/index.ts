@@ -16,6 +16,7 @@ export const getJobResults = Job.getJobResults;
 export const getJobResultsPaginated = Job.getJobResultsPaginated;
 export const getJobResultsCount = Job.getJobResultsCount;
 export const updateJobCounts = Job.updateCounts;
+export const addJobTraffic = Job.addTraffic;
 
 
 export const createTemplate = Template.create;

@@ -36,6 +36,13 @@
       "when": 1767174930947,
       "tag": "0004_dazzling_talisman",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1769408533680,
+      "tag": "0005_black_bastion",
+      "breakpoints": true
     }
   ]
 }

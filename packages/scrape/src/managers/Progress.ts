@@ -3,6 +3,7 @@ import { Utils } from "../Utils.js";
 import { completedJob, failedJob, getDB, schemas, eq, sql } from "@anycrawl/db";
 import { log } from "@anycrawl/libs";
 import type { QueueName } from "./Queue.js";
+import { BandwidthManager } from "./Bandwidth.js";
 
 const REDIS_FIELDS = {
     ENQUEUED: "enqueued",
@@ -350,6 +351,11 @@ export class ProgressManager {
             } catch {
                 // DB not configured or transient error; ignore to not block finalize
             }
+            try {
+                await BandwidthManager.getInstance().flushJob(jobId);
+            } catch {
+                // ignore flush errors to avoid blocking finalize
+            }
             return true;
         }
         return false;
@@ -408,5 +414,4 @@ export class ProgressManager {
         }
     }
 }
-
 

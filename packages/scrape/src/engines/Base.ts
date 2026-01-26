@@ -17,9 +17,11 @@ import { insertJobResult, failedJob, completedJob } from "@anycrawl/db";
 import { JOB_RESULT_STATUS } from "../../../db/dist/map.js";
 import { ProgressManager } from "../managers/Progress.js";
 import { JOB_TYPE_CRAWL, JOB_TYPE_SCRAPE } from "@anycrawl/libs";
+import type { RequestTrafficMetric } from "@anycrawl/libs";
 import { CrawlLimitReachedError } from "../errors/index.js";
 import type { CrawlingContext, EngineOptions } from "../types/engine.js";
 import { minimatch } from "minimatch";
+import { BandwidthManager } from "../managers/Bandwidth.js";
 
 // Template system imports - directly use @anycrawl/template-client
 
@@ -254,6 +256,7 @@ export abstract class BaseEngine {
                     }
                 );
                 await failedJob(jobId, error.message, false, { total: 1, completed: 0, failed: 1 });
+                await BandwidthManager.getInstance().flushJob(jobId);
             } catch { }
         }
 
@@ -288,6 +291,7 @@ export abstract class BaseEngine {
                     error
                 );
                 await failedJob(jobId, error.message, false, { total: 1, completed: 0, failed: 1 });
+                await BandwidthManager.getInstance().flushJob(jobId);
             } catch { }
         }
 
@@ -674,6 +678,48 @@ export abstract class BaseEngine {
             // Note: 403 refresh logic is already handled earlier in the handler (before this check)
             let isHttpError = await checkHttpError(context);
 
+            // Cheerio traffic tracking (browser engines use CDP-based tracking)
+            try {
+                const jobId = context.request.userData?.jobId as string | undefined;
+                const isBrowser = !!(context as any).page;
+                if (jobId && !isBrowser && context.response) {
+                    const headers: Record<string, any> = (context.response as any).headers || {};
+                    const rawContentLength = headers["content-length"] ?? headers["Content-Length"];
+                    let responseBytes = 0;
+                    if (rawContentLength !== undefined) {
+                        const parsed = Number.parseInt(String(rawContentLength), 10);
+                        if (Number.isFinite(parsed) && parsed > 0) responseBytes = parsed;
+                    }
+                    if (responseBytes === 0) {
+                        const body: any = (context as any).body;
+                        if (Buffer.isBuffer(body)) responseBytes = body.length;
+                        else if (typeof body === "string") responseBytes = Buffer.byteLength(body, "utf8");
+                    }
+
+                    let requestBytes = 0;
+                    try {
+                        const reqHeaders = (context.request as any).headers ?? {};
+                        requestBytes = Buffer.byteLength(JSON.stringify(reqHeaders), "utf8");
+                    } catch { }
+
+                    const metric: RequestTrafficMetric = {
+                        id: `cheerio:${String((context.request as any).id ?? context.request.uniqueKey ?? Date.now())}`,
+                        jobId,
+                        engine: "cheerio",
+                        url: context.request.url,
+                        method: String((context.request as any).method ?? "GET"),
+                        requestBytes,
+                        responseBytes,
+                        totalBytes: requestBytes + responseBytes,
+                        startTime: Date.now(),
+                        endTime: Date.now(),
+                        failed: isHttpError,
+                    };
+
+                    BandwidthManager.getInstance().recordRequest(metric);
+                }
+            } catch { }
+
             let data = null;
 
             // Create a Promise wrapper to control page lifecycle for template execution
@@ -1009,6 +1055,7 @@ export abstract class BaseEngine {
                     try {
                         await this.jobManager.markCompleted(jobId, queueName, data);
                         await completedJob(jobId, true, { total: 1, completed: 1, failed: 0 });
+                        await BandwidthManager.getInstance().flushJob(jobId);
                     } catch { }
                 }
                 // For crawl jobs: mark page done and try finalize

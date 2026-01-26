@@ -334,4 +334,36 @@ export class Job {
             log.info(`[DB][Job] Updated counts job_id=${jobId} ${countsInfo}`);
         } catch { }
     }
+
+    /**
+     * Add network traffic usage to a job (atomic increment).
+     */
+    public static async addTraffic(
+        jobId: string,
+        delta: { totalBytes?: number; requestBytes?: number; responseBytes?: number; requestCount?: number }
+    ) {
+        const db = await getDB();
+        const update: Record<string, any> = { updatedAt: new Date() };
+
+        if (delta.totalBytes && delta.totalBytes > 0) {
+            update.trafficBytes = sql`${schemas.jobs.trafficBytes} + ${delta.totalBytes}`;
+        }
+        if (delta.requestBytes && delta.requestBytes > 0) {
+            update.trafficRequestBytes = sql`${schemas.jobs.trafficRequestBytes} + ${delta.requestBytes}`;
+        }
+        if (delta.responseBytes && delta.responseBytes > 0) {
+            update.trafficResponseBytes = sql`${schemas.jobs.trafficResponseBytes} + ${delta.responseBytes}`;
+        }
+        if (delta.requestCount && delta.requestCount > 0) {
+            update.trafficRequestCount = sql`${schemas.jobs.trafficRequestCount} + ${delta.requestCount}`;
+        }
+
+        await db.update(schemas.jobs).set(update).where(eq(schemas.jobs.jobId, jobId));
+
+        try {
+            log.debug(
+                `[DB][Job] Added traffic job_id=${jobId} total=${delta.totalBytes ?? 0} request=${delta.requestBytes ?? 0} response=${delta.responseBytes ?? 0} count=${delta.requestCount ?? 0}`
+            );
+        } catch { }
+    }
 }

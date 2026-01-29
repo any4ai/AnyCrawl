@@ -60,7 +60,7 @@ export class WebhookManager {
     }
 
     public async initialize(): Promise<void> {
-        log.info("🔔 Initializing Webhook Manager...");
+        log.info("[WEBHOOK] 🔔 Initializing Webhook Manager...");
 
         // Create webhook delivery queue
         const queueManager = QueueManager.getInstance();
@@ -78,7 +78,7 @@ export class WebhookManager {
         // Start retry processor (check every 30 seconds for pending retries)
         this.startRetryProcessor();
 
-        log.info("✅ Webhook Manager initialized successfully");
+        log.info("[WEBHOOK] ✅ Webhook Manager initialized successfully");
     }
 
     public async triggerEvent(
@@ -100,7 +100,7 @@ export class WebhookManager {
                         AND ${schemas.webhookSubscriptions.eventTypes}::jsonb @> ${JSON.stringify([eventType])}`
                 );
 
-            log.debug(`Found ${subscriptions.length} webhook subscriptions for event ${eventType}`);
+            log.debug(`[WEBHOOK] Found ${subscriptions.length} webhook subscriptions for event ${eventType}`);
 
             for (const subscription of subscriptions) {
                 // Filter by userId if provided
@@ -119,7 +119,7 @@ export class WebhookManager {
                 await this.enqueueDelivery(subscription, eventType, payload, eventSource, eventSourceId);
             }
         } catch (error) {
-            log.error(`Failed to trigger webhook event ${eventType}: ${error}`);
+            log.error(`[WEBHOOK] Failed to trigger webhook event ${eventType}: ${error}`);
         }
     }
 
@@ -160,9 +160,9 @@ export class WebhookManager {
                 { jobId: deliveryUuid }
             );
 
-            log.debug(`Enqueued webhook delivery ${deliveryUuid} for event ${eventType}`);
+            log.debug(`[WEBHOOK] Enqueued webhook delivery ${deliveryUuid} for event ${eventType}`);
         } catch (error) {
-            log.error(`Failed to enqueue webhook delivery: ${error}`);
+            log.error(`[WEBHOOK] Failed to enqueue webhook delivery: ${error}`);
         }
     }
 
@@ -177,7 +177,7 @@ export class WebhookManager {
                 .limit(1);
 
             if (!delivery.length) {
-                log.error(`Delivery ${deliveryId} not found`);
+                log.error(`[WEBHOOK] Delivery ${deliveryId} not found`);
                 return;
             }
 
@@ -190,7 +190,7 @@ export class WebhookManager {
                 .limit(1);
 
             if (!subscription.length || !subscription[0].isActive) {
-                log.info(`Subscription inactive, skipping delivery ${deliveryId}`);
+                log.info(`[WEBHOOK] Subscription inactive, skipping delivery ${deliveryId}`);
                 return;
             }
 
@@ -200,7 +200,7 @@ export class WebhookManager {
             const allowLocalWebhooks = process.env.ALLOW_LOCAL_WEBHOOKS === "true";
             if (!allowLocalWebhooks && isPrivateIP(deliveryRecord.requestUrl)) {
                 const errorMsg = "Webhook delivery blocked: Private IP addresses are not allowed";
-                log.warning(`${errorMsg} - URL: ${deliveryRecord.requestUrl}`);
+                log.warning(`[WEBHOOK] ${errorMsg} - URL: ${deliveryRecord.requestUrl}`);
 
                 await db
                     .update(schemas.webhookDeliveries)
@@ -267,13 +267,13 @@ export class WebhookManager {
                     })
                     .where(eq(schemas.webhookSubscriptions.uuid, sub.uuid));
 
-                log.info(`✅ Webhook delivered: ${deliveryId} to ${sub.webhookUrl} (${duration}ms)`);
+                log.info(`[WEBHOOK] ✅ Webhook delivered: ${deliveryId} to ${sub.webhookUrl} (${duration}ms)`);
             } catch (error: any) {
                 const duration = Date.now() - startTime;
                 await this.handleDeliveryFailure(deliveryRecord, sub, error, duration);
             }
         } catch (error) {
-            log.error(`Failed to process webhook delivery ${deliveryId}: ${error}`);
+            log.error(`[WEBHOOK] Failed to process webhook delivery ${deliveryId}: ${error}`);
         }
     }
 
@@ -292,7 +292,7 @@ export class WebhookManager {
             ? JSON.stringify(error.response.data).substring(0, 1000)
             : null;
 
-        log.warning(`Webhook delivery failed: ${delivery.uuid} - ${errorMessage}`);
+        log.warning(`[WEBHOOK] Webhook delivery failed: ${delivery.uuid} - ${errorMessage}`);
 
         if (delivery.attemptNumber < delivery.maxAttempts) {
             // Calculate next retry time with exponential backoff
@@ -315,7 +315,7 @@ export class WebhookManager {
                 .where(eq(schemas.webhookDeliveries.uuid, delivery.uuid));
 
             log.info(
-                `Webhook delivery ${delivery.uuid} will retry (attempt ${delivery.attemptNumber + 1}/${delivery.maxAttempts}) at ${nextRetryAt.toISOString()}`
+                `[WEBHOOK] Webhook delivery ${delivery.uuid} will retry (attempt ${delivery.attemptNumber + 1}/${delivery.maxAttempts}) at ${nextRetryAt.toISOString()}`
             );
         } else {
             // Max attempts reached - mark as failed
@@ -359,11 +359,11 @@ export class WebhookManager {
                     .where(eq(schemas.webhookSubscriptions.uuid, subscription.uuid));
 
                 log.warning(
-                    `Webhook subscription ${subscription.uuid} auto-disabled after ${updatedSub[0].consecutiveFailures} consecutive failures`
+                    `[WEBHOOK] Webhook subscription ${subscription.uuid} auto-disabled after ${updatedSub[0].consecutiveFailures} consecutive failures`
                 );
             }
 
-            log.error(`Webhook delivery permanently failed: ${delivery.uuid}`);
+            log.error(`[WEBHOOK] Webhook delivery permanently failed: ${delivery.uuid}`);
         }
     }
 
@@ -390,7 +390,7 @@ export class WebhookManager {
                     .limit(100);
 
                 if (retries.length > 0) {
-                    log.debug(`Processing ${retries.length} pending webhook retries`);
+                    log.debug(`[WEBHOOK] Processing ${retries.length} pending webhook retries`);
                 }
 
                 for (const retry of retries) {
@@ -410,7 +410,7 @@ export class WebhookManager {
                         .where(eq(schemas.webhookDeliveries.uuid, retry.uuid));
                 }
             } catch (error) {
-                log.error(`Retry processor error: ${error}`);
+                log.error(`[WEBHOOK] Retry processor error: ${error}`);
             }
         }, 30000);
 
@@ -419,13 +419,13 @@ export class WebhookManager {
     }
 
     public async stop(): Promise<void> {
-        log.info("Stopping Webhook Manager...");
+        log.info("[WEBHOOK] Stopping Webhook Manager...");
 
         if (this.retryProcessorInterval) {
             clearInterval(this.retryProcessorInterval);
             this.retryProcessorInterval = null;
         }
 
-        log.info("✅ Webhook Manager stopped successfully");
+        log.info("[WEBHOOK] ✅ Webhook Manager stopped successfully");
     }
 }

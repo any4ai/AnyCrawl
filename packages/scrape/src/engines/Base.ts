@@ -222,9 +222,15 @@ export abstract class BaseEngine {
         const { jobId, queueName } = context.request.userData;
         let error = null;
         if (status.statusCode === 0) {
+            // Use the original error message directly
+            let errorMessage = 'Page is not available';
+            if (data instanceof Error && data.message) {
+                errorMessage = data.message;
+            }
+
             error = this.createCrawlerError(
                 CrawlerErrorType.HTTP_ERROR,
-                `Page is not available`,
+                errorMessage,
                 context.request.url,
             );
         } else {

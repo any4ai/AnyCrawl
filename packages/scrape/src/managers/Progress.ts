@@ -249,7 +249,7 @@ export class ProgressManager {
                             log.warning(`[${queueNameForFinalize}] [${jobId}] Credits deduction returned no row or invalid data; skipping credits-based finalize`);
                         }
                     } catch {
-                        log.error(`Error deducting credits for job ${jobId}, apiKey: ${apiKeyForDeduction}, perPageCost: ${perPageCost}`);
+                        log.error(`[PROGRESS] Error deducting credits for job ${jobId}, apiKey: ${apiKeyForDeduction}, perPageCost: ${perPageCost}`);
                         remainingAfterDeduction = undefined;
                     }
                 }

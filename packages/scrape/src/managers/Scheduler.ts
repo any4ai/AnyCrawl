@@ -36,12 +36,12 @@ export class SchedulerManager {
 
     public async start(): Promise<void> {
         if (this.isRunning) {
-            log.warning("Scheduler is already running");
+            log.warning("[SCHEDULER] Scheduler is already running");
             return;
         }
 
         this.isRunning = true;
-        log.info("🕒 Starting Scheduler Manager (BullMQ)...");
+        log.info("[SCHEDULER] 🕒 Starting Scheduler Manager (BullMQ)...");
 
         // Get or create the scheduler queue
         const queueManager = QueueManager.getInstance();
@@ -54,7 +54,7 @@ export class SchedulerManager {
         // Start periodic polling to detect new/updated tasks
         this.startPolling();
 
-        log.info(`✅ Scheduler Manager started successfully (polling every ${this.SYNC_INTERVAL_MS / 1000}s)`);
+        log.info(`[SCHEDULER] ✅ Scheduler Manager started successfully (polling every ${this.SYNC_INTERVAL_MS / 1000}s)`);
     }
 
     /**
@@ -69,7 +69,7 @@ export class SchedulerManager {
                 .from(schemas.scheduledTasks)
                 .where(eq(schemas.scheduledTasks.isActive, true));
 
-            log.info(`Syncing ${tasks.length} active scheduled tasks to BullMQ`);
+            log.info(`[SCHEDULER] Syncing ${tasks.length} active scheduled tasks to BullMQ`);
 
             for (const task of tasks) {
                 if (task.isPaused) {
@@ -81,9 +81,9 @@ export class SchedulerManager {
                 }
             }
 
-            log.info(`✅ Synced ${tasks.length} tasks to BullMQ`);
+            log.info(`[SCHEDULER] ✅ Synced ${tasks.length} tasks to BullMQ`);
         } catch (error) {
-            log.error(`Error syncing scheduled tasks: ${error}`);
+            log.error(`[SCHEDULER] Error syncing scheduled tasks: ${error}`);
         }
     }
 
@@ -126,9 +126,9 @@ export class SchedulerManager {
                 }
             );
 
-            log.info(`📅 Scheduled task: ${task.name} (${task.cronExpression}) [${task.timezone}]`);
+            log.info(`[SCHEDULER] 📅 Scheduled task: ${task.name} (${task.cronExpression}) [${task.timezone}]`);
         } catch (error) {
-            log.error(`Failed to add scheduled task ${task.name}: ${error}`);
+            log.error(`[SCHEDULER] Failed to add scheduled task ${task.name}: ${error}`);
             throw error;
         }
     }
@@ -152,10 +152,10 @@ export class SchedulerManager {
 
             if (schedulerToRemove) {
                 await this.schedulerQueue.removeJobScheduler(schedulerToRemove.key);
-                log.debug(`Removed job scheduler for task ${taskUuid}`);
+                log.debug(`[SCHEDULER] Removed job scheduler for task ${taskUuid}`);
             }
         } catch (error) {
-            log.error(`Failed to remove scheduled task ${taskUuid}: ${error}`);
+            log.error(`[SCHEDULER] Failed to remove scheduled task ${taskUuid}: ${error}`);
         }
     }
 
@@ -176,7 +176,7 @@ export class SchedulerManager {
                 .limit(1);
 
             if (!tasks.length) {
-                log.warning(`Task ${taskUuid} not found in database, skipping`);
+                log.warning(`[SCHEDULER] Task ${taskUuid} not found in database, skipping`);
                 return;
             }
 
@@ -184,13 +184,13 @@ export class SchedulerManager {
 
             // Check if task is still active
             if (!task.isActive) {
-                log.info(`Task ${task.name} is no longer active, skipping`);
+                log.info(`[SCHEDULER] Task ${task.name} is no longer active, skipping`);
                 return;
             }
 
             // Check if task is paused
             if (task.isPaused) {
-                log.info(`Task ${task.name} is paused, skipping execution`);
+                log.info(`[SCHEDULER] Task ${task.name} is paused, skipping execution`);
                 return;
             }
 
@@ -211,7 +211,7 @@ export class SchedulerManager {
                         .where(eq(schemas.scheduledTasks.uuid, task.uuid));
 
                     log.warning(
-                        `Task ${task.name} auto-paused due to insufficient credits (required: ${task.minCreditsRequired})`
+                        `[SCHEDULER] Task ${task.name} auto-paused due to insufficient credits (required: ${task.minCreditsRequired})`
                     );
 
                     // Remove from BullMQ scheduler
@@ -232,7 +232,7 @@ export class SchedulerManager {
                     .limit(1);
 
                 if (runningExecution.length > 0) {
-                    log.info(`Task ${task.name} is already running, skipping (concurrency: skip)`);
+                    log.info(`[SCHEDULER] Task ${task.name} is already running, skipping (concurrency: skip)`);
                     return;
                 }
             }
@@ -254,7 +254,7 @@ export class SchedulerManager {
                 const count = todayExecutions[0]?.count || 0;
                 if (count >= task.maxExecutionsPerDay) {
                     log.warning(
-                        `Task ${task.name} reached daily execution limit (${task.maxExecutionsPerDay})`
+                        `[SCHEDULER] Task ${task.name} reached daily execution limit (${task.maxExecutionsPerDay})`
                     );
                     return;
                 }
@@ -277,7 +277,7 @@ export class SchedulerManager {
                 createdAt: new Date(),
             });
 
-            log.info(`🚀 Executing task: ${task.name} (execution #${executionNumber})`);
+            log.info(`[SCHEDULER] 🚀 Executing task: ${task.name} (execution #${executionNumber})`);
 
             // Trigger the actual scrape/crawl job
             const jobId = await this.triggerJob(task, executionUuid);
@@ -302,9 +302,9 @@ export class SchedulerManager {
                 })
                 .where(eq(schemas.scheduledTasks.uuid, task.uuid));
 
-            log.info(`✅ Task ${task.name} triggered job ${jobId}`);
+            log.info(`[SCHEDULER] ✅ Task ${task.name} triggered job ${jobId}`);
         } catch (error) {
-            log.error(`Task ${taskUuid} execution failed: ${error}`);
+            log.error(`[SCHEDULER] Task ${taskUuid} execution failed: ${error}`);
 
             // Update failure statistics
             await db
@@ -332,7 +332,7 @@ export class SchedulerManager {
                     .where(eq(schemas.scheduledTasks.uuid, taskUuid));
 
                 log.warning(
-                    `Task auto-paused after ${updatedTask[0].consecutiveFailures} consecutive failures`
+                    `[SCHEDULER] Task auto-paused after ${updatedTask[0].consecutiveFailures} consecutive failures`
                 );
 
                 // Remove from repeatable jobs
@@ -374,7 +374,7 @@ export class SchedulerManager {
                     engine = template.reqOptions.engine;
                 }
             } catch (error) {
-                log.error(`Failed to fetch template ${templateId}: ${error}`);
+                log.error(`[SCHEDULER] Failed to fetch template ${templateId}: ${error}`);
                 throw error;
             }
         }
@@ -421,7 +421,7 @@ export class SchedulerManager {
 
             if (!apiKeyId && !userId) {
                 // No auth info, assume credits are sufficient
-                log.warning(`Task ${task.uuid} has no apiKey or userId, skipping credit check`);
+                log.warning(`[SCHEDULER] Task ${task.uuid} has no apiKey or userId, skipping credit check`);
                 return true;
             }
 
@@ -454,13 +454,13 @@ export class SchedulerManager {
             const hasEnough = credits > 0 && credits >= task.minCreditsRequired;
             if (!hasEnough) {
                 log.warning(
-                    `Insufficient credits for task ${task.name}: has ${credits}, needs ${task.minCreditsRequired}`
+                    `[SCHEDULER] Insufficient credits for task ${task.name}: has ${credits}, needs ${task.minCreditsRequired}`
                 );
             }
 
             return hasEnough;
         } catch (error) {
-            log.error(`Error checking credits for task ${task.uuid}: ${error}`);
+            log.error(`[SCHEDULER] Error checking credits for task ${task.uuid}: ${error}`);
             // On error, assume credits are sufficient to avoid blocking tasks
             return true;
         }
@@ -472,17 +472,17 @@ export class SchedulerManager {
      */
     private startPolling(): void {
         if (this.syncInterval) {
-            log.warning("Polling is already active");
+            log.warning("[SCHEDULER] Polling is already active");
             return;
         }
 
-        log.info(`Starting periodic task sync (every ${this.SYNC_INTERVAL_MS / 1000}s)`);
+        log.info(`[SCHEDULER] Starting periodic task sync (every ${this.SYNC_INTERVAL_MS / 1000}s)`);
 
         this.syncInterval = setInterval(async () => {
             try {
                 await this.pollDatabaseChanges();
             } catch (error) {
-                log.error(`Error in periodic task sync: ${error}`);
+                log.error(`[SCHEDULER] Error in periodic task sync: ${error}`);
             }
         }, this.SYNC_INTERVAL_MS);
     }
@@ -494,7 +494,7 @@ export class SchedulerManager {
         if (this.syncInterval) {
             clearInterval(this.syncInterval);
             this.syncInterval = null;
-            log.info("Stopped periodic task sync");
+            log.info("[SCHEDULER] Stopped periodic task sync");
         }
     }
 
@@ -519,29 +519,29 @@ export class SchedulerManager {
                 );
 
             if (updatedTasks.length > 0) {
-                log.info(`📋 Detected ${updatedTasks.length} new/updated tasks, syncing to BullMQ...`);
+                log.info(`[SCHEDULER] 📋 Detected ${updatedTasks.length} new/updated tasks, syncing to BullMQ...`);
 
                 for (const task of updatedTasks) {
                     if (task.isPaused) {
                         // Remove paused tasks from BullMQ
                         await this.removeScheduledTask(task.uuid);
-                        log.debug(`Removed paused task: ${task.name}`);
+                        log.debug(`[SCHEDULER] Removed paused task: ${task.name}`);
                     } else {
                         // Add or update active tasks
                         await this.addScheduledTask(task);
-                        log.debug(`Synced task: ${task.name}`);
+                        log.debug(`[SCHEDULER] Synced task: ${task.name}`);
                     }
                 }
 
-                log.info(`✅ Synced ${updatedTasks.length} tasks to BullMQ`);
+                log.info(`[SCHEDULER] ✅ Synced ${updatedTasks.length} tasks to BullMQ`);
             } else {
-                log.debug("No new tasks detected since last sync");
+                log.debug("[SCHEDULER] No new tasks detected since last sync");
             }
 
             // Update last sync time
             this.lastSyncTime = new Date();
         } catch (error) {
-            log.error(`Error polling database changes: ${error}`);
+            log.error(`[SCHEDULER] Error polling database changes: ${error}`);
         }
     }
 
@@ -550,7 +550,7 @@ export class SchedulerManager {
             return;
         }
 
-        log.info("Stopping Scheduler Manager...");
+        log.info("[SCHEDULER] Stopping Scheduler Manager...");
 
         // Stop polling
         this.stopPolling();
@@ -558,7 +558,7 @@ export class SchedulerManager {
         this.schedulerQueue = null;
         this.isRunning = false;
 
-        log.info("✅ Scheduler Manager stopped successfully");
+        log.info("[SCHEDULER] ✅ Scheduler Manager stopped successfully");
     }
 
     /**
@@ -572,7 +572,7 @@ export class SchedulerManager {
         try {
             return await this.schedulerQueue.getJobSchedulersCount();
         } catch (error) {
-            log.error(`Failed to get scheduled tasks count: ${error}`);
+            log.error(`[SCHEDULER] Failed to get scheduled tasks count: ${error}`);
             return 0;
         }
     }

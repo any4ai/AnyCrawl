@@ -20,8 +20,25 @@ export type JsonOptions = {
     schema_description?: string;
 };
 
+export type ProxyMode = 'auto' | 'base' | 'stealth';
+
+/**
+ * Resolved proxy mode returned in responses
+ * - "base": Using ANYCRAWL_PROXY_URL (default)
+ * - "stealth": Using ANYCRAWL_PROXY_STEALTH_URL
+ * - "custom": Using a custom proxy URL
+ */
+export type ResolvedProxyMode = 'base' | 'stealth' | 'custom';
+
 export type ScrapeOptionsInput = {
-    proxy?: string;
+    /**
+     * Proxy mode or custom proxy URL.
+     * - "auto": Automatically decide between base and stealth proxy
+     * - "base": Use ANYCRAWL_PROXY_URL (default)
+     * - "stealth": Use ANYCRAWL_PROXY_STEALTH_URL
+     * - Custom URL: A full proxy URL string (e.g., "http://user:pass@proxy:8080")
+     */
+    proxy?: ProxyMode | string;
     formats?: ScrapeFormat[];
     timeout?: number;
     retry?: boolean;
@@ -49,6 +66,13 @@ export type ScrapeResultSuccess = {
     timestamp: string;
     screenshot?: string;
     'screenshot@fullPage'?: string;
+    /**
+     * The proxy mode used for this request
+     * - "base": Used ANYCRAWL_PROXY_URL (default)
+     * - "stealth": Used ANYCRAWL_PROXY_STEALTH_URL
+     * - "custom": Used a custom proxy URL
+     */
+    proxy?: ResolvedProxyMode;
 };
 export type ScrapeResultFailed = {
     url: string;

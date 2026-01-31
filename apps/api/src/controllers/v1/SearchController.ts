@@ -2,7 +2,7 @@ import { Response } from "express";
 import { z } from "zod";
 import { SearchService } from "@anycrawl/search/SearchService";
 import { log } from "@anycrawl/libs/log";
-import { searchSchema, RequestWithAuth } from "@anycrawl/libs";
+import { searchSchema, RequestWithAuth, CreditCalculator } from "@anycrawl/libs";
 import { randomUUID } from "crypto";
 import { STATUS, createJob, insertJobResult, completedJob, failedJob, updateJobCounts, JOB_RESULT_STATUS } from "@anycrawl/db";
 import { QueueManager } from "@anycrawl/scrape";
@@ -200,37 +200,12 @@ export class SearchController {
                     }
                 }
             }
-            // credits: pages + 1 credit per successfully completed scrape job (if any)
-            try {
-                const pageCredits = validatedData.pages ?? 1;
-                let scrapeCredits = 0;
-
-                if (validatedData.scrape_options && completedScrapeCount > 0) {
-                    // Base: 1 credit per scraped result
-                    scrapeCredits = completedScrapeCount;
-
-                    // Add extra credits for JSON extraction if enabled
-                    const extractJsonCredits = Number.parseInt(process.env.ANYCRAWL_EXTRACT_JSON_CREDITS || "0", 10);
-                    const hasJsonOptions = Boolean(validatedData.scrape_options.json_options) &&
-                        validatedData.scrape_options.formats?.includes("json");
-
-                    if (hasJsonOptions && Number.isFinite(extractJsonCredits) && extractJsonCredits > 0) {
-                        const extract_source = validatedData.scrape_options.extract_source || "markdown";
-                        const jsonCreditsPerScrape = extract_source === "html" ? extractJsonCredits * 2 : extractJsonCredits;
-                        scrapeCredits += completedScrapeCount * jsonCreditsPerScrape;
-
-                        if (extract_source === "html") {
-                            log.info(`[search] HTML extraction detected, using double credits (${jsonCreditsPerScrape} per scrape, total: ${scrapeCredits})`);
-                        }
-                    }
-                }
-
-                req.creditsUsed = pageCredits + scrapeCredits;
-            } catch {
-                req.creditsUsed = validatedData.pages ?? 1;
-            }
-
-            req.creditsUsed += defaultPrice;
+            // Calculate credits using CreditCalculator
+            req.creditsUsed = defaultPrice + CreditCalculator.calculateSearchCredits({
+                pages: validatedData.pages,
+                scrape_options: validatedData.scrape_options,
+                completedScrapeCount,
+            });
 
             // Mark job status based on page results and scrape tasks
             try {

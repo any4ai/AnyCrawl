@@ -1,6 +1,6 @@
 import { Response } from "express";
 import { z } from "zod";
-import { crawlSchema, RequestWithAuth, CrawlSchemaInput } from "@anycrawl/libs";
+import { crawlSchema, RequestWithAuth, CrawlSchemaInput, CreditCalculator } from "@anycrawl/libs";
 import { QueueManager, CrawlerErrorType, RequestTask, ProgressManager, AVAILABLE_ENGINES } from "@anycrawl/scrape";
 import { cancelJob, createJob, failedJob, getJob, getJobResultsPaginated, getJobResultsCount, STATUS, getTemplate } from "@anycrawl/db";
 import { log } from "@anycrawl/libs";
@@ -67,8 +67,10 @@ export class CrawlController {
             // Add job to queue
             jobId = await QueueManager.getInstance().addJob(`crawl-${jobPayload.engine}`, jobPayload);
 
-            // Base credit: 1 per crawl job
-            req.creditsUsed = defaultPrice + 1;
+            // Calculate initial credits using CreditCalculator
+            req.creditsUsed = defaultPrice + CreditCalculator.calculateCrawlInitialCredits({
+                scrape_options: jobPayload.options?.scrape_options,
+            });
 
             await createJob({
                 job_id: jobId,

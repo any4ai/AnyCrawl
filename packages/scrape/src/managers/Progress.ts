@@ -1,7 +1,7 @@
 import IORedis from "ioredis";
 import { Utils } from "../Utils.js";
 import { completedJob, failedJob, getDB, schemas, eq, sql } from "@anycrawl/db";
-import { log } from "@anycrawl/libs";
+import { log, CreditCalculator } from "@anycrawl/libs";
 import type { QueueName } from "./Queue.js";
 import { BandwidthManager } from "./Bandwidth.js";
 
@@ -193,21 +193,14 @@ export class ProgressManager {
                         log.info(`[${queueNameForFinalize}] [${jobId}] Page ${done} exceeds limit ${jobLimit}, not deducting credits`);
                     }
 
-                    const hasJsonOptions = Boolean(
-                        payload?.json_options || payload?.options?.scrape_options?.json_options
-                    ) && payload?.options?.formats?.includes("json");
-                    const extractJsonCreditsRaw = process.env.ANYCRAWL_EXTRACT_JSON_CREDITS || "0";
-                    const extractJsonCredits = Number.parseInt(extractJsonCreditsRaw, 10);
-                    if (hasJsonOptions && Number.isFinite(extractJsonCredits) && extractJsonCredits > 0) {
-                        perPageCost += extractJsonCredits;
-
-                        // Check if extracting from HTML (double credits for HTML extraction)
-                        const extract_source = payload?.extract_source || payload?.options?.scrape_options?.extract_source || "markdown";
-                        if (extract_source === "html") {
-                            perPageCost += extractJsonCredits; // Double the credits for HTML extraction
-                            log.info(`[${queueNameForFinalize}] [${jobId}] HTML extraction detected, adding ${extractJsonCredits} extra credits (total: ${perPageCost})`);
-                        }
-                    }
+                    // Calculate per-page cost using CreditCalculator
+                    const scrapeOptions = payload?.options?.scrape_options || payload?.options || {};
+                    perPageCost = CreditCalculator.calculateCrawlPageCredits({
+                        proxy: scrapeOptions.proxy,
+                        json_options: scrapeOptions.json_options || payload?.json_options,
+                        formats: scrapeOptions.formats || payload?.options?.formats,
+                        extract_source: scrapeOptions.extract_source || payload?.extract_source,
+                    });
                 } catch { /* ignore: default perPageCost remains 1 */ }
 
                 const updates: any = {

@@ -55,9 +55,16 @@ export const baseSchema = z.object({
     engine: z.enum(ALLOWED_ENGINES).default("cheerio"),
 
     /**
-     * The proxy to be used
+     * The proxy mode or custom proxy URL to be used.
+     * - "auto": Automatically decide between base and stealth proxy (default)
+     * - "base": Use ANYCRAWL_PROXY_URL
+     * - "stealth": Use ANYCRAWL_PROXY_STEALTH_URL
+     * - Custom URL: A full proxy URL string (e.g., "http://user:pass@proxy:8080")
      */
-    proxy: z.string().url().optional(),
+    proxy: z.union([
+        z.enum(["auto", "base", "stealth"]),
+        z.string().url()
+    ]).optional(),
 
     /**
      * The formats to be used

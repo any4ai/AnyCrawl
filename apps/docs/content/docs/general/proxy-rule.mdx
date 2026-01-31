@@ -8,6 +8,43 @@ icon: Waypoints
 
 AnyCrawl supports flexible proxy routing based on URL patterns. You can configure different proxies for different websites or API endpoints.
 
+## Proxy Modes
+
+AnyCrawl supports four proxy modes that can be specified in API requests:
+
+| Mode | Description |
+|------|-------------|
+| `auto` | Automatically decide between base and stealth proxy. Uses stealth if available, otherwise base. |
+| `base` | Use the proxy configured in `ANYCRAWL_PROXY_URL` (default) |
+| `stealth` | Use the proxy configured in `ANYCRAWL_PROXY_STEALTH_URL` (typically a residential or premium proxy) |
+| Custom URL | A full proxy URL string (e.g., `http://user:pass@proxy:8080`), returned as `custom` in responses |
+
+### Usage Example
+
+```json
+{
+    "url": "https://example.com",
+    "engine": "playwright",
+    "proxy": "auto"
+}
+```
+
+```json
+{
+    "url": "https://example.com",
+    "engine": "playwright",
+    "proxy": "stealth"
+}
+```
+
+```json
+{
+    "url": "https://example.com",
+    "engine": "playwright",
+    "proxy": "http://custom-proxy:8080"
+}
+```
+
 ## Configuration Methods
 
 ### Method 1: Simple Proxy Configuration (ANYCRAWL_PROXY_URL)
@@ -211,14 +248,23 @@ Result:
 
 ## Environment Variables Summary
 
-| Variable                | Purpose                                         | Example                                                |
-| ----------------------- | ----------------------------------------------- | ------------------------------------------------------ |
-| `ANYCRAWL_PROXY_URL`    | Tiered proxy configuration (single or multiple) | `http://proxy:8080` or `http://p1:8080,http://p2:8080` |
-| `ANYCRAWL_PROXY_CONFIG` | Path to JSON config file for URL-based routing  | `/path/to/proxy-config.json`                           |
+| Variable                      | Purpose                                         | Example                                                |
+| ----------------------------- | ----------------------------------------------- | ------------------------------------------------------ |
+| `ANYCRAWL_PROXY_URL`          | Base proxy configuration (single or multiple)   | `http://proxy:8080` or `http://p1:8080,http://p2:8080` |
+| `ANYCRAWL_PROXY_STEALTH_URL`  | Stealth/premium proxy (residential proxies)     | `http://residential-proxy:8080`                        |
+| `ANYCRAWL_PROXY_CONFIG`       | Path to JSON config file for URL-based routing  | `/path/to/proxy-config.json`                           |
 
 ### Priority Order
 
-1. **Highest**: Proxy specified in request options (user-provided in API request)
+1. **Highest**: Proxy mode or custom URL specified in request options
+    ```json
+    {
+        "url": "https://example.com",
+        "engine": "playwright",
+        "proxy": "stealth"
+    }
+    ```
+    Or with a custom URL:
     ```json
     {
         "url": "https://example.com",

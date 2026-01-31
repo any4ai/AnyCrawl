@@ -1,24 +1,168 @@
 /**
+ * Resolved proxy mode for credit calculation
+ */
+export type ResolvedProxyMode = 'base' | 'stealth' | 'custom';
+
+/**
+ * Options for calculating scrape credits
+ */
+export interface ScrapeCreditsOptions {
+    proxy?: string;
+    json_options?: any;
+    formats?: string[];
+    extract_source?: string;
+}
+
+/**
+ * Options for calculating crawl credits
+ */
+export interface CrawlCreditsOptions {
+    scrape_options?: ScrapeCreditsOptions;
+}
+
+/**
+ * Options for calculating search credits
+ */
+export interface SearchCreditsOptions {
+    pages?: number;
+    scrape_options?: ScrapeCreditsOptions & { engine?: string };
+    completedScrapeCount?: number;
+}
+
+/**
+ * Centralized credit calculation class
+ * Handles all credit calculations for scrape, crawl, and search operations
+ */
+export class CreditCalculator {
+    /**
+     * Get the resolved proxy mode name for credit calculation
+     */
+    static getResolvedProxyMode(proxyValue: string | undefined): ResolvedProxyMode {
+        if (!proxyValue || proxyValue === 'base') {
+            return 'base';
+        }
+
+        if (proxyValue === 'stealth') {
+            return 'stealth';
+        }
+
+        if (proxyValue === 'auto') {
+            const stealthProxyUrls = process.env.ANYCRAWL_PROXY_STEALTH_URL?.split(',').map(url => url.trim()).filter(Boolean) || [];
+            if (stealthProxyUrls.length > 0) {
+                return 'stealth';
+            }
+            return 'base';
+        }
+
+        // Custom URL
+        return 'custom';
+    }
+
+    /**
+     * Get proxy credits (extra credits for stealth proxy)
+     * - base: 0 credits
+     * - stealth: configurable via ANYCRAWL_PROXY_STEALTH_CREDITS (default: 2)
+     * - custom: 0 credits
+     */
+    static getProxyCredits(proxyValue: string | undefined): number {
+        const mode = this.getResolvedProxyMode(proxyValue);
+        if (mode === 'stealth') {
+            return Number.parseInt(process.env.ANYCRAWL_PROXY_STEALTH_CREDITS || '2', 10);
+        }
+        return 0;
+    }
+
+    /**
+     * Get JSON extraction credits
+     * Returns extra credits for JSON extraction, doubled if extract_source is 'html'
+     */
+    static getJsonExtractionCredits(options: ScrapeCreditsOptions): number {
+        const extractJsonCredits = Number.parseInt(process.env.ANYCRAWL_EXTRACT_JSON_CREDITS || '0', 10);
+
+        const hasJsonOptions = Boolean(options.json_options) && options.formats?.includes('json');
+        if (!hasJsonOptions || !Number.isFinite(extractJsonCredits) || extractJsonCredits <= 0) {
+            return 0;
+        }
+
+        const extractSource = options.extract_source || 'markdown';
+        // Double credits for HTML extraction
+        return extractSource === 'html' ? extractJsonCredits * 2 : extractJsonCredits;
+    }
+
+    /**
+     * Calculate total credits for a single scrape operation
+     * Formula: 1 (base) + proxy credits + JSON extraction credits
+     */
+    static calculateScrapeCredits(options: ScrapeCreditsOptions = {}): number {
+        const baseCredits = 1;
+        const proxyCredits = this.getProxyCredits(options.proxy);
+        const jsonCredits = this.getJsonExtractionCredits(options);
+
+        return baseCredits + proxyCredits + jsonCredits;
+    }
+
+    /**
+     * Calculate initial credits for a crawl job (first page)
+     * Formula: 1 (base) + proxy credits
+     * Note: JSON extraction credits are calculated per-page in Progress.ts
+     */
+    static calculateCrawlInitialCredits(options: CrawlCreditsOptions = {}): number {
+        const baseCredits = 1;
+        const proxyCredits = this.getProxyCredits(options.scrape_options?.proxy);
+
+        return baseCredits + proxyCredits;
+    }
+
+    /**
+     * Calculate credits for a single crawl page
+     * Formula: 1 (base) + proxy credits + JSON extraction credits
+     */
+    static calculateCrawlPageCredits(options: ScrapeCreditsOptions = {}): number {
+        return this.calculateScrapeCredits(options);
+    }
+
+    /**
+     * Calculate total credits for a search operation
+     * Formula: page credits + (scrape credits per result * completed scrapes)
+     */
+    static calculateSearchCredits(options: SearchCreditsOptions = {}): number {
+        const pageCredits = options.pages ?? 1;
+
+        if (!options.scrape_options || !options.completedScrapeCount || options.completedScrapeCount <= 0) {
+            return pageCredits;
+        }
+
+        const perScrapeCredits = this.calculateScrapeCredits(options.scrape_options);
+        const scrapeCredits = options.completedScrapeCount * perScrapeCredits;
+
+        return pageCredits + scrapeCredits;
+    }
+}
+
+// Export legacy functions for backward compatibility
+export function getResolvedProxyModeForCredits(proxyValue: string | undefined): ResolvedProxyMode {
+    return CreditCalculator.getResolvedProxyMode(proxyValue);
+}
+
+export function getProxyCredits(proxyMode: ResolvedProxyMode): number {
+    if (proxyMode === 'stealth') {
+        return Number.parseInt(process.env.ANYCRAWL_PROXY_STEALTH_CREDITS || '2', 10);
+    }
+    return 0;
+}
+
+export function calculateProxyCredits(proxyValue: string | undefined): number {
+    return CreditCalculator.getProxyCredits(proxyValue);
+}
+
+/**
  * Pre-calculate (estimate) minimum credits required for a task before execution
- * This is used for:
- * - Setting minCreditsRequired in scheduled tasks
- * - Checking if user has enough credits before execution
- * - Displaying estimated cost to users
- *
- * Note: This only estimates base credits for the task itself.
- * Additional credits for JSON extraction are calculated at runtime based on ANYCRAWL_EXTRACT_JSON_CREDITS.
- *
- * @param taskType - Type of task (scrape, crawl, search)
- * @param taskPayload - Task configuration payload
- * @param options - Optional configuration
- * @param options.template - Template object (if using template)
- * @returns Estimated minimum credits required (base task credits + template credits)
  */
 export function estimateTaskCredits(
     taskType: string,
     taskPayload: any,
     options?: {
-        template?: any;  // Template object with templateType, reqOptions, pricing
+        template?: any;
     }
 ): number {
     try {
@@ -27,45 +171,30 @@ export function estimateTaskCredits(
         let actualTaskType = taskType;
         let actualPayload = taskPayload;
 
-        // If template is provided, extract template info
         if (options?.template) {
             const template = options.template;
-
-            // Get template's actual task type (scrape/crawl/search)
             actualTaskType = template.templateType || taskType;
-
-            // Merge template reqOptions with task payload
             actualPayload = {
                 ...(template.reqOptions || {}),
                 ...taskPayload
             };
-
-            // Get template pricing
             templateCredits = template.pricing?.perCall || 0;
         }
 
-        // Calculate base credits based on actual task type
         if (actualTaskType === "scrape") {
             baseCredits = 1;
-        }
-        // For search tasks - pages + scrape credits if scrape_options provided
-        else if (actualTaskType === "search") {
+        } else if (actualTaskType === "search") {
             const pages = actualPayload.pages || 1;
-            baseCredits = pages; // 1 credit per search page
-
-            // If scrape_options provided, add credits for scraping results
+            baseCredits = pages;
             if (actualPayload.scrape_options) {
-                const limit = actualPayload.limit || 10; // Number of search results to scrape
-                baseCredits += limit; // 1 credit per scraped result
+                const limit = actualPayload.limit || 10;
+                baseCredits += limit;
             }
-        }
-        // For crawl tasks - limit (max pages) * 1 credit per page
-        else if (actualTaskType === "crawl") {
+        } else if (actualTaskType === "crawl") {
             const limit = actualPayload.limit || actualPayload.options?.limit || 10;
             baseCredits = limit;
         }
 
-        // Total = base credits + template credits
         return baseCredits + templateCredits;
     } catch (error) {
         console.error(`Error estimating task credits: ${error}`);

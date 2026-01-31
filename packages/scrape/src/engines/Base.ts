@@ -22,6 +22,7 @@ import { CrawlLimitReachedError } from "../errors/index.js";
 import type { CrawlingContext, EngineOptions } from "../types/engine.js";
 import { minimatch } from "minimatch";
 import { BandwidthManager } from "../managers/Bandwidth.js";
+import { getResolvedProxyModeName } from "../managers/Proxy.js";
 
 // Template system imports - directly use @anycrawl/template-client
 
@@ -1011,6 +1012,10 @@ export abstract class BaseEngine {
 
                 // add jobId to data
                 data.jobId = context.request.userData.jobId;
+
+                // add proxy to data (base, stealth, or custom)
+                const proxyValue = context.request.userData?.options?.proxy;
+                data.proxy = getResolvedProxyModeName(proxyValue);
 
             } catch (error) {
                 console.log('Error in requestHandler:', error);

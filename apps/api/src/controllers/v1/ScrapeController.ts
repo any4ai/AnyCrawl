@@ -1,6 +1,6 @@
 import { Response } from "express";
 import { z } from "zod";
-import { scrapeSchema, RequestWithAuth } from "@anycrawl/libs";
+import { scrapeSchema, RequestWithAuth, CreditCalculator } from "@anycrawl/libs";
 import { QueueManager, CrawlerErrorType, AVAILABLE_ENGINES } from "@anycrawl/scrape";
 import { STATUS, createJob, failedJob } from "@anycrawl/db";
 import { log } from "@anycrawl/libs";
@@ -78,26 +78,14 @@ export class ScrapeController {
                 return;
             }
 
-            // Base credit: 1 per scrape
-            req.creditsUsed = defaultPrice + 1;
-            // Extra credits when structured extraction is requested via json_options
-            try {
-                const extractJsonCredits = Number.parseInt(process.env.ANYCRAWL_EXTRACT_JSON_CREDITS || "0", 10);
-                // jobPayload.options carries normalized options from schema, and must formats include json
-                const hasJsonOptions = Boolean((jobPayload as any)?.options?.json_options) && (jobPayload as any)?.options?.formats?.includes("json");
-                if (hasJsonOptions && Number.isFinite(extractJsonCredits) && extractJsonCredits > 0) {
-                    req.creditsUsed += extractJsonCredits;
-
-                    // Double credits for HTML extraction
-                    const extract_source = (jobPayload as any)?.options?.extract_source || "markdown";
-                    if (extract_source === "html") {
-                        req.creditsUsed += extractJsonCredits; // Double the credits for HTML extraction
-                        log.info(`[scrape] HTML extraction detected, adding ${extractJsonCredits} extra credits (total: ${req.creditsUsed})`);
-                    }
-                }
-            } catch {
-                // ignore credit calc errors; default to base cost
-            }
+            // Calculate credits using CreditCalculator
+            const scrapeOptions = (jobPayload as any)?.options || {};
+            req.creditsUsed = defaultPrice + CreditCalculator.calculateScrapeCredits({
+                proxy: scrapeOptions.proxy,
+                json_options: scrapeOptions.json_options,
+                formats: scrapeOptions.formats,
+                extract_source: scrapeOptions.extract_source,
+            });
 
             // Add domain prefix to screenshot path if it exists
             if (jobData.screenshot) {

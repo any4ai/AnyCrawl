@@ -79,9 +79,12 @@ export async function generateMetadata(props: {
 
     const slug = params.slug ? params.slug.join("/") : "";
     const pageUrl = `${baseUrl}/${params.lang}${slug ? `/${slug}` : ""}`;
-    const description = page.data.description.endsWith(".")
-        ? `${page.data.description} Turning web into AI with AnyCrawl.`
-        : `${page.data.description}. Turning web into AI with AnyCrawl.`;
+    const pageDescription = page.data.description || "";
+    const description = pageDescription
+        ? pageDescription.endsWith(".")
+            ? `${pageDescription} Turning web into AI with AnyCrawl.`
+            : `${pageDescription}. Turning web into AI with AnyCrawl.`
+        : "Turning web into AI with AnyCrawl.";
     const ogImage = "https://api.anycrawl.dev/v1/public/storage/file/AnyCrawl.jpeg";
 
     return {
@@ -89,7 +92,7 @@ export async function generateMetadata(props: {
         description,
         openGraph: {
             title: page.data.title,
-            description: page.data.description,
+            description: pageDescription || description,
             type: "article",
             url: pageUrl,
             siteName: "AnyCrawl Docs",
@@ -106,7 +109,7 @@ export async function generateMetadata(props: {
             card: "summary_large_image",
             site: "@AnyCrawl",
             title: page.data.title,
-            description: page.data.description,
+            description: pageDescription || description,
             images: [ogImage],
         },
         alternates: {

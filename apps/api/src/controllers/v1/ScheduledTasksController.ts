@@ -2,7 +2,7 @@ import { Response } from "express";
 import { z } from "zod";
 import { CronExpressionParser } from "cron-parser";
 import crypto from "crypto";
-import { RequestWithAuth, estimateTaskCredits } from "@anycrawl/libs";
+import { RequestWithAuth, estimateTaskCredits, WebhookEventType, isScheduledTasksLimitEnabled, getScheduledTasksLimit, buildLimitExceededResponse } from "@anycrawl/libs";
 import { getDB, schemas, eq, sql } from "@anycrawl/db";
 import { log } from "@anycrawl/libs";
 import { randomUUID } from "crypto";
@@ -37,6 +37,22 @@ const createTaskSchema = z.object({
 
 const updateTaskSchema = createTaskSchema.partial();
 
+// Icon mappings
+const TASK_TYPE_ICONS: Record<string, string> = {
+    scrape: "FileText",
+    crawl: "Network",
+    search: "Search",
+    template: "FileCode",
+};
+
+const EXECUTION_STATUS_ICONS: Record<string, string> = {
+    completed: "CircleCheck",
+    failed: "CircleX",
+    running: "Loader",
+    pending: "Clock",
+    cancelled: "Ban",
+};
+
 export class ScheduledTasksController {
     /**
      * Create a new scheduled task
@@ -46,6 +62,34 @@ export class ScheduledTasksController {
             const validatedData = createTaskSchema.parse(req.body);
             const apiKeyId = req.auth?.uuid;
             const userId = req.auth?.user;
+
+            // Check scheduled tasks limit
+            if (isScheduledTasksLimitEnabled() && apiKeyId) {
+                const db = await getDB();
+
+                // Single query: get tier and task count together
+                const result = await db
+                    .select({
+                        subscriptionTier: schemas.apiKey.subscriptionTier,
+                        taskCount: sql<number>`(
+                            SELECT count(*) FROM scheduled_tasks
+                            WHERE is_active = true
+                            AND user_id = ${userId || apiKeyId}
+                        )`,
+                    })
+                    .from(schemas.apiKey)
+                    .where(eq(schemas.apiKey.uuid, apiKeyId))
+                    .limit(1);
+
+                const tier = result[0]?.subscriptionTier || "free";
+                const limit = getScheduledTasksLimit(tier);
+                const currentCount = Number(result[0]?.taskCount || 0);
+
+                if (currentCount >= limit) {
+                    res.status(403).json(buildLimitExceededResponse(tier, limit, currentCount));
+                    return;
+                }
+            }
 
             // Calculate min_credits_required automatically
             let template = null;
@@ -80,7 +124,7 @@ export class ScheduledTasksController {
             await db.insert(schemas.scheduledTasks).values({
                 uuid: taskUuid,
                 apiKey: apiKeyId,                    // Track which API key created this task
-                userId: (userId || null) as any,    // Track which user owns this task (can be null)
+                userId: userId || null,              // Track which user owns this task (can be null)
                 name: validatedData.name,
                 description: validatedData.description,
                 cronExpression: validatedData.cron_expression,
@@ -124,7 +168,8 @@ export class ScheduledTasksController {
                         await scheduler.addScheduledTask(createdTask[0]);
                     }
                 } else {
-                    log.warning(`Scheduler is not running. Task created in database but not scheduled. Set ANYCRAWL_SCHEDULER_ENABLED=true to enable scheduling.`);
+                    // Scheduler runs in a separate worker process - it will pick up the task via polling
+                    log.debug(`Task created in database. Scheduler worker will sync via polling.`);
                 }
             } catch (error) {
                 log.warning(`Failed to add task to scheduler: ${error}`);
@@ -217,9 +262,15 @@ export class ScheduledTasksController {
             // Convert to snake_case
             const serialized = serializeRecord(task[0]);
 
+            // Add icon based on task type
+            const icon = TASK_TYPE_ICONS[task[0].taskType] || "Calendar";
+
             res.json({
                 success: true,
-                data: serialized,
+                data: {
+                    ...serialized,
+                    icon,
+                },
             });
         } catch (error) {
             this.handleError(error, res);
@@ -302,31 +353,40 @@ export class ScheduledTasksController {
                 );
             }
 
+            // Fetch the updated task
+            const updatedTask = await db
+                .select()
+                .from(schemas.scheduledTasks)
+                .where(eq(schemas.scheduledTasks.uuid, taskId))
+                .limit(1);
+
             // Update in BullMQ scheduler (only if scheduler is running)
             try {
                 const { SchedulerManager } = await import("@anycrawl/scrape");
                 const scheduler = SchedulerManager.getInstance();
 
                 if (scheduler.isSchedulerRunning()) {
-                    const updatedTask = await db
-                        .select()
-                        .from(schemas.scheduledTasks)
-                        .where(eq(schemas.scheduledTasks.uuid, taskId))
-                        .limit(1);
-
                     if (updatedTask.length > 0) {
                         await scheduler.addScheduledTask(updatedTask[0]);
                     }
                 } else {
-                    log.warning(`Scheduler is not running. Task updated in database but not rescheduled.`);
+                    // Scheduler runs in a separate worker process - it will pick up the task via polling
+                    log.debug(`Task updated in database. Scheduler worker will sync via polling.`);
                 }
             } catch (error) {
                 log.warning(`Failed to update task in scheduler: ${error}`);
             }
 
+            // Convert to snake_case and return the updated task
+            const serialized = serializeRecord(updatedTask[0]);
+            const icon = TASK_TYPE_ICONS[updatedTask[0].taskType] || "Calendar";
+
             res.json({
                 success: true,
-                message: "Task updated successfully",
+                data: {
+                    ...serialized,
+                    icon,
+                },
             });
         } catch (error) {
             this.handleError(error, res);
@@ -366,6 +426,36 @@ export class ScheduledTasksController {
                 await SchedulerManager.getInstance().removeScheduledTask(taskId!);
             } catch (error) {
                 log.warning(`Failed to remove task from scheduler: ${error}`);
+            }
+
+            // Trigger webhook for task pause
+            try {
+                if (process.env.ANYCRAWL_WEBHOOKS_ENABLED === "true") {
+                    const pausedTask = await db
+                        .select()
+                        .from(schemas.scheduledTasks)
+                        .where(eq(schemas.scheduledTasks.uuid, taskId))
+                        .limit(1);
+
+                    if (pausedTask[0]) {
+                        const { WebhookManager } = await import("@anycrawl/scrape");
+                        await WebhookManager.getInstance().triggerEvent(
+                            WebhookEventType.TASK_PAUSED,
+                            {
+                                task_id: taskId,
+                                task_name: pausedTask[0].name,
+                                task_type: pausedTask[0].taskType,
+                                status: "paused",
+                                reason: reason || "Paused by user",
+                            },
+                            "task",
+                            taskId!,
+                            pausedTask[0].userId ?? undefined
+                        );
+                    }
+                }
+            } catch (e) {
+                log.warning(`Failed to trigger webhook for task pause: ${e}`);
             }
 
             res.json({
@@ -420,10 +510,40 @@ export class ScheduledTasksController {
                         await scheduler.addScheduledTask(resumedTask[0]);
                     }
                 } else {
-                    log.warning(`Scheduler is not running. Task resumed in database but not scheduled.`);
+                    // Scheduler runs in a separate worker process - it will pick up the task via polling
+                    log.debug(`Task resumed in database. Scheduler worker will sync via polling.`);
                 }
             } catch (error) {
                 log.warning(`Failed to add task to scheduler: ${error}`);
+            }
+
+            // Trigger webhook for task resume
+            try {
+                if (process.env.ANYCRAWL_WEBHOOKS_ENABLED === "true") {
+                    const resumedTask = await db
+                        .select()
+                        .from(schemas.scheduledTasks)
+                        .where(eq(schemas.scheduledTasks.uuid, taskId))
+                        .limit(1);
+
+                    if (resumedTask[0]) {
+                        const { WebhookManager } = await import("@anycrawl/scrape");
+                        await WebhookManager.getInstance().triggerEvent(
+                            WebhookEventType.TASK_RESUMED,
+                            {
+                                task_id: taskId,
+                                task_name: resumedTask[0].name,
+                                task_type: resumedTask[0].taskType,
+                                status: "resumed",
+                            },
+                            "task",
+                            taskId!,
+                            resumedTask[0].userId ?? undefined
+                        );
+                    }
+                }
+            } catch (e) {
+                log.warning(`Failed to trigger webhook for task resume: ${e}`);
             }
 
             res.json({
@@ -530,9 +650,15 @@ export class ScheduledTasksController {
             // Convert to snake_case
             const serialized = serializeRecords(executions);
 
+            // Add icon to each execution based on status
+            const serializedWithIcons = serialized.map((execution: any) => ({
+                ...execution,
+                icon: EXECUTION_STATUS_ICONS[execution.status] || "Clock",
+            }));
+
             res.json({
                 success: true,
-                data: serialized,
+                data: serializedWithIcons,
             });
         } catch (error) {
             this.handleError(error, res);
@@ -573,7 +699,7 @@ export class ScheduledTasksController {
                 await db.insert(schemas.webhookSubscriptions).values({
                     uuid: webhookUuid,
                     apiKey: apiKeyId,
-                    userId: (userId || null) as any,
+                    userId: userId || null,
                     name: `Webhook for task: ${taskId}`,
                     description: `Auto-created webhook for scheduled task`,
                     webhookUrl: webhookUrl,

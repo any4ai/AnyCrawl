@@ -1,5 +1,6 @@
 import { Request, ProxyConfiguration as CrawleeProxyConfiguration } from "crawlee";
-import { log } from "@anycrawl/libs/log";
+import { log, isProxyMode, getResolvedProxyMode, getBaseProxyUrls, getStealthProxyUrls } from "@anycrawl/libs";
+import type { ProxyMode, ResolvedProxyMode } from "@anycrawl/libs";
 import type { Dictionary } from '@crawlee/types';
 import { readFileSync } from 'fs';
 import { resolve } from 'path';
@@ -7,6 +8,9 @@ import * as http from 'http';
 import * as https from 'https';
 
 import { cryptoRandomObjectId } from '@apify/utilities';
+
+export type { ProxyMode, ResolvedProxyMode };
+export { isProxyMode, getResolvedProxyMode as getResolvedProxyModeName };
 
 export interface ProxyConfigurationFunction {
     (sessionId: string | number, options?: { request?: Request }): string | null | Promise<string | null>;
@@ -524,63 +528,11 @@ function matchesUrlPattern(urlPattern: string, url: string): boolean {
 }
 
 /**
- * Proxy modes supported by the system
- * - "auto": Automatically decide between base and stealth proxy, can fallback
- * - "base": Use ANYCRAWL_PROXY_URL (default), cannot upgrade to stealth
- * - "stealth": Use ANYCRAWL_PROXY_STEALTH_URL, can downgrade to base on failure
- * - Custom URL: A full proxy URL string, cannot switch
- */
-export type ProxyMode = 'auto' | 'base' | 'stealth';
-
-/**
- * Resolved proxy mode for responses
- * - "base": Using ANYCRAWL_PROXY_URL
- * - "stealth": Using ANYCRAWL_PROXY_STEALTH_URL
- * - "custom": Using a custom proxy URL
- */
-export type ResolvedProxyMode = 'base' | 'stealth' | 'custom';
-
-/**
- * Check if a string is a proxy mode keyword
- */
-export function isProxyMode(value: string | undefined): value is ProxyMode {
-    return value === 'auto' || value === 'base' || value === 'stealth';
-}
-
-/**
- * Get the resolved proxy mode name for response
- * @param proxyValue The proxy mode or custom URL from request
- * @returns The resolved mode name: 'base', 'stealth', or 'custom'
- */
-export function getResolvedProxyModeName(proxyValue: string | undefined): ResolvedProxyMode {
-    if (!proxyValue || proxyValue === 'base') {
-        return 'base';
-    }
-
-    const stealthProxyUrls = process.env.ANYCRAWL_PROXY_STEALTH_URL?.split(',').map(url => url.trim()).filter(Boolean) || [];
-
-    if (proxyValue === 'stealth') {
-        return stealthProxyUrls.length > 0 ? 'stealth' : 'base';
-    }
-
-    if (proxyValue === 'auto') {
-        // Auto mode: stealth if available, otherwise base
-        if (stealthProxyUrls.length > 0) {
-            return 'stealth';
-        }
-        return 'base';
-    }
-
-    // Custom URL
-    return 'custom';
-}
-
-/**
  * Resolve proxy mode to tiered proxy URLs with fallback support
  * Fallback rules:
  * - base: Only base proxies, no fallback
  * - stealth: Stealth proxies first, can fallback to base
- * - auto: Stealth first (if available), fallback to base
+ * - auto: Base first, fallback to stealth
  * - custom: Only the custom URL, no fallback
  *
  * @param proxyValue The proxy mode or custom URL from request
@@ -591,8 +543,8 @@ export function resolveProxyModeWithFallback(proxyValue: string | undefined): (s
         return null;
     }
 
-    const baseProxyUrls = process.env.ANYCRAWL_PROXY_URL?.split(',').map(url => url.trim()).filter(Boolean) || [];
-    const stealthProxyUrls = process.env.ANYCRAWL_PROXY_STEALTH_URL?.split(',').map(url => url.trim()).filter(Boolean) || [];
+    const baseProxyUrls = getBaseProxyUrls();
+    const stealthProxyUrls = getStealthProxyUrls();
 
     if (proxyValue === 'base') {
         // Base mode: only base proxies, no upgrade to stealth
@@ -621,18 +573,18 @@ export function resolveProxyModeWithFallback(proxyValue: string | undefined): (s
     }
 
     if (proxyValue === 'auto') {
-        // Auto mode: stealth first if available, fallback to base
-        if (stealthProxyUrls.length > 0) {
-            // Tier 0: stealth, Tier 1: base (fallback)
-            if (baseProxyUrls.length > 0) {
-                return [stealthProxyUrls, baseProxyUrls];
-            }
-            return [stealthProxyUrls];
-        }
+        // Auto mode: base first, fallback to stealth if base fails
         if (baseProxyUrls.length > 0) {
+            // Tier 0: base, Tier 1: stealth (fallback)
+            if (stealthProxyUrls.length > 0) {
+                return [baseProxyUrls, stealthProxyUrls];
+            }
             return [baseProxyUrls];
         }
-        log.debug('[PROXY] Mode "auto" requested but neither ANYCRAWL_PROXY_URL nor ANYCRAWL_PROXY_STEALTH_URL is configured');
+        if (stealthProxyUrls.length > 0) {
+            return [stealthProxyUrls];
+        }
+        log.warning('[PROXY] Mode "auto" requested but neither ANYCRAWL_PROXY_URL nor ANYCRAWL_PROXY_STEALTH_URL is configured');
         return null;
     }
 
@@ -643,10 +595,9 @@ export function resolveProxyModeWithFallback(proxyValue: string | undefined): (s
 /**
  * Resolve proxy mode or custom URL to actual proxy URL(s)
  * @param proxyValue The proxy mode or custom URL from request
- * @param targetUrl The target URL being scraped (used for auto mode decision)
  * @returns Array of proxy URLs to use, or null if no proxy
  */
-export function resolveProxyMode(proxyValue: string | undefined, targetUrl?: string): string[] | null {
+export function resolveProxyMode(proxyValue: string | undefined): string[] | null {
     const tiered = resolveProxyModeWithFallback(proxyValue);
     if (!tiered || tiered.length === 0 || !tiered[0]) {
         return null;
@@ -662,7 +613,7 @@ export function resolveProxyMode(proxyValue: string | undefined, targetUrl?: str
  * @param proxyTier The tier to use (0 = primary, 1 = fallback)
  */
 let proxyModeRotationIndex = 0;
-export function getProxyFromMode(proxyValue: string | undefined, targetUrl?: string, proxyTier: number = 0): string | null {
+export function getProxyFromMode(proxyValue: string | undefined, proxyTier: number = 0): string | null {
     const tiered = resolveProxyModeWithFallback(proxyValue);
     if (!tiered || tiered.length === 0) {
         return null;
@@ -762,7 +713,7 @@ const proxyConfiguration = new ProxyConfiguration({
 
             // Check if it's a proxy mode or custom URL
             if (isProxyMode(proxyValue)) {
-                const resolvedProxy = getProxyFromMode(proxyValue, matchUrl, proxyTier);
+                const resolvedProxy = getProxyFromMode(proxyValue, proxyTier);
                 if (resolvedProxy) {
                     const tierCount = getProxyTierCount(proxyValue);
                     const tierInfo = tierCount > 1 ? ` (tier ${proxyTier}/${tierCount - 1})` : '';

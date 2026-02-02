@@ -263,63 +263,41 @@ async function runJob(job: Job) {
             }, 5000); // Check every 5 seconds
         }
 
-        // Check for jobs that need finalization based on limits
+        // Check for jobs that need finalization based on limits (using Redis set tracking)
         setInterval(async () => {
             try {
                 log.debug("[FINALIZE] Starting periodic finalization check for crawl jobs...");
                 const pm = ProgressManager.getInstance();
-                // Get all active crawl jobs from the database
-                const { getDB, schemas, eq, sql } = await import("@anycrawl/db");
-                const db = await getDB();
 
-                // Use proper drizzle syntax for the query
-                const activeJobs = await db
-                    .select({
-                        jobId: schemas.jobs.jobId,
-                        queueName: schemas.jobs.jobQueueName,
-                        payload: schemas.jobs.payload,
-                        status: schemas.jobs.status
-                    })
-                    .from(schemas.jobs)
-                    .limit(1000)
-                    .where(
-                        sql`${schemas.jobs.status} = 'pending' AND ${schemas.jobs.payload}->>'type' = 'crawl'`
-                    );
+                // Get jobs from Redis finalize set (much faster than DB query)
+                const jobsToCheck = await pm.getJobsToFinalize();
 
-                log.debug(`[FINALIZE] Found ${activeJobs.length} active crawl jobs to check for finalization`);
+                if (jobsToCheck.length === 0) {
+                    log.debug("[FINALIZE] No jobs in finalize set");
+                    return;
+                }
 
-                let checkedJobs = 0;
-                let jobsWithLimits = 0;
+                log.debug(`[FINALIZE] Found ${jobsToCheck.length} jobs in finalize set to check`);
+
                 let finalizedJobs = 0;
 
-                for (const job of activeJobs) {
+                for (const { jobId, queueName, limit } of jobsToCheck) {
                     try {
-                        checkedJobs++;
-                        const payload = job.payload as any;
-                        const limit = payload?.limit;
-
-                        log.debug(`[FINALIZE] Checking job ${job.jobId} (queue: ${job.queueName}) - limit: ${limit}`);
-
-                        if (limit && typeof limit === 'number' && limit > 0) {
-                            jobsWithLimits++;
-                            log.debug(`[FINALIZE] Job ${job.jobId} has limit ${limit}, checking for finalization...`);
-
-                            const wasFinalized = await pm.checkAndFinalizeByLimit(job.jobId, job.queueName, limit);
+                        if (limit && limit > 0) {
+                            const wasFinalized = await pm.checkAndFinalizeByLimit(jobId, queueName, limit);
                             if (wasFinalized) {
                                 finalizedJobs++;
-                                log.info(`[FINALIZE] Job ${job.jobId} was finalized due to reaching limit ${limit}`);
-                            } else {
-                                log.debug(`[FINALIZE] Job ${job.jobId} not yet ready for finalization (limit: ${limit})`);
+                                log.info(`[FINALIZE] Job ${jobId} was finalized due to reaching limit ${limit}`);
                             }
-                        } else {
-                            log.warning(`[FINALIZE] Job ${job.jobId} has no valid limit, skipping finalization check`);
                         }
                     } catch (error) {
-                        log.error(`[FINALIZE] Error checking job ${job.jobId} for finalization: ${error}`);
+                        log.error(`[FINALIZE] Error checking job ${jobId} for finalization: ${error}`);
                     }
                 }
 
-                log.info(`[FINALIZE] Finalization check completed: ${checkedJobs} jobs checked, ${jobsWithLimits} with limits, ${finalizedJobs} finalized`);
+                if (finalizedJobs > 0) {
+                    log.info(`[FINALIZE] Finalization check completed: ${jobsToCheck.length} jobs checked, ${finalizedJobs} finalized`);
+                }
             } catch (error) {
                 log.error(`[FINALIZE] Error in periodic finalization check: ${error}`);
             }

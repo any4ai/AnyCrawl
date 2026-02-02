@@ -1,7 +1,7 @@
 import IORedis from "ioredis";
 import { Utils } from "../Utils.js";
-import { completedJob, failedJob, getDB, schemas, eq, sql } from "@anycrawl/db";
-import { log, CreditCalculator } from "@anycrawl/libs";
+import { completedJob, failedJob, getDB, getJob, schemas, eq, sql } from "@anycrawl/db";
+import { log, CreditCalculator, WebhookEventType } from "@anycrawl/libs";
 import type { QueueName } from "./Queue.js";
 import { BandwidthManager } from "./Bandwidth.js";
 
@@ -16,6 +16,10 @@ const REDIS_FIELDS = {
     CANCELLED: "cancelled",
     ENQUEUING: "enqueuing",
 } as const;
+
+// Redis hash for tracking jobs that need finalization check
+// Key: jobs:pending_finalize, Field: jobId, Value: queueName:limit
+const FINALIZE_CHECK_HASH = "jobs:pending_finalize";
 
 /**
  * Progress manager for crawl jobs using Redis counters
@@ -46,7 +50,8 @@ export class ProgressManager {
         try {
             const rawValue = await this.redis.hget(key, field);
             return Number(rawValue ?? 0);
-        } catch {
+        } catch (error) {
+            log.warning(`[PROGRESS] Failed to get field ${field} for job ${jobId}: ${error}`);
             return 0;
         }
     }
@@ -55,8 +60,8 @@ export class ProgressManager {
         const key = this.key(jobId);
         try {
             await this.redis.hsetnx(key, REDIS_FIELDS.STARTED_AT, new Date().toISOString());
-        } catch {
-            // ignore
+        } catch (error) {
+            log.warning(`[PROGRESS] Failed to set started_at for job ${jobId}: ${error}`);
         }
     }
 
@@ -67,8 +72,8 @@ export class ProgressManager {
         const key = this.key(jobId);
         try {
             await this.redis.del(key);
-        } catch {
-            // ignore
+        } catch (error) {
+            log.warning(`[PROGRESS] Failed to reset progress for job ${jobId}: ${error}`);
         }
     }
 
@@ -85,7 +90,8 @@ export class ProgressManager {
         try {
             const value = await this.redis.hget(key, REDIS_FIELDS.FINALIZED);
             return String(value ?? '0') === '1';
-        } catch {
+        } catch (error) {
+            log.warning(`[PROGRESS] Failed to check finalized status for job ${jobId}: ${error}`);
             return false;
         }
     }
@@ -95,7 +101,8 @@ export class ProgressManager {
         try {
             const value = await this.redis.hget(key, REDIS_FIELDS.CANCELLED);
             return String(value ?? '0') === '1';
-        } catch {
+        } catch (error) {
+            log.warning(`[PROGRESS] Failed to check cancelled status for job ${jobId}: ${error}`);
             return false;
         }
     }
@@ -104,7 +111,9 @@ export class ProgressManager {
         const key = this.key(jobId);
         try {
             await this.redis.hincrby(key, REDIS_FIELDS.ENQUEUING, 1);
-        } catch { }
+        } catch (error) {
+            log.warning(`[PROGRESS] Failed to begin enqueue for job ${jobId}: ${error}`);
+        }
     }
 
     public async endEnqueue(jobId: string): Promise<void> {
@@ -122,7 +131,9 @@ export class ProgressManager {
               end
             `;
             await this.redis.eval(lua, 1, key);
-        } catch { }
+        } catch (error) {
+            log.warning(`[PROGRESS] Failed to end enqueue for job ${jobId}: ${error}`);
+        }
     }
 
     public async getEnqueuing(jobId: string): Promise<number> {
@@ -155,7 +166,9 @@ export class ProgressManager {
                 ]);
                 return { done, enqueued };
             }
-        } catch { /* ignore and continue */ }
+        } catch (error) {
+            log.warning(`[PROGRESS] Failed to check finalized status in markPageDone for job ${jobId}: ${error}`);
+        }
         const res = await this.redis
             .multi()
             .hincrby(key, REDIS_FIELDS.DONE, 1)
@@ -191,6 +204,14 @@ export class ProgressManager {
                     if (jobLimit && done > jobLimit) {
                         shouldDeductCredits = false;
                         log.info(`[${queueNameForFinalize}] [${jobId}] Page ${done} exceeds limit ${jobLimit}, not deducting credits`);
+                    }
+
+                    // Add to finalize set when approaching limit (90% done)
+                    if (jobLimit && jobLimit > 0 && done >= jobLimit * 0.9 && queueNameForFinalize) {
+                        // Don't await - fire and forget to avoid blocking the transaction
+                        this.addToFinalizeSet(jobId, queueNameForFinalize, jobLimit).catch((err) => {
+                            log.warning(`[PROGRESS] Failed to add job ${jobId} to finalize set: ${err}`);
+                        });
                     }
 
                     // Calculate per-page cost using CreditCalculator
@@ -258,9 +279,13 @@ export class ProgressManager {
                     if (finalizeResult) {
                         log.info(`[${queueNameForFinalize}] [${jobId}] Job finalized successfully after credits exhausted`);
                     }
-                } catch { /* ignore finalize race */ }
+                } catch (error) {
+                    log.warning(`[PROGRESS] Failed to finalize job ${jobId} after credits exhausted: ${error}`);
+                }
             }
-        } catch { }
+        } catch (error) {
+            log.warning(`[PROGRESS] Failed to update DB counters for job ${jobId}: ${error}`);
+        }
         return { done, enqueued };
     }
 
@@ -334,20 +359,52 @@ export class ProgressManager {
 
             // Mark in DB: if no pages succeeded (completed = 0), mark as failed
             try {
+                const db = await getDB();
                 if (succeeded === 0) {
                     // If no pages succeeded, mark job as failed
                     await failedJob(jobId, "No pages were successfully processed", false, { total, completed: succeeded, failed });
                 } else {
-                    // Mark as completed with success status
+                    // Mark as completed with success status and set deductedAt
                     await completedJob(jobId, true, { total, completed: succeeded, failed });
+                    // Set deductedAt to mark crawl deduction as complete
+                    await db.update(schemas.jobs).set({
+                        deductedAt: new Date(),
+                    }).where(eq(schemas.jobs.jobId, jobId));
                 }
-            } catch {
-                // DB not configured or transient error; ignore to not block finalize
+            } catch (error) {
+                log.warning(`[PROGRESS] Failed to update job status in DB for job ${jobId}: ${error}`);
+            }
+
+            // Trigger webhook event for crawl completion/failure
+            try {
+                const dbJob = await getJob(jobId);
+                if (dbJob && process.env.ANYCRAWL_WEBHOOKS_ENABLED === "true") {
+                    const { WebhookManager } = await import("./Webhook.js");
+                    const eventType = succeeded === 0 ? WebhookEventType.CRAWL_FAILED : WebhookEventType.CRAWL_COMPLETED;
+                    await WebhookManager.getInstance().triggerEvent(
+                        eventType,
+                        {
+                            job_id: jobId,
+                            url: job?.data?.url,
+                            status: succeeded === 0 ? "failed" : "completed",
+                            total,
+                            succeeded,
+                            failed,
+                            started_at: fields[REDIS_FIELDS.STARTED_AT],
+                            finished_at: fields[REDIS_FIELDS.FINISHED_AT],
+                        },
+                        "crawl",
+                        jobId,
+                        dbJob.userId ?? undefined
+                    );
+                }
+            } catch (e) {
+                log.warning(`[${queueName}] [${jobId}] Failed to trigger webhook: ${e}`);
             }
             try {
                 await BandwidthManager.getInstance().flushJob(jobId);
-            } catch {
-                // ignore flush errors to avoid blocking finalize
+            } catch (error) {
+                log.warning(`[PROGRESS] Failed to flush bandwidth for job ${jobId}: ${error}`);
             }
             return true;
         }
@@ -368,8 +425,8 @@ export class ProgressManager {
                 .hset(key, REDIS_FIELDS.FINALIZED, '1')
                 .hset(key, REDIS_FIELDS.FINISHED_AT, now)
                 .exec();
-        } catch {
-            // ignore
+        } catch (error) {
+            log.warning(`[PROGRESS] Failed to cancel job ${jobId}: ${error}`);
         }
     }
 
@@ -385,8 +442,9 @@ export class ProgressManager {
                 this.isCancelled(jobId)
             ]);
 
-            // If already finalized or cancelled, no action needed
+            // If already finalized or cancelled, remove from finalize set and return
             if (finalized || cancelled) {
+                await this.removeFromFinalizeSet(jobId);
                 return false;
             }
 
@@ -396,6 +454,7 @@ export class ProgressManager {
                 const finalizeResult = await this.tryFinalize(jobId, queueName, {}, limit);
                 if (finalizeResult) {
                     log.info(`[${queueName}] [${jobId}] Job finalized successfully by limit check`);
+                    await this.removeFromFinalizeSet(jobId);
                 }
                 return finalizeResult;
             }
@@ -404,6 +463,55 @@ export class ProgressManager {
         } catch (error) {
             log.error(`[${queueName}] [${jobId}] Error in checkAndFinalizeByLimit: ${error}`);
             return false;
+        }
+    }
+
+    /**
+     * Add a job to the finalization check hash
+     * Jobs in this hash will be checked by the periodic finalization checker
+     */
+    async addToFinalizeSet(jobId: string, queueName: string, limit: number): Promise<void> {
+        try {
+            // Store as HASH: field=jobId, value=queueName:limit
+            await this.redis.hset(FINALIZE_CHECK_HASH, jobId, `${queueName}:${limit}`);
+        } catch (error) {
+            log.warning(`[PROGRESS] Failed to add job ${jobId} to finalize hash: ${error}`);
+        }
+    }
+
+    /**
+     * Remove a job from the finalization check hash (O(1) operation)
+     */
+    async removeFromFinalizeSet(jobId: string): Promise<void> {
+        try {
+            await this.redis.hdel(FINALIZE_CHECK_HASH, jobId);
+        } catch (error) {
+            log.warning(`[PROGRESS] Failed to remove job ${jobId} from finalize hash: ${error}`);
+        }
+    }
+
+    /**
+     * Get all jobs that need finalization check from Redis hash
+     * Returns array of { jobId, queueName, limit }
+     */
+    async getJobsToFinalize(): Promise<Array<{ jobId: string; queueName: string; limit: number }>> {
+        try {
+            const hash = await this.redis.hgetall(FINALIZE_CHECK_HASH);
+            const results: Array<{ jobId: string; queueName: string; limit: number }> = [];
+
+            for (const [jobId, value] of Object.entries(hash)) {
+                const parts = value.split(':');
+                const queueName = parts[0];
+                const limitStr = parts[1] ?? '0';
+                const limit = parseInt(limitStr, 10) || 0;
+                if (jobId && queueName) {
+                    results.push({ jobId, queueName, limit });
+                }
+            }
+            return results;
+        } catch (error) {
+            log.warning(`[PROGRESS] Failed to get jobs from finalize hash: ${error}`);
+            return [];
         }
     }
 }

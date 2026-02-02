@@ -1,6 +1,6 @@
 import { Response } from "express";
 import { z } from "zod";
-import { crawlSchema, RequestWithAuth, CrawlSchemaInput, CreditCalculator } from "@anycrawl/libs";
+import { crawlSchema, RequestWithAuth, CrawlSchemaInput, CreditCalculator, estimateTaskCredits } from "@anycrawl/libs";
 import { QueueManager, CrawlerErrorType, RequestTask, ProgressManager, AVAILABLE_ENGINES } from "@anycrawl/scrape";
 import { cancelJob, createJob, failedJob, getJob, getJobResultsPaginated, getJobResultsCount, STATUS, getTemplate } from "@anycrawl/db";
 import { log } from "@anycrawl/libs";
@@ -49,16 +49,22 @@ export class CrawlController {
 
             // Check if user has enough credits for the requested limit
             if (req.auth && process.env.ANYCRAWL_API_AUTH_ENABLED === "true" && process.env.ANYCRAWL_API_CREDITS_ENABLED === "true") {
-                const requestedLimit = jobPayload.options.limit;
                 const userCredits = req.auth.credits;
 
-                if (requestedLimit > userCredits) {
-                    const message = `Desired requested limit (${requestedLimit}) exceeds available credits (${userCredits}).`;
+                // Use estimateTaskCredits for accurate credit estimation
+                const estimatedCredits = defaultPrice + estimateTaskCredits('crawl', jobPayload);
+
+                if (estimatedCredits > userCredits) {
                     res.status(402).json({
                         success: false,
                         error: "Insufficient credits",
-                        message: message,
-                        current_credits: userCredits,
+                        message: `Estimated credits required (${estimatedCredits}) exceeds available credits (${userCredits}).`,
+                        details: {
+                            requested_limit: jobPayload.options.limit,
+                            template_credits: defaultPrice,
+                            estimated_total: estimatedCredits,
+                            available_credits: userCredits,
+                        }
                     });
                     return;
                 }

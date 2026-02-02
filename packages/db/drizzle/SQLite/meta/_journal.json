@@ -36,6 +36,13 @@
       "when": 1769408240848,
       "tag": "0004_fluffy_firestar",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1738368000000,
+      "tag": "0005_add_subscription_tier",
+      "breakpoints": true
     }
   ]
 }

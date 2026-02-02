@@ -13,6 +13,7 @@
         "start": "turbo run start",
         "start:api": "turbo run start --filter=api",
         "start:docs": "turbo run start --filter=docs",
+        "start:worker": "turbo run start --filter=@anycrawl/scrape",
         "test": "turbo run test",
         "test:watch": "turbo run test:watch",
         "test:coverage": "turbo run test:coverage",

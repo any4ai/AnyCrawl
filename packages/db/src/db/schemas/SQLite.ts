@@ -27,6 +27,8 @@ export const apiKey = p.sqliteTable("api_key", {
     expiresAt: p.integer("expires_at", { mode: "timestamp" }),
     // Allowed IP addresses whitelist (JSON array of IP addresses or CIDR ranges)
     allowedIps: p.text("allowed_ips", { mode: "json" }).$type<string[]>(),
+    // Subscription tier for rate limiting (free, paid, etc.)
+    subscriptionTier: p.text("subscription_tier").default("free").notNull(),
 });
 
 export const requestLog = p.sqliteTable("request_log", {
@@ -97,6 +99,8 @@ export const jobs = p.sqliteTable("jobs", {
     failed: p.integer("failed").notNull().default(0),
     // Number of credits consumed
     creditsUsed: p.integer("credits_used").notNull().default(0),
+    // Credit deduction timestamp (null = not yet deducted, set when deduction completes)
+    deductedAt: p.integer("deducted_at", { mode: "timestamp" }),
     // Network traffic usage (application layer bytes)
     trafficBytes: p.integer("traffic_bytes").notNull().default(0),
     trafficRequestBytes: p.integer("traffic_request_bytes").notNull().default(0),
@@ -217,8 +221,8 @@ export const scheduledTasks = p.sqliteTable("scheduled_tasks", {
         .$defaultFn(() => randomUUID()),
     // API key that created this task
     apiKey: p.text("api_key_id").references(() => apiKey.uuid),
-    // User ID (from api_key.user or api_key.uuid)
-    userId: p.text("user_id").notNull(),
+    // User ID (from api_key.user, can be null)
+    userId: p.text("user_id"),
     name: p.text("name").notNull(),
     description: p.text("description"),
     taskType: p.text("task_type").notNull(),
@@ -276,8 +280,8 @@ export const webhookSubscriptions = p.sqliteTable("webhook_subscriptions", {
         .$defaultFn(() => randomUUID()),
     // API key that created this webhook
     apiKey: p.text("api_key_id").references(() => apiKey.uuid),
-    // User ID (from api_key.user or api_key.uuid)
-    userId: p.text("user_id").notNull(),
+    // User ID (from api_key.user, can be null)
+    userId: p.text("user_id"),
     name: p.text("name").notNull(),
     description: p.text("description"),
     webhookUrl: p.text("webhook_url").notNull(),

@@ -2,13 +2,14 @@ import { Response } from "express";
 import { z } from "zod";
 import { SearchService } from "@anycrawl/search/SearchService";
 import { log } from "@anycrawl/libs/log";
-import { searchSchema, RequestWithAuth, CreditCalculator } from "@anycrawl/libs";
+import { searchSchema, RequestWithAuth, CreditCalculator, WebhookEventType, estimateTaskCredits } from "@anycrawl/libs";
 import { randomUUID } from "crypto";
 import { STATUS, createJob, insertJobResult, completedJob, failedJob, updateJobCounts, JOB_RESULT_STATUS } from "@anycrawl/db";
 import { QueueManager } from "@anycrawl/scrape";
 import { TemplateHandler, TemplateVariableMapper } from "../../utils/templateHandler.js";
 import { validateTemplateOnlyFields } from "../../utils/templateValidator.js";
 import { renderTextTemplate } from "../../utils/urlTemplate.js";
+import { triggerWebhookEvent } from "../../utils/webhookHelper.js";
 export class SearchController {
     private searchService: SearchService;
 
@@ -57,6 +58,28 @@ export class SearchController {
 
             // Validate and parse the merged data
             const validatedData = searchSchema.parse(requestData);
+
+            // Pre-check if user has enough credits
+            if (req.auth && process.env.ANYCRAWL_API_AUTH_ENABLED === "true" && process.env.ANYCRAWL_API_CREDITS_ENABLED === "true") {
+                const userCredits = req.auth.credits;
+
+                // Use estimateTaskCredits for accurate credit estimation
+                const estimatedCredits = defaultPrice + estimateTaskCredits('search', validatedData);
+
+                if (estimatedCredits > userCredits) {
+                    res.status(402).json({
+                        success: false,
+                        error: "Insufficient credits",
+                        message: `Estimated credits required (${estimatedCredits}) exceeds available credits (${userCredits}).`,
+                        details: {
+                            template_credits: defaultPrice,
+                            estimated_total: estimatedCredits,
+                            available_credits: userCredits,
+                        }
+                    });
+                    return;
+                }
+            }
 
             // Get actual engine name that will be used (resolved by SearchService)
             engineName = this.searchService.resolveEngine(validatedData.engine);
@@ -220,8 +243,36 @@ export class SearchController {
                         false,
                         { total: finalTotalTasks, completed: finalCompletedTasks, failed: finalFailedTasks }
                     );
+                    // Trigger webhook for search failure
+                    await triggerWebhookEvent(
+                        WebhookEventType.SEARCH_FAILED,
+                        searchJobId,
+                        {
+                            query: validatedData.query,
+                            status: "failed",
+                            error: `All tasks failed (${finalFailedTasks}/${finalTotalTasks})`,
+                            total: finalTotalTasks,
+                            completed: finalCompletedTasks,
+                            failed: finalFailedTasks,
+                        },
+                        "search"
+                    );
                 } else {
                     await completedJob(searchJobId, true, { total: finalTotalTasks, completed: finalCompletedTasks, failed: finalFailedTasks });
+                    // Trigger webhook for search completion
+                    await triggerWebhookEvent(
+                        WebhookEventType.SEARCH_COMPLETED,
+                        searchJobId,
+                        {
+                            query: validatedData.query,
+                            status: "completed",
+                            total: finalTotalTasks,
+                            completed: finalCompletedTasks,
+                            failed: finalFailedTasks,
+                            results_count: (results as any[]).length,
+                        },
+                        "search"
+                    );
                 }
             } catch (e) {
                 log.error(`Failed to mark job final status for job_id=${searchJobId}: ${e instanceof Error ? e.message : String(e)}`);

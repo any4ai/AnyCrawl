@@ -1,7 +1,19 @@
+import { getResolvedProxyMode, type ResolvedProxyMode } from "./proxy.js";
+
 /**
- * Resolved proxy mode for credit calculation
+ * Default credit values
  */
-export type ResolvedProxyMode = 'base' | 'stealth' | 'custom';
+const DEFAULT_PROXY_STEALTH_CREDITS = 2;
+const DEFAULT_EXTRACT_JSON_CREDITS = 0;
+
+/**
+ * Safely parse integer from environment variable with fallback
+ */
+function safeParseInt(value: string | undefined, defaultValue: number): number {
+    if (!value) return defaultValue;
+    const parsed = Number.parseInt(value, 10);
+    return Number.isFinite(parsed) ? parsed : defaultValue;
+}
 
 /**
  * Options for calculating scrape credits
@@ -35,39 +47,15 @@ export interface SearchCreditsOptions {
  */
 export class CreditCalculator {
     /**
-     * Get the resolved proxy mode name for credit calculation
-     */
-    static getResolvedProxyMode(proxyValue: string | undefined): ResolvedProxyMode {
-        if (!proxyValue || proxyValue === 'base') {
-            return 'base';
-        }
-
-        if (proxyValue === 'stealth') {
-            return 'stealth';
-        }
-
-        if (proxyValue === 'auto') {
-            const stealthProxyUrls = process.env.ANYCRAWL_PROXY_STEALTH_URL?.split(',').map(url => url.trim()).filter(Boolean) || [];
-            if (stealthProxyUrls.length > 0) {
-                return 'stealth';
-            }
-            return 'base';
-        }
-
-        // Custom URL
-        return 'custom';
-    }
-
-    /**
      * Get proxy credits (extra credits for stealth proxy)
      * - base: 0 credits
      * - stealth: configurable via ANYCRAWL_PROXY_STEALTH_CREDITS (default: 2)
      * - custom: 0 credits
      */
     static getProxyCredits(proxyValue: string | undefined): number {
-        const mode = this.getResolvedProxyMode(proxyValue);
+        const mode = getResolvedProxyMode(proxyValue);
         if (mode === 'stealth') {
-            return Number.parseInt(process.env.ANYCRAWL_PROXY_STEALTH_CREDITS || '2', 10);
+            return safeParseInt(process.env.ANYCRAWL_PROXY_STEALTH_CREDITS, DEFAULT_PROXY_STEALTH_CREDITS);
         }
         return 0;
     }
@@ -77,10 +65,10 @@ export class CreditCalculator {
      * Returns extra credits for JSON extraction, doubled if extract_source is 'html'
      */
     static getJsonExtractionCredits(options: ScrapeCreditsOptions): number {
-        const extractJsonCredits = Number.parseInt(process.env.ANYCRAWL_EXTRACT_JSON_CREDITS || '0', 10);
+        const extractJsonCredits = safeParseInt(process.env.ANYCRAWL_EXTRACT_JSON_CREDITS, DEFAULT_EXTRACT_JSON_CREDITS);
 
         const hasJsonOptions = Boolean(options.json_options) && options.formats?.includes('json');
-        if (!hasJsonOptions || !Number.isFinite(extractJsonCredits) || extractJsonCredits <= 0) {
+        if (!hasJsonOptions || extractJsonCredits <= 0) {
             return 0;
         }
 
@@ -103,14 +91,10 @@ export class CreditCalculator {
 
     /**
      * Calculate initial credits for a crawl job (first page)
-     * Formula: 1 (base) + proxy credits
-     * Note: JSON extraction credits are calculated per-page in Progress.ts
+     * Formula: Same as per-page (1 + proxy + JSON)
      */
     static calculateCrawlInitialCredits(options: CrawlCreditsOptions = {}): number {
-        const baseCredits = 1;
-        const proxyCredits = this.getProxyCredits(options.scrape_options?.proxy);
-
-        return baseCredits + proxyCredits;
+        return this.calculateCrawlPageCredits(options.scrape_options || {});
     }
 
     /**
@@ -141,12 +125,12 @@ export class CreditCalculator {
 
 // Export legacy functions for backward compatibility
 export function getResolvedProxyModeForCredits(proxyValue: string | undefined): ResolvedProxyMode {
-    return CreditCalculator.getResolvedProxyMode(proxyValue);
+    return getResolvedProxyMode(proxyValue);
 }
 
 export function getProxyCredits(proxyMode: ResolvedProxyMode): number {
     if (proxyMode === 'stealth') {
-        return Number.parseInt(process.env.ANYCRAWL_PROXY_STEALTH_CREDITS || '2', 10);
+        return safeParseInt(process.env.ANYCRAWL_PROXY_STEALTH_CREDITS, DEFAULT_PROXY_STEALTH_CREDITS);
     }
     return 0;
 }
@@ -157,6 +141,7 @@ export function calculateProxyCredits(proxyValue: string | undefined): number {
 
 /**
  * Pre-calculate (estimate) minimum credits required for a task before execution
+ * Uses CreditCalculator for accurate calculation
  */
 export function estimateTaskCredits(
     taskType: string,
@@ -166,7 +151,6 @@ export function estimateTaskCredits(
     }
 ): number {
     try {
-        let baseCredits = 1;
         let templateCredits = 0;
         let actualTaskType = taskType;
         let actualPayload = taskPayload;
@@ -182,20 +166,49 @@ export function estimateTaskCredits(
         }
 
         if (actualTaskType === "scrape") {
-            baseCredits = 1;
-        } else if (actualTaskType === "search") {
-            const pages = actualPayload.pages || 1;
-            baseCredits = pages;
-            if (actualPayload.scrape_options) {
-                const limit = actualPayload.limit || 10;
-                baseCredits += limit;
-            }
-        } else if (actualTaskType === "crawl") {
-            const limit = actualPayload.limit || actualPayload.options?.limit || 10;
-            baseCredits = limit;
+            const scrapeOptions = actualPayload.options || actualPayload;
+            return templateCredits + CreditCalculator.calculateScrapeCredits({
+                proxy: scrapeOptions.proxy,
+                json_options: scrapeOptions.json_options,
+                formats: scrapeOptions.formats,
+                extract_source: scrapeOptions.extract_source,
+            });
         }
 
-        return baseCredits + templateCredits;
+        if (actualTaskType === "search") {
+            const pages = actualPayload.pages || 1;
+            let scrapeCredits = 0;
+
+            if (actualPayload.scrape_options) {
+                const perScrapeCredits = CreditCalculator.calculateScrapeCredits({
+                    proxy: actualPayload.scrape_options.proxy,
+                    json_options: actualPayload.scrape_options.json_options,
+                    formats: actualPayload.scrape_options.formats,
+                    extract_source: actualPayload.scrape_options.extract_source,
+                });
+                const limit = actualPayload.limit || 10;
+                scrapeCredits = perScrapeCredits * limit;
+            }
+
+            return templateCredits + pages + scrapeCredits;
+        }
+
+        if (actualTaskType === "crawl") {
+            const limit = actualPayload.limit || actualPayload.options?.limit || 10;
+            const scrapeOptions = actualPayload.options?.scrape_options || actualPayload.scrape_options || {};
+
+            const perPageCredits = CreditCalculator.calculateCrawlPageCredits({
+                proxy: scrapeOptions.proxy,
+                json_options: scrapeOptions.json_options,
+                formats: scrapeOptions.formats,
+                extract_source: scrapeOptions.extract_source,
+            });
+
+            return templateCredits + (perPageCredits * limit);
+        }
+
+        // Unknown type, return conservative estimate
+        return templateCredits + 1;
     } catch (error) {
         console.error(`Error estimating task credits: ${error}`);
         return 1;

@@ -374,6 +374,39 @@ curl -X PUT "https://api.anycrawl.dev/v1/scheduled-tasks/:taskId" \
   }'
 ```
 
+### Response
+
+```json
+{
+  "success": true,
+  "data": {
+    "uuid": "550e8400-e29b-41d4-a716-446655440000",
+    "name": "Daily Tech News",
+    "description": "Updated description",
+    "task_type": "scrape",
+    "cron_expression": "0 10 * * *",
+    "timezone": "Asia/Shanghai",
+    "task_payload": {
+      "url": "https://news.ycombinator.com",
+      "engine": "cheerio",
+      "formats": ["markdown"]
+    },
+    "concurrency_mode": "skip",
+    "is_active": true,
+    "is_paused": false,
+    "next_execution_at": "2026-01-28T02:00:00.000Z",
+    "total_executions": 45,
+    "successful_executions": 43,
+    "failed_executions": 2,
+    "consecutive_failures": 0,
+    "last_execution_at": "2026-01-27T01:00:00.000Z",
+    "created_at": "2026-01-01T00:00:00.000Z",
+    "updated_at": "2026-01-27T12:00:00.000Z",
+    "icon": "FileText"
+  }
+}
+```
+
 <Callout type="info">
 Only include fields you want to update. All other fields will remain unchanged.
 </Callout>

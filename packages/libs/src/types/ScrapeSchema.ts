@@ -15,6 +15,7 @@ const pickedSchema = baseSchema.pick({
     wait_for_selector: true,
     include_tags: true,
     exclude_tags: true,
+    only_main_content: true,
     json_options: true,
     extract_source: true,
 });
@@ -34,6 +35,7 @@ export const scrapeSchema = pickedSchema.transform((data: z.infer<typeof pickedS
         wait_for_selector: data.wait_for_selector,
         include_tags: data.include_tags,
         exclude_tags: data.exclude_tags,
+        only_main_content: data.only_main_content,
         json_options: data.json_options,
         extract_source: data.extract_source,
     }
@@ -52,6 +54,7 @@ const templateScrapeInputSchema = baseSchema
         wait_for_selector: true,
         include_tags: true,
         exclude_tags: true,
+        only_main_content: true,
         json_options: true,
         extract_source: true,
     })

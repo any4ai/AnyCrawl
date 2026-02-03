@@ -198,10 +198,85 @@ export class DataExtractor {
     }
 
     /**
-     * Process HTML content to markdown
+     * Process HTML content to markdown with smart fallback and performance monitoring
      */
     processMarkdown(html: string): string {
-        return htmlToMarkdown(html);
+        const startTime = Date.now();
+        const inputSize = Buffer.byteLength(html, 'utf8');
+
+        // First attempt: convert HTML to markdown
+        let markdown = htmlToMarkdown(html);
+        let usedFallback = false;
+
+        // Smart fallback: if result is too short or empty, try with minimal filtering
+        const trimmedLength = markdown.trim().length;
+        const wordCount = markdown.trim().split(/\s+/).length;
+
+        if (trimmedLength < 100 || wordCount < 20) {
+            log.warning(`[processMarkdown] Main content extraction resulted in minimal content (${trimmedLength} chars, ${wordCount} words), attempting fallback`);
+
+            const fallbackStartTime = Date.now();
+
+            // Create a minimal HTML version (only remove scripts, styles, and comments)
+            const fallbackHtml = this.getFallbackHtml(html);
+            markdown = htmlToMarkdown(fallbackHtml);
+            usedFallback = true;
+
+            const fallbackDuration = Date.now() - fallbackStartTime;
+            const fallbackLength = markdown.trim().length;
+            const fallbackWordCount = markdown.trim().split(/\s+/).length;
+
+            if (fallbackLength === 0) {
+                log.error('[processMarkdown] Fallback extraction also resulted in empty content');
+            } else {
+                log.info(`[processMarkdown] Fallback extraction succeeded (${fallbackLength} chars, ${fallbackWordCount} words, ${fallbackDuration}ms)`);
+            }
+        }
+
+        // Performance metrics
+        const duration = Date.now() - startTime;
+        const outputSize = Buffer.byteLength(markdown, 'utf8');
+        const compressionRatio = inputSize > 0 ? (outputSize / inputSize * 100).toFixed(1) : '0.0';
+
+        // Structured performance log
+        log.debug(
+            `[markdown-extraction] duration=${duration}ms ` +
+            `inputSize=${inputSize}B outputSize=${outputSize}B ` +
+            `compressionRatio=${compressionRatio}% ` +
+            `wordCount=${wordCount} fallback=${usedFallback}`
+        );
+
+        // Performance threshold warning
+        const SLOW_CONVERSION_THRESHOLD = 1000; // 1 second
+        const LARGE_INPUT_THRESHOLD = 1024 * 1024; // 1MB
+
+        if (duration > SLOW_CONVERSION_THRESHOLD) {
+            log.warning(`[processMarkdown] Slow conversion detected: ${duration}ms for ${inputSize}B input`);
+        }
+
+        if (inputSize > LARGE_INPUT_THRESHOLD) {
+            log.info(`[processMarkdown] Large input detected: ${(inputSize / 1024 / 1024).toFixed(2)}MB`);
+        }
+
+        return markdown;
+    }
+
+    /**
+     * Get fallback HTML with minimal filtering (only remove definite non-content elements)
+     */
+    private getFallbackHtml(html: string): string {
+        // Use cheerio to parse and clean minimally
+        const $ = cheerio.load(html);
+
+        // Only remove these definite non-content elements
+        $('script, style, noscript, iframe').remove();
+
+        // Remove HTML comments
+        $('*').contents().filter(function (this: any) {
+            return this.type === 'comment';
+        }).remove();
+
+        return $.html();
     }
 
     /**
@@ -241,6 +316,7 @@ export class DataExtractor {
             const transformOptions: TransformOptions = {
                 include_tags: options.include_tags,
                 exclude_tags: options.exclude_tags,
+                only_main_content: options.only_main_content,
                 baseUrl: context.request.url,
                 transformRelativeUrls: true
             };

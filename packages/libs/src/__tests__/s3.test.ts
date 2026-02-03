@@ -33,6 +33,7 @@ describe("S3", () => {
 
     beforeAll(() => {
         // Set up environment variables before importing the module
+        process.env.ANYCRAWL_STORAGE = "s3";
         process.env.ANYCRAWL_S3_REGION = "us-east-1";
         process.env.ANYCRAWL_S3_ENDPOINT = "https://s3.amazonaws.com";
         process.env.ANYCRAWL_S3_ACCESS_KEY = "test-access-key";
@@ -55,6 +56,7 @@ describe("S3", () => {
 
     afterAll(() => {
         // Clean up environment variables
+        delete process.env.ANYCRAWL_STORAGE;
         delete process.env.ANYCRAWL_S3_REGION;
         delete process.env.ANYCRAWL_S3_ENDPOINT;
         delete process.env.ANYCRAWL_S3_ACCESS_KEY;

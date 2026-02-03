@@ -1,14 +1,199 @@
 import TurndownService from "turndown";
+// @ts-ignore - No types available for turndown-plugin-gfm
+import { gfm } from "turndown-plugin-gfm";
+
+// Performance monitoring flag (can be enabled via environment variable)
+const ENABLE_PERFORMANCE_MONITORING = process.env.ANYCRAWL_MARKDOWN_PERF === 'true';
+
+/**
+ * Performance metrics for markdown conversion
+ */
+interface ConversionMetrics {
+    preprocessDuration: number;
+    conversionDuration: number;
+    postProcessDuration: number;
+    totalDuration: number;
+    inputSize: number;
+    outputSize: number;
+}
+
+/**
+ * Pre-process HTML to normalize whitespace while preserving code blocks
+ */
+function preprocessHtml(html: string): string {
+    // Simple whitespace normalization
+    // Note: More aggressive normalization is done by Turndown itself
+    return html
+        .replace(/>\s+</g, '><')  // Remove whitespace between tags
+        .trim();
+}
+
+/**
+ * Post-process markdown to fix common issues
+ */
+function postProcessMarkdown(markdown: string): string {
+    let result = markdown;
+
+    // 1. Fix multiline links (escape newlines inside link text)
+    result = fixMultilineLinks(result);
+
+    // 2. Remove "Skip to Content" links
+    result = removeSkipToContentLinks(result);
+
+    // 3. Normalize excessive blank lines (max 2 consecutive)
+    result = result.replace(/\n{3,}/g, '\n\n');
+
+    // 4. Clean up whitespace inside link text
+    result = result.replace(/\[([^\]]+)\]/g, (match, text) => {
+        return '[' + text.replace(/\s+/g, ' ').trim() + ']';
+    });
+
+    // 5. Ensure proper spacing around images
+    result = result.replace(/([^\n])\n!\[/g, '$1\n\n![');  // Add blank line before images
+    result = result.replace(/!\[([^\]]*)\]\(([^\)]+)\)\n(?!\n)/g, '![$1]($2)\n\n');  // Add blank line after images
+
+    return result.trim();
+}
+
+/**
+ * Fix multiline links by escaping newlines inside link text
+ */
+function fixMultilineLinks(markdown: string): string {
+    let result = '';
+    let inLink = false;
+    let bracketCount = 0;
+
+    for (let i = 0; i < markdown.length; i++) {
+        const char = markdown[i];
+        const prevChar = i > 0 ? markdown[i - 1] : '';
+
+        if (char === '[' && prevChar !== '\\') {
+            bracketCount++;
+            inLink = true;
+        } else if (char === ']' && prevChar !== '\\') {
+            bracketCount--;
+            if (bracketCount === 0) inLink = false;
+        }
+
+        if (inLink && char === '\n') {
+            result += '\\n';  // Escape newlines inside links
+        } else {
+            result += char;
+        }
+    }
+
+    return result;
+}
+
+/**
+ * Remove "Skip to Content" links
+ */
+function removeSkipToContentLinks(markdown: string): string {
+    return markdown.replace(
+        /\[skip\s+to\s+(content|main)\]\(#[^\)]*\)/gi,
+        ''
+    );
+}
 
 export function htmlToMarkdown(html: string): string {
+    const metrics: Partial<ConversionMetrics> = {};
+    const startTime = ENABLE_PERFORMANCE_MONITORING ? Date.now() : 0;
+
+    if (ENABLE_PERFORMANCE_MONITORING) {
+        metrics.inputSize = Buffer.byteLength(html, 'utf8');
+    }
+
     // Pre-process HTML to clean up whitespace
-    html = html
-        .replace(/>\s+</g, '><')  // Remove whitespace between tags
-        .replace(/\s+/g, ' ')      // Normalize all whitespace to single spaces
-        .trim();
+    const preprocessStart = ENABLE_PERFORMANCE_MONITORING ? Date.now() : 0;
+    html = preprocessHtml(html);
+    if (ENABLE_PERFORMANCE_MONITORING) {
+        metrics.preprocessDuration = Date.now() - preprocessStart;
+    }
 
     const turndownService = new TurndownService({
-        preformattedCode: false,
+        headingStyle: 'atx',           // Use # style headings
+        hr: '---',                      // Horizontal rule style
+        bulletListMarker: '-',          // Unordered list marker
+        codeBlockStyle: 'fenced',       // Use fenced code blocks
+        fence: '```',                   // Code block fence
+        emDelimiter: '_',               // Italic delimiter
+        strongDelimiter: '**',          // Bold delimiter
+        linkStyle: 'inlined',           // Inline link style
+        linkReferenceStyle: 'full',     // Link reference style
+        preformattedCode: true,         // ✅ Enable code block handling
+    });
+
+    // Enable GitHub Flavored Markdown (tables, strikethrough, task lists)
+    turndownService.use(gfm);
+
+    // Custom rule for <pre><code> blocks with language detection
+    turndownService.addRule('preCodeBlock', {
+        filter: function (node) {
+            return node.nodeName === 'PRE' &&
+                   node.firstChild?.nodeName === 'CODE';
+        },
+        replacement: function (content, node) {
+            const codeNode = node.firstChild as HTMLElement;
+            const className = codeNode?.getAttribute?.('class') || '';
+
+            // Extract language identifier from class
+            let language = '';
+            const langMatch = className.match(/language-(\w+)|lang-(\w+)/);
+            if (langMatch) {
+                language = langMatch[1] || langMatch[2] || '';
+            }
+
+            // Clean content (remove line numbers if present)
+            const cleanContent = content
+                .replace(/^\d+\s+/gm, '')  // Remove line numbers
+                .trim();
+
+            return '\n\n```' + language + '\n' + cleanContent + '\n```\n\n';
+        }
+    });
+
+    // Improved inline link rule
+    turndownService.addRule('inlineLink', {
+        filter: function (node, options) {
+            const element = node as HTMLElement;
+            return !!(
+                options.linkStyle === 'inlined' &&
+                node.nodeName === 'A' &&
+                element.getAttribute?.('href')
+            );
+        },
+        replacement: function (content, node) {
+            const element = node as HTMLElement;
+            const href = element.getAttribute?.('href')?.trim() || '';
+            const title = element.title ? ` "${element.title}"` : '';
+
+            // Clean link text
+            const cleanContent = content.replace(/\s+/g, ' ').trim();
+
+            // If link text is empty, use URL
+            const linkText = cleanContent || href;
+
+            return `[${linkText}](${href}${title})`;
+        },
+    });
+
+    // Improved image handling
+    turndownService.addRule('images', {
+        filter: 'img',
+        replacement: function (_content, node) {
+            const element = node as HTMLElement;
+            const alt = element.getAttribute?.('alt') || '';
+            const src = element.getAttribute?.('src') || '';
+            const title = element.getAttribute?.('title') || '';
+
+            // Skip empty images or inline SVG data URIs
+            if (!src || src.startsWith('data:image/svg')) {
+                return '';
+            }
+
+            const titlePart = title ? ` "${title}"` : '';
+            return `\n\n![${alt}](${src}${titlePart})\n\n`;
+        },
     });
 
     // Remove unnecessary elements that create noise
@@ -202,12 +387,35 @@ export function htmlToMarkdown(html: string): string {
 
 
     // Convert and clean up the result
+    const conversionStart = ENABLE_PERFORMANCE_MONITORING ? Date.now() : 0;
     let markdown = turndownService.turndown(html);
+    if (ENABLE_PERFORMANCE_MONITORING) {
+        metrics.conversionDuration = Date.now() - conversionStart;
+    }
+
+    // Apply legacy normalization functions
+    const postProcessStart = ENABLE_PERFORMANCE_MONITORING ? Date.now() : 0;
     markdown = normalizeBracketWrappedImages(markdown);
     markdown = normalizeLinkTextWhitespace(markdown);
 
-    // Collapse 3+ blank lines to at most 2 and trim
-    markdown = markdown.replace(/\n{3,}/g, '\n\n').trim();
+    // Apply new post-processing
+    markdown = postProcessMarkdown(markdown);
+
+    if (ENABLE_PERFORMANCE_MONITORING) {
+        metrics.postProcessDuration = Date.now() - postProcessStart;
+        metrics.totalDuration = Date.now() - startTime;
+        metrics.outputSize = Buffer.byteLength(markdown, 'utf8');
+
+        // Log performance metrics
+        console.debug(
+            `[html-to-markdown] ` +
+            `total=${metrics.totalDuration}ms ` +
+            `preprocess=${metrics.preprocessDuration}ms ` +
+            `conversion=${metrics.conversionDuration}ms ` +
+            `postprocess=${metrics.postProcessDuration}ms ` +
+            `input=${metrics.inputSize}B output=${metrics.outputSize}B`
+        );
+    }
 
     return markdown;
 }

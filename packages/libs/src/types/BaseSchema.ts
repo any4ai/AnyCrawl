@@ -129,6 +129,14 @@ export const baseSchema = z.object({
     exclude_tags: z.array(z.string()).optional(),
 
     /**
+     * Only extract main content, removing headers, footers, navigation, etc.
+     * When true, applies EXCLUDE_NON_MAIN_TAGS filtering
+     * When false, preserves full page structure
+     * Note: include_tags takes precedence over this option
+     */
+    only_main_content: z.boolean().default(true),
+
+    /**
      * The JSON options to be used for extracting structured data
      * If all nested fields are empty (empty strings or empty schema object),
      * treat as undefined so the request omits json_options entirely.

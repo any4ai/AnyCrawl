@@ -24,6 +24,7 @@ export {
 export * from './ProviderRegistry.js';
 
 export * from './agents/LLMExtract.js';
+export * from './agents/LLMSummary.js';
 
 // Also export config loader helpers for consumers (e.g., scrape worker startup)
 export { ensureAIConfigLoaded, getAIConfig } from './utils/config.js';

@@ -27,6 +27,7 @@ export const SCRAPE_FORMATS = [
     "screenshot@fullPage",
     "rawHtml",
     "json",
+    "summary",
 ] as const;
 
 export const EXTRACT_SOURCES = [

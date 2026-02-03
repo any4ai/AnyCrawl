@@ -5,7 +5,7 @@ import type { CrawlingContext } from "../types/engine.js";
 import { ScreenshotTransformer } from "./transformers/ScreenshotTransformer.js";
 import { convert } from "html-to-text"
 import * as cheerio from "cheerio";
-import { LLMExtract, getExtractModelId } from "@anycrawl/ai";
+import { LLMExtract, LLMSummary, getExtractModelId } from "@anycrawl/ai";
 
 export interface MetadataEntry {
     name: string;
@@ -53,6 +53,7 @@ export class DataExtractor {
     private htmlTransformer: HTMLTransformer;
     private screenshotTransformer: ScreenshotTransformer;
     private llmExtractMap: Map<string, LLMExtract> = new Map();
+    private llmSummaryMap: Map<string, LLMSummary> = new Map();
 
     constructor() {
         this.htmlTransformer = new HTMLTransformer();
@@ -74,6 +75,19 @@ export class DataExtractor {
             this.llmExtractMap.set(key, new LLMExtract(modelId));
         }
         return this.llmExtractMap.get(key)!;
+    }
+
+    /**
+     * Get LLM summary agent
+     * @param modelId - The model id, like "gpt-4o-mini"
+     * @returns LLM summary agent instance
+     */
+    getLLMSummaryAgent(modelId: string): LLMSummary {
+        const key = `summary_${modelId}`;
+        if (!this.llmSummaryMap.has(key)) {
+            this.llmSummaryMap.set(key, new LLMSummary(modelId));
+        }
+        return this.llmSummaryMap.get(key)!;
     }
 
     /**
@@ -324,7 +338,7 @@ export class DataExtractor {
 
             // Only generate transformHtml once if needed
             let htmlPromise: Promise<string> | undefined = undefined;
-            if (formats.includes("html") || formats.includes("markdown") || formats.includes("json")) {
+            if (formats.includes("html") || formats.includes("markdown") || formats.includes("json") || formats.includes("summary")) {
                 log.debug("[extractData] Start transformHtml (concurrent)");
                 htmlPromise = this.htmlTransformer.transformHtml($, context.request.url, transformOptions)
                     .then(result => {
@@ -336,8 +350,8 @@ export class DataExtractor {
             if (formats.includes("html")) {
                 formatTasks.html = htmlPromise!;
             }
-            // json need markdown
-            if (formats.includes("markdown") || formats.includes("json")) {
+            // json and summary need markdown
+            if (formats.includes("markdown") || formats.includes("json") || formats.includes("summary")) {
                 formatTasks.markdown = htmlPromise!.then(html => {
                     log.debug("[extractData] Start processMarkdown (after html)");
                     const md = this.processMarkdown(html);
@@ -400,6 +414,34 @@ export class DataExtractor {
                         } catch { }
                     }
                     return result.data;
+                })();
+            }
+            // summary format - generate summary using LLM
+            if (formats.includes("summary")) {
+                const modelId = getExtractModelId();
+                const extract_source = options.extract_source || "markdown";
+                log.info(`[summary] Resolved model: ${modelId}, extract source: ${extract_source}`);
+                formatTasks.summary = (async () => {
+                    let summaryContent: string;
+                    if (extract_source === "html") {
+                        summaryContent = await (htmlPromise ?? Promise.resolve(baseContent.rawHtml));
+                    } else {
+                        // Use markdown by default for better summary quality
+                        summaryContent = await (formatTasks.markdown ?? htmlPromise!.then(html => this.processMarkdown(html)));
+                    }
+                    const llmSummaryAgent = this.getLLMSummaryAgent(modelId);
+                    const summaryStart = Date.now();
+                    const result = await llmSummaryAgent.perform(summaryContent);
+                    const summaryDuration = Date.now() - summaryStart;
+
+                    const jobId = context.request.userData?.jobId ?? 'unknown';
+                    const queueName = context.request.userData?.queueName ?? 'unknown';
+                    const reqKey = (context.request as any).id || context.request.uniqueKey || 'unknown';
+                    const tokens = result.tokens || { input: 0, output: 0, total: 0 };
+                    const cost = typeof result.cost === 'number' ? result.cost : 0;
+
+                    log.info(`[${queueName}] [${jobId}] [summary] model=${modelId} url=${context.request.url} reqKey=${reqKey} tokens(input=${tokens.input}, output=${tokens.output}, total=${tokens.total}) cost=$${cost.toFixed(6)} duration=${summaryDuration}ms`);
+                    return result.summary;
                 })();
             }
             // All format tasks are executed concurrently, dependencies are handled by Promise chains

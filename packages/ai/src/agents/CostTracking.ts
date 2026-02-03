@@ -3,7 +3,7 @@ import { log } from "@anycrawl/libs";
 // Cost tracking class similar to Firecrawl
 class CostTracking {
     calls: {
-        type: "extract" | "batch" | "merge";
+        type: "extract" | "batch" | "merge" | "summary";
         metadata: Record<string, any>;
         cost: number;
         model: string;
@@ -21,7 +21,7 @@ class CostTracking {
     }
 
     public addCall(call: {
-        type: "extract" | "batch" | "merge";
+        type: "extract" | "batch" | "merge" | "summary";
         metadata: Record<string, any>;
         cost: number;
         model: string;

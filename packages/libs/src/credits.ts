@@ -5,6 +5,7 @@ import { getResolvedProxyMode, type ResolvedProxyMode } from "./proxy.js";
  */
 const DEFAULT_PROXY_STEALTH_CREDITS = 2;
 const DEFAULT_EXTRACT_JSON_CREDITS = 0;
+const DEFAULT_SUMMARY_CREDITS = 0;
 
 /**
  * Safely parse integer from environment variable with fallback
@@ -78,15 +79,31 @@ export class CreditCalculator {
     }
 
     /**
+     * Get summary credits
+     * Returns extra credits for summary generation
+     */
+    static getSummaryCredits(options: ScrapeCreditsOptions): number {
+        const summaryCredits = safeParseInt(process.env.ANYCRAWL_SUMMARY_CREDITS, DEFAULT_SUMMARY_CREDITS);
+
+        const hasSummary = options.formats?.includes('summary');
+        if (!hasSummary || summaryCredits <= 0) {
+            return 0;
+        }
+
+        return summaryCredits;
+    }
+
+    /**
      * Calculate total credits for a single scrape operation
-     * Formula: 1 (base) + proxy credits + JSON extraction credits
+     * Formula: 1 (base) + proxy credits + JSON extraction credits + summary credits
      */
     static calculateScrapeCredits(options: ScrapeCreditsOptions = {}): number {
         const baseCredits = 1;
         const proxyCredits = this.getProxyCredits(options.proxy);
         const jsonCredits = this.getJsonExtractionCredits(options);
+        const summaryCredits = this.getSummaryCredits(options);
 
-        return baseCredits + proxyCredits + jsonCredits;
+        return baseCredits + proxyCredits + jsonCredits + summaryCredits;
     }
 
     /**

@@ -183,16 +183,24 @@ export function htmlToMarkdown(html: string): string {
         replacement: function (_content, node) {
             const element = node as HTMLElement;
             const alt = element.getAttribute?.('alt') || '';
-            const src = element.getAttribute?.('src') || '';
             const title = element.getAttribute?.('title') || '';
 
+            // Check multiple source attributes (for lazy-loaded images)
+            // Priority: data-src > data-original > src
+            const dataSrc = element.getAttribute?.('data-src') || '';
+            const dataOriginal = element.getAttribute?.('data-original') || '';
+            const src = element.getAttribute?.('src') || '';
+
+            // Use the best available source
+            const imageSrc = dataSrc || dataOriginal || src;
+
             // Skip empty images or inline SVG data URIs
-            if (!src || src.startsWith('data:image/svg')) {
+            if (!imageSrc || imageSrc.startsWith('data:image/svg')) {
                 return '';
             }
 
             const titlePart = title ? ` "${title}"` : '';
-            return `\n\n![${alt}](${src}${titlePart})\n\n`;
+            return `\n\n![${alt}](${imageSrc}${titlePart})\n\n`;
         },
     });
 
@@ -305,6 +313,34 @@ export function htmlToMarkdown(html: string): string {
 
             const imageMd = content.trim(); // expected: ![alt](src)
             return isInvalidHref ? imageMd : `[${imageMd}](${href})`;
+        }
+    });
+
+    // Handle section elements - treat them like divs
+    turndownService.addRule('sections', {
+        filter: 'section',
+        replacement: function (content: string, node: Node) {
+            const trimmedContent = content.trim();
+            if (!trimmedContent) return '';
+
+            // Check if section contains block elements
+            const element = node as HTMLElement;
+            const hasBlockElements = element.querySelector('p, h1, h2, h3, h4, h5, h6, ul, ol, blockquote, pre, img');
+
+            // If inside an anchor, render inline to avoid line breaks inside links
+            let cursor: any = node as any;
+            while (cursor) {
+                if (cursor.nodeName === 'A') {
+                    return trimmedContent;
+                }
+                cursor = cursor.parentNode as any;
+            }
+
+            if (hasBlockElements) {
+                return '\n\n' + trimmedContent + '\n\n';
+            }
+            // Treat as inline, add space if needed
+            return trimmedContent + ' ';
         }
     });
 

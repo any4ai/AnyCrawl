@@ -62,6 +62,15 @@ const aggregated = await client.crawl(
 );
 // aggregated.data contains all results
 
+// Map (discover all URLs from a website)
+const mapResult = await client.map({
+    url: "https://anycrawl.dev",
+    limit: 100,
+    include_subdomains: false,
+    ignore_sitemap: false,
+});
+// mapResult.links contains all discovered URLs
+
 // Search (optionally enrich with scraping)
 const results = await client.search({
     query: "OpenAI ChatGPT",
@@ -186,6 +195,24 @@ await client.search({
 });
 ```
 
+### map(input)
+
+```ts
+await client.map({
+    url: "https://example.com",
+    limit: 100,
+    include_subdomains: false,
+    ignore_sitemap: false,
+});
+```
+
+Discovers all URLs from a website using multiple sources:
+- Sitemap parsing (sitemap.xml, robots.txt)
+- Search engine results (site: operator)
+- Page link extraction (HTML <a href> tags)
+
+Returns `MapResult` with `links` array containing `{ url, title?, description? }` objects.
+
 Notes:
 
 - scrape has no `scrape_options`.
@@ -221,5 +248,6 @@ Notes:
 - `crawl(input: CrawlRequest, pollIntervalSeconds?: number, timeoutMs?: number): Promise<CrawlAndWaitResult>`
 - `cancelCrawl(jobId: string): Promise<{ job_id: string; status: string }>`
 - `search(input: SearchRequest): Promise<SearchResult[]>`
+- `map(input: MapRequest): Promise<MapResult>`
 
 Type definitions are exported from `@anycrawl/js-sdk` for TypeScript users.

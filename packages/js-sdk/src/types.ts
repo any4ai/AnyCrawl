@@ -153,3 +153,21 @@ export type CrawlAndWaitResult = {
     data: any[];
 };
 
+// Map types
+export type MapLink = {
+    url: string;
+    title?: string;
+    description?: string;
+};
+
+export type MapRequest = {
+    url: string;
+    limit?: number;
+    include_subdomains?: boolean;
+    ignore_sitemap?: boolean;
+};
+
+export type MapResult = {
+    links: MapLink[];
+};
+

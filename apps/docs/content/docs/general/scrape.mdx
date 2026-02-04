@@ -170,7 +170,7 @@ print(result['data']['markdown'])
 | ------------------- | ------------------------ | -------- | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------- | --------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
 | `url`               | string                   | Yes      | -              | URL to scrape, must be a valid HTTP/HTTPS address                                                                                           |
 | `engine`            | enum                     | No       | `cheerio`      | Scraping engine type, options: `cheerio`, `playwright`, `puppeteer`                                                                         |
-| `formats`           | array                    | No       | `["markdown"]` | Output formats, options: `markdown`, `html`, `text`, `screenshot`, `screenshot@fullPage`, `rawHtml`, `json`, `summary`                      |
+| `formats`           | array                    | No       | `["markdown"]` | Output formats, options: `markdown`, `html`, `text`, `screenshot`, `screenshot@fullPage`, `rawHtml`, `json`, `summary`, `links`                      |
 | `timeout`           | number                   | No       | `30000`        | Timeout in milliseconds, default: 30000                                                                                                     |
 | `wait_for`          | number                   | No       | -              | Delay before extraction (ms); browser engines only; lower priority than `wait_for_selector`                                                 |
 | `wait_for_selector` | string, object, or array | No       | -              | Wait for one or multiple selectors (browser engines only). Accepts a CSS selector string, an object `{ selector: string, state?: "attached" | "visible" | "hidden" | "detached", timeout?: number }`, or an array mixing strings/objects. Each entry is awaited sequentially. Takes priority over `wait_for`. |
@@ -250,6 +250,13 @@ You can specify which data formats to include in the response using the `formats
 - **Description**: Uses AI to generate a concise summary of the web page content
 - **Use Case**: Quick content understanding, document summarization, content digests
 - **Recommended For**: News aggregation, research, content curation, generating abstracts
+
+#### `links`
+
+- **Description**: Extracts all links (URLs) from the page as an array of strings
+- **Use Case**: Link discovery, sitemap generation, crawling preparation, link analysis
+- **Features**: Automatically converts relative URLs to absolute URLs, removes duplicates and fragments
+- **Recommended For**: Building crawlers, analyzing site structure, discovering related pages
 
 ### JSON options object
 

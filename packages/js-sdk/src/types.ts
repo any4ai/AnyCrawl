@@ -2,7 +2,7 @@ export type ApiResponse<T> = { success: true; data: T } | { success: false; erro
 
 export type ExtractSource = 'html' | 'markdown';
 export type Engine = 'playwright' | 'cheerio' | 'puppeteer';
-export type ScrapeFormat = 'markdown' | 'html' | 'text' | 'screenshot' | 'screenshot@fullPage' | 'rawHtml' | 'json';
+export type ScrapeFormat = 'markdown' | 'html' | 'text' | 'screenshot' | 'screenshot@fullPage' | 'rawHtml' | 'json' | 'summary' | 'links';
 
 // Project-aligned JSON schema (@anycrawl/libs: jsonSchemaType)
 export type JSONSchema = {
@@ -66,6 +66,7 @@ export type ScrapeResultSuccess = {
     timestamp: string;
     screenshot?: string;
     'screenshot@fullPage'?: string;
+    links?: string[];
     /**
      * The proxy mode used for this request
      * - "base": Used ANYCRAWL_PROXY_URL (default)

@@ -1,4 +1,4 @@
-import { log } from "@anycrawl/libs"
+import { log, extractUrlsFromCheerio } from "@anycrawl/libs"
 import { htmlToMarkdown } from "@anycrawl/libs/html-to-markdown";
 import { HTMLTransformer, ExtractionOptions, TransformOptions } from "./transformers/HTMLTransformer.js";
 import type { CrawlingContext } from "../types/engine.js";
@@ -364,6 +364,12 @@ export class DataExtractor {
             }
             if (formats.includes("text")) {
                 formatTasks.text = Promise.resolve(convert(baseContent.rawHtml));
+            }
+            // links format - extract all links from the page using crawlee
+            if (formats.includes("links")) {
+                formatTasks.links = Promise.resolve(
+                    extractUrlsFromCheerio($, 'a[href]', context.request.url)
+                );
             }
             // Screenshot task is also concurrent
             if (page && (formats.includes("screenshot") || formats.includes("screenshot@fullPage"))) {

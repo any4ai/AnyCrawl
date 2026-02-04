@@ -28,6 +28,7 @@ export const SCRAPE_FORMATS = [
     "rawHtml",
     "json",
     "summary",
+    "links",
 ] as const;
 
 export const EXTRACT_SOURCES = [

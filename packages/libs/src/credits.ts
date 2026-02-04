@@ -43,6 +43,13 @@ export interface SearchCreditsOptions {
 }
 
 /**
+ * Options for calculating map credits
+ */
+export interface MapCreditsOptions {
+    search?: string;
+}
+
+/**
  * Centralized credit calculation class
  * Handles all credit calculations for scrape, crawl, and search operations
  */
@@ -138,6 +145,17 @@ export class CreditCalculator {
 
         return pageCredits + scrapeCredits;
     }
+
+    /**
+     * Calculate credits for a map operation
+     * Formula: 1 (base) + 1 if search engine is used
+     */
+    static calculateMapCredits(options: MapCreditsOptions = {}): number {
+        const baseCredits = 1;
+        // Add 1 credit if search engine is used
+        const searchCredits = options.search ? 1 : 0;
+        return baseCredits + searchCredits;
+    }
 }
 
 // Export legacy functions for backward compatibility
@@ -222,6 +240,12 @@ export function estimateTaskCredits(
             });
 
             return templateCredits + (perPageCredits * limit);
+        }
+
+        if (actualTaskType === "map") {
+            return templateCredits + CreditCalculator.calculateMapCredits({
+                search: actualPayload.search,
+            });
         }
 
         // Unknown type, return conservative estimate

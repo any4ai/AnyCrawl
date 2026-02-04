@@ -46,7 +46,7 @@ export interface SearchCreditsOptions {
  * Options for calculating map credits
  */
 export interface MapCreditsOptions {
-    search?: string;
+    // Map always uses search engine by default, no options needed
 }
 
 /**
@@ -148,13 +148,9 @@ export class CreditCalculator {
 
     /**
      * Calculate credits for a map operation
-     * Formula: 1 (base) + 1 if search engine is used
      */
-    static calculateMapCredits(options: MapCreditsOptions = {}): number {
-        const baseCredits = 1;
-        // Add 1 credit if search engine is used
-        const searchCredits = options.search ? 1 : 0;
-        return baseCredits + searchCredits;
+    static calculateMapCredits(_options: MapCreditsOptions = {}): number {
+        return 1;
     }
 }
 
@@ -243,9 +239,7 @@ export function estimateTaskCredits(
         }
 
         if (actualTaskType === "map") {
-            return templateCredits + CreditCalculator.calculateMapCredits({
-                search: actualPayload.search,
-            });
+            return templateCredits + CreditCalculator.calculateMapCredits({});
         }
 
         // Unknown type, return conservative estimate

@@ -72,3 +72,6 @@ AY_*.md
 
 # claude
 .claude/
+
+# Auto Claude data directory
+.auto-claude/

@@ -17,7 +17,6 @@ export interface MapLink {
  */
 export interface MapOptions {
     limit?: number;
-    search?: string;
     includeSubdomains?: boolean;
     ignoreSitemap?: boolean;
     searchService?: any;
@@ -44,6 +43,11 @@ export class MapService {
         const urlMap: Map<string, MapLink> = new Map();
         const baseUrl = new URL(url);
 
+        // Track source statistics
+        let sitemapCount = 0;
+        let searchCount = 0;
+        let pageLinksCount = 0;
+
         // Use global proxyConfiguration for all requests
         const resolvedProxyUrl = await proxyConfiguration.newUrl() ?? undefined;
         if (resolvedProxyUrl) {
@@ -54,21 +58,25 @@ export class MapService {
         if (!options.ignoreSitemap) {
             try {
                 const sitemapUrls = await this.getSitemapUrls(url, resolvedProxyUrl);
+                sitemapCount = sitemapUrls.length;
                 sitemapUrls.forEach(u => {
                     if (!urlMap.has(u)) {
                         urlMap.set(u, { url: u });
                     }
                 });
-                log.info(`[MapService] Found ${sitemapUrls.length} URLs from sitemap`);
+                log.info(`[MapService] Found ${sitemapCount} URLs from sitemap`);
             } catch (error) {
                 log.warning(`[MapService] Failed to get sitemap URLs: ${error instanceof Error ? error.message : String(error)}`);
             }
+        } else {
+            log.info(`[MapService] Sitemap parsing skipped (ignore_sitemap=true)`);
         }
 
-        // 2. Search engine URLs (if search query provided)
-        if (options.search && options.searchService) {
+        // 2. Search engine URLs (automatically search for indexed pages using site:domain)
+        if (options.searchService) {
             try {
-                const searchResults = await this.getSearchEngineUrls(url, options.search, options.searchService);
+                const searchResults = await this.getSearchEngineUrls(url, options.searchService, options.limit);
+                searchCount = searchResults.length;
                 searchResults.forEach(r => {
                     const existing = urlMap.get(r.url);
                     if (existing) {
@@ -78,15 +86,18 @@ export class MapService {
                         urlMap.set(r.url, r);
                     }
                 });
-                log.info(`[MapService] Found ${searchResults.length} URLs from search engine`);
+                log.info(`[MapService] Found ${searchCount} URLs from search engine`);
             } catch (error) {
                 log.warning(`[MapService] Failed to get search engine URLs: ${error instanceof Error ? error.message : String(error)}`);
             }
+        } else {
+            log.info(`[MapService] Search engine discovery skipped (no searchService provided)`);
         }
 
         // 3. Page link extraction
         try {
             const pageLinks = await this.getPageLinks(url, resolvedProxyUrl);
+            pageLinksCount = pageLinks.length;
             pageLinks.forEach(link => {
                 const existing = urlMap.get(link.url);
                 if (existing) {
@@ -96,22 +107,20 @@ export class MapService {
                     urlMap.set(link.url, link);
                 }
             });
-            log.info(`[MapService] Found ${pageLinks.length} URLs from page links`);
+            log.info(`[MapService] Found ${pageLinksCount} URLs from page links`);
         } catch (error) {
             log.warning(`[MapService] Failed to get page links: ${error instanceof Error ? error.message : String(error)}`);
         }
 
         // Filter, sort, limit
         let links = Array.from(urlMap.values());
+        const totalBeforeFilter = links.length;
         links = this.filterByDomain(links, baseUrl, options.includeSubdomains ?? false);
-
-        if (options.search) {
-            links = this.filterBySearch(links, options.search);
-        }
 
         links = links.slice(0, options.limit ?? 5000);
 
-        log.info(`[MapService] Returning ${links.length} URLs after filtering`);
+        // Log summary with source breakdown
+        log.info(`[MapService] Summary: sitemap=${sitemapCount}, search=${searchCount}, pageLinks=${pageLinksCount}, total=${totalBeforeFilter}, afterFilter=${links.length}`);
         return { links };
     }
 
@@ -154,20 +163,27 @@ export class MapService {
 
     /**
      * Source 2: Get URLs from search engine
-     * Uses site: operator to limit results to the domain
+     * Automatically uses site: operator to find indexed pages for the domain
+     * Uses the URL limit to calculate pages needed, then fetches concurrently
+     * Max 20 pages (200 results) to avoid excessive requests
      */
     private async getSearchEngineUrls(
         baseUrl: string,
-        search: string,
-        searchService: any
+        searchService: any,
+        urlLimit: number = 5000
     ): Promise<MapLink[]> {
         const hostname = new URL(baseUrl).hostname;
-        const query = `site:${hostname} ${search}`;
+        const query = `site:${hostname}`;
 
         try {
+            // Calculate search limit based on URL limit
+            // Each page returns ~10 results, max 20 pages (200 results)
+            const searchLimit = Math.min(urlLimit, 200);
+
             const results = await searchService.search('google', {
                 query,
-                limit: 100,
+                limit: searchLimit,
+                concurrent: true,
             });
 
             return results
@@ -273,37 +289,4 @@ export class MapService {
         return parts.slice(-2).join('.');
     }
 
-    /**
-     * Filter and sort URLs by search query relevance
-     * Simple scoring based on URL path and title/description matches
-     */
-    private filterBySearch(links: MapLink[], search: string): MapLink[] {
-        const searchTerms = search.toLowerCase().split(/\s+/).filter(Boolean);
-
-        const scored = links.map(link => {
-            let score = 0;
-            const urlLower = link.url.toLowerCase();
-            const titleLower = (link.title || '').toLowerCase();
-            const descLower = (link.description || '').toLowerCase();
-
-            for (const term of searchTerms) {
-                // URL path match (highest weight)
-                if (urlLower.includes(term)) score += 3;
-                // Title match
-                if (titleLower.includes(term)) score += 2;
-                // Description match
-                if (descLower.includes(term)) score += 1;
-            }
-
-            return { link, score };
-        });
-
-        // Sort by score descending, then by URL
-        scored.sort((a, b) => {
-            if (b.score !== a.score) return b.score - a.score;
-            return a.link.url.localeCompare(b.link.url);
-        });
-
-        return scored.map(s => s.link);
-    }
 }

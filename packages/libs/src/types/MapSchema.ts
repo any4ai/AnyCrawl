@@ -26,11 +26,6 @@ export const mapSchema = z.object({
     limit: z.number().min(1).max(50000).default(5000),
 
     /**
-     * Search query for filtering and search engine discovery
-     */
-    search: z.string().optional(),
-
-    /**
      * Include subdomain URLs
      */
     include_subdomains: z.boolean().default(false),

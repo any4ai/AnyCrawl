@@ -170,7 +170,7 @@ print(result['data']['markdown'])
 | ------------------- | ------------------------ | -------- | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------- | --------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
 | `url`               | string                   | Yes      | -              | URL to scrape, must be a valid HTTP/HTTPS address                                                                                           |
 | `engine`            | enum                     | No       | `cheerio`      | Scraping engine type, options: `cheerio`, `playwright`, `puppeteer`                                                                         |
-| `formats`           | array                    | No       | `["markdown"]` | Output formats, options: `markdown`, `html`, `text`, `screenshot`, `screenshot@fullPage`, `rawHtml`, `json`                                 |
+| `formats`           | array                    | No       | `["markdown"]` | Output formats, options: `markdown`, `html`, `text`, `screenshot`, `screenshot@fullPage`, `rawHtml`, `json`, `summary`                      |
 | `timeout`           | number                   | No       | `30000`        | Timeout in milliseconds, default: 30000                                                                                                     |
 | `wait_for`          | number                   | No       | -              | Delay before extraction (ms); browser engines only; lower priority than `wait_for_selector`                                                 |
 | `wait_for_selector` | string, object, or array | No       | -              | Wait for one or multiple selectors (browser engines only). Accepts a CSS selector string, an object `{ selector: string, state?: "attached" | "visible" | "hidden" | "detached", timeout?: number }`, or an array mixing strings/objects. Each entry is awaited sequentially. Takes priority over `wait_for`. |
@@ -244,6 +244,12 @@ You can specify which data formats to include in the response using the `formats
 - **Description**: Returns the original, unprocessed HTML source
 - **Use Case**: When you need the exact HTML as received from the server
 - **Recommended For**: Technical analysis, debugging, preserving original structure
+
+#### `summary`
+
+- **Description**: Uses AI to generate a concise summary of the web page content
+- **Use Case**: Quick content understanding, document summarization, content digests
+- **Recommended For**: News aggregation, research, content curation, generating abstracts
 
 ### JSON options object
 

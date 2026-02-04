@@ -46,19 +46,16 @@ export class MapController {
                 }
             }
 
-            // Execute map operation
+            // Execute map operation (always use search service for site: discovery)
             const result = await this.mapService.map(validatedData.url, {
                 limit: validatedData.limit,
-                search: validatedData.search,
                 includeSubdomains: validatedData.include_subdomains,
                 ignoreSitemap: validatedData.ignore_sitemap,
-                searchService: validatedData.search ? this.searchService : undefined,
+                searchService: this.searchService,
             });
 
             // Calculate credits
-            req.creditsUsed = CreditCalculator.calculateMapCredits({
-                search: validatedData.search,
-            });
+            req.creditsUsed = CreditCalculator.calculateMapCredits({});
 
             res.json({
                 success: true,

@@ -1,4 +1,5 @@
-import { log, extractUrlsFromCheerio } from "@anycrawl/libs"
+import { log } from "@anycrawl/libs"
+import { extractUrlsFromCheerio } from "crawlee"
 import { htmlToMarkdown } from "@anycrawl/libs/html-to-markdown";
 import { HTMLTransformer, ExtractionOptions, TransformOptions } from "./transformers/HTMLTransformer.js";
 import type { CrawlingContext } from "../types/engine.js";

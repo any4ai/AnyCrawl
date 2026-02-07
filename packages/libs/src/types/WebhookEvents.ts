@@ -23,14 +23,12 @@ export enum WebhookEventType {
     SEARCH_STARTED = "search.started",
     SEARCH_COMPLETED = "search.completed",
     SEARCH_FAILED = "search.failed",
-    SEARCH_CANCELLED = "search.cancelled",
 
     // Map job events
     MAP_CREATED = "map.created",
     MAP_STARTED = "map.started",
     MAP_COMPLETED = "map.completed",
     MAP_FAILED = "map.failed",
-    MAP_CANCELLED = "map.cancelled",
 
     // Scheduled task events
     TASK_EXECUTED = "task.executed",

@@ -893,7 +893,9 @@ export class SchedulerManager {
                 });
 
                 resultData = results;
-                creditsUsed = CreditCalculator.calculateSearchCredits({});
+                creditsUsed = CreditCalculator.calculateSearchCredits({
+                    pages: payload.pages,
+                });
                 isSuccess = true;
 
                 log.info(`[SCHEDULER] Search completed: ${results.length} results`);

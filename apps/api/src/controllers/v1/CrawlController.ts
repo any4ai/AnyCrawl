@@ -1,12 +1,13 @@
 import { Response } from "express";
 import { z } from "zod";
-import { crawlSchema, RequestWithAuth, CrawlSchemaInput, CreditCalculator, estimateTaskCredits } from "@anycrawl/libs";
+import { crawlSchema, RequestWithAuth, CrawlSchemaInput, CreditCalculator, estimateTaskCredits, WebhookEventType } from "@anycrawl/libs";
 import { QueueManager, CrawlerErrorType, RequestTask, ProgressManager, AVAILABLE_ENGINES } from "@anycrawl/scrape";
 import { cancelJob, createJob, failedJob, getJob, getJobResultsPaginated, getJobResultsCount, STATUS, getTemplate } from "@anycrawl/db";
 import { log } from "@anycrawl/libs";
 import { TemplateHandler } from "../../utils/templateHandler.js";
 import { validateTemplateOnlyFields } from "../../utils/templateValidator.js";
 import { renderUrlTemplate } from "../../utils/urlTemplate.js";
+import { triggerWebhookEvent } from "../../utils/webhookHelper.js";
 
 export class CrawlController {
     /**
@@ -85,6 +86,30 @@ export class CrawlController {
                 url: jobPayload.url,
                 req,
             });
+
+            // Trigger crawl.created webhook
+            await triggerWebhookEvent(
+                WebhookEventType.CRAWL_CREATED,
+                jobId,
+                {
+                    url: jobPayload.url,
+                    status: "created",
+                    engine: jobPayload.engine,
+                    limit: jobPayload.options.limit,
+                },
+                "crawl"
+            );
+
+            // Trigger crawl.started webhook
+            await triggerWebhookEvent(
+                WebhookEventType.CRAWL_STARTED,
+                jobId,
+                {
+                    url: jobPayload.url,
+                    status: "started",
+                },
+                "crawl"
+            );
 
             // Return immediately with job ID (async processing)
             res.json({
@@ -341,6 +366,17 @@ export class CrawlController {
                 // swallow queue cancellation error; DB status already set to cancelled and
                 // engines will stop on cancel flag
             }
+
+            // Trigger crawl.cancelled webhook
+            await triggerWebhookEvent(
+                WebhookEventType.CRAWL_CANCELLED,
+                jobId,
+                {
+                    url: job.url,
+                    status: "cancelled",
+                },
+                "crawl"
+            );
 
             res.status(200).json({
                 success: true,

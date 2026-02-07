@@ -606,6 +606,87 @@ export class ScheduledTasksController {
     };
 
     /**
+     * Cancel a single execution
+     *
+     * DELETE /v1/scheduled-tasks/:taskId/executions/:executionId
+     */
+    public cancelExecution = async (req: RequestWithAuth, res: Response): Promise<void> => {
+        try {
+            const { taskId, executionId } = req.params;
+            const apiKeyId = req.auth?.uuid;
+            const userId = req.auth?.user;
+
+            const db = await getDB();
+
+            // Verify task belongs to user/apiKey
+            const whereClause = userId
+                ? sql`${schemas.scheduledTasks.uuid} = ${taskId} AND ${schemas.scheduledTasks.userId} = ${userId}`
+                : apiKeyId
+                ? sql`${schemas.scheduledTasks.uuid} = ${taskId} AND ${schemas.scheduledTasks.apiKey} = ${apiKeyId}`
+                : sql`${schemas.scheduledTasks.uuid} = ${taskId}`;
+
+            const task = await db
+                .select()
+                .from(schemas.scheduledTasks)
+                .where(whereClause)
+                .limit(1);
+
+            if (!task.length) {
+                res.status(404).json({
+                    success: false,
+                    error: "Task not found",
+                });
+                return;
+            }
+
+            // Verify execution belongs to this task
+            const execution = await db
+                .select()
+                .from(schemas.taskExecutions)
+                .where(
+                    sql`${schemas.taskExecutions.uuid} = ${executionId}
+                        AND ${schemas.taskExecutions.scheduledTaskUuid} = ${taskId}`
+                )
+                .limit(1);
+
+            if (!execution.length) {
+                res.status(404).json({
+                    success: false,
+                    error: "Execution not found",
+                });
+                return;
+            }
+
+            // Cancel the execution
+            try {
+                const { SchedulerManager } = await import("@anycrawl/scrape");
+                const result = await SchedulerManager.getInstance().cancelExecution(executionId!);
+
+                if (result.success) {
+                    res.json({
+                        success: true,
+                        message: result.message,
+                    });
+                } else {
+                    res.status(400).json({
+                        success: false,
+                        error: result.message,
+                    });
+                }
+            } catch (error) {
+                log.error(`Failed to cancel execution: ${error}`);
+                res.status(500).json({
+                    success: false,
+                    error: "Failed to cancel execution",
+                    message: error instanceof Error ? error.message : "Unknown error",
+                });
+            }
+        } catch (error) {
+            this.handleError(error, res);
+        }
+    };
+
+    /**
      * Get execution history for a task
      */
     public executions = async (req: RequestWithAuth, res: Response): Promise<void> => {
@@ -639,16 +720,50 @@ export class ScheduledTasksController {
                 return;
             }
 
+            // Query executions with job metrics via LEFT JOIN
             const executions = await db
-                .select()
+                .select({
+                    // Execution fields
+                    uuid: schemas.taskExecutions.uuid,
+                    scheduledTaskUuid: schemas.taskExecutions.scheduledTaskUuid,
+                    executionNumber: schemas.taskExecutions.executionNumber,
+                    idempotencyKey: schemas.taskExecutions.idempotencyKey,
+                    status: schemas.taskExecutions.status,
+                    startedAt: schemas.taskExecutions.startedAt,
+                    completedAt: schemas.taskExecutions.completedAt,
+                    jobUuid: schemas.taskExecutions.jobUuid,
+                    errorMessage: schemas.taskExecutions.errorMessage,
+                    errorCode: schemas.taskExecutions.errorCode,
+                    errorDetails: schemas.taskExecutions.errorDetails,
+                    triggeredBy: schemas.taskExecutions.triggeredBy,
+                    scheduledFor: schemas.taskExecutions.scheduledFor,
+                    metadata: schemas.taskExecutions.metadata,
+                    createdAt: schemas.taskExecutions.createdAt,
+                    // Job metrics (from jobs table)
+                    creditsUsed: schemas.jobs.creditsUsed,
+                    itemsProcessed: schemas.jobs.total,
+                    itemsSucceeded: schemas.jobs.completed,
+                    itemsFailed: schemas.jobs.failed,
+                    jobStatus: schemas.jobs.status,
+                    jobSuccess: schemas.jobs.isSuccess,
+                })
                 .from(schemas.taskExecutions)
+                .leftJoin(schemas.jobs, eq(schemas.taskExecutions.jobUuid, schemas.jobs.uuid))
                 .where(eq(schemas.taskExecutions.scheduledTaskUuid, taskId))
                 .orderBy(sql`${schemas.taskExecutions.createdAt} DESC`)
                 .limit(limit)
                 .offset(offset);
 
+            // Calculate duration_ms for each execution
+            const executionsWithDuration = executions.map((exec: any) => ({
+                ...exec,
+                durationMs: exec.startedAt && exec.completedAt
+                    ? exec.completedAt.getTime() - exec.startedAt.getTime()
+                    : null,
+            }));
+
             // Convert to snake_case
-            const serialized = serializeRecords(executions);
+            const serialized = serializeRecords(executionsWithDuration);
 
             // Add icon to each execution based on status
             const serializedWithIcons = serialized.map((execution: any) => ({

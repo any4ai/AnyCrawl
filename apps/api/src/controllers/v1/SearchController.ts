@@ -96,6 +96,29 @@ export class SearchController {
             });
             req.jobId = searchJobId;
 
+            // Trigger search.created webhook
+            await triggerWebhookEvent(
+                WebhookEventType.SEARCH_CREATED,
+                searchJobId,
+                {
+                    query: validatedData.query,
+                    status: "created",
+                    engine: engineName,
+                },
+                "search"
+            );
+
+            // Trigger search.started webhook
+            await triggerWebhookEvent(
+                WebhookEventType.SEARCH_STARTED,
+                searchJobId,
+                {
+                    query: validatedData.query,
+                    status: "started",
+                },
+                "search"
+            );
+
             const expectedPages = validatedData.pages || 1;
             let pagesProcessed = 0;
             let failedPages = 0;

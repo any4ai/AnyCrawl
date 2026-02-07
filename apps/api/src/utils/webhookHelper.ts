@@ -11,7 +11,7 @@ export async function triggerWebhookEvent(
     eventType: WebhookEventType,
     jobId: string,
     payload: Record<string, unknown>,
-    resourceType: "scrape" | "crawl" | "search" | "task"
+    resourceType: "scrape" | "crawl" | "search" | "task" | "map"
 ): Promise<void> {
     if (process.env.ANYCRAWL_WEBHOOKS_ENABLED !== "true") {
         return;

@@ -8,6 +8,93 @@ import { ProgressManager } from "./managers/Progress.js";
 import { ALLOWED_ENGINES, JOB_TYPE_CRAWL, JOB_TYPE_SCRAPE } from "@anycrawl/libs";
 import { ensureAIConfigLoaded } from "@anycrawl/ai/utils/config.js";
 import { refreshAIConfig, getDefaultLLModelId, getEnabledProviderModels } from "@anycrawl/ai/utils/helper.js";
+import { getDB, schemas, eq, sql } from "@anycrawl/db";
+
+// Helper function to update execution status
+// Note: Metrics (credits_used, items_processed, etc.) are stored in jobs table
+// and should be retrieved via JOIN when querying executions
+async function updateExecutionStatus(
+    executionUuid: string,
+    status: 'completed' | 'failed',
+    _job: Job,
+    error?: Error
+): Promise<void> {
+    try {
+        const db = await getDB();
+
+        log.info(`[EXECUTION] Updating execution ${executionUuid} to ${status}`);
+
+        const updateData: any = {
+            status,
+            completedAt: new Date(),
+        };
+
+        if (status === 'failed' && error) {
+            updateData.errorMessage = error.message;
+            // Extract error code from error name or use a default
+            updateData.errorCode = error.name || 'EXECUTION_ERROR';
+            // Store detailed error information
+            updateData.errorDetails = {
+                name: error.name,
+                message: error.message,
+                stack: error.stack,
+                timestamp: new Date().toISOString(),
+            };
+        }
+
+        await db
+            .update(schemas.taskExecutions)
+            .set(updateData)
+            .where(eq(schemas.taskExecutions.uuid, executionUuid));
+
+        // Update scheduled_tasks statistics based on execution result
+        // First get the execution to find the parent task
+        const execution = await db
+            .select({ scheduledTaskUuid: schemas.taskExecutions.scheduledTaskUuid })
+            .from(schemas.taskExecutions)
+            .where(eq(schemas.taskExecutions.uuid, executionUuid))
+            .limit(1);
+
+        if (execution.length > 0 && execution[0].scheduledTaskUuid) {
+            if (status === 'completed') {
+                // Increment successfulExecutions on success
+                await db
+                    .update(schemas.scheduledTasks)
+                    .set({
+                        successfulExecutions: sql`${schemas.scheduledTasks.successfulExecutions} + 1`,
+                        updatedAt: new Date(),
+                    })
+                    .where(eq(schemas.scheduledTasks.uuid, execution[0].scheduledTaskUuid));
+                log.info(`[EXECUTION] Incremented successfulExecutions for task ${execution[0].scheduledTaskUuid}`);
+            }
+            // Note: failedExecutions is already incremented in SchedulerManager when trigger fails
+        }
+
+        log.info(`[EXECUTION] Updated execution ${executionUuid} successfully`);
+    } catch (error) {
+        log.error(`[EXECUTION] Failed to update execution ${executionUuid}: ${error}`);
+    }
+}
+
+// Helper function to mark execution as started (when job actually begins processing)
+async function markExecutionStarted(executionUuid: string): Promise<void> {
+    try {
+        const db = await getDB();
+
+        log.info(`[EXECUTION] Marking execution ${executionUuid} as started`);
+
+        await db
+            .update(schemas.taskExecutions)
+            .set({
+                startedAt: new Date(),
+            })
+            .where(eq(schemas.taskExecutions.uuid, executionUuid));
+
+        log.info(`[EXECUTION] Marked execution ${executionUuid} as started`);
+    } catch (error) {
+        log.error(`[EXECUTION] Failed to mark execution ${executionUuid} as started: ${error}`);
+    }
+}
 
 // Parse command-line arguments for queue selection
 function parseQueueArgs(): { queues: string[], schedulerOnly: boolean } {
@@ -181,29 +268,80 @@ async function runJob(job: Job) {
         // Workers for scrape and crawl jobs (only if not scheduler-only mode)
         if (!schedulerOnly) {
             // Workers for scrape jobs
-            workers.push(
-                ...AVAILABLE_ENGINES.map((engineType: any) =>
-                    WorkerManager.getInstance().getWorker(`scrape-${engineType}`, async (job: Job) => {
+            const scrapeWorkers = await Promise.all(
+                AVAILABLE_ENGINES.map(async (engineType: any) => {
+                    const worker = await WorkerManager.getInstance().getWorker(`scrape-${engineType}`, async (job: Job) => {
+                        log.info(`[WORKER] Processing scrape job: ${job.id}`);
+                        log.info(`[WORKER]   Queue: scrape-${engineType}`);
+                        log.info(`[WORKER]   URL: ${job.data.url}`);
+                        log.info(`[WORKER]   Engine: ${job.data.engine}`);
+                        log.info(`[WORKER]   QueueName: ${job.data.queueName}`);
+                        log.info(`[WORKER]   Scheduled Task: ${job.data.scheduled_task_id || 'N/A'}`);
+
+                        // Mark execution as started when job actually begins processing
+                        if (job.data.scheduled_execution_id) {
+                            await markExecutionStarted(job.data.scheduled_execution_id);
+                        }
+
                         job.updateData({
                             ...job.data,
                             type: JOB_TYPE_SCRAPE,
                         });
                         await runJob(job);
-                    })
-                )
+                    });
+
+                    // Add event listeners for scheduled task executions
+                    worker.on('completed', async (job: Job) => {
+                        if (job.data.scheduled_execution_id) {
+                            await updateExecutionStatus(job.data.scheduled_execution_id, 'completed', job);
+                        }
+                    });
+
+                    worker.on('failed', async (job: Job | undefined, error: Error) => {
+                        if (job?.data.scheduled_execution_id) {
+                            await updateExecutionStatus(job.data.scheduled_execution_id, 'failed', job, error);
+                        }
+                    });
+
+                    return worker;
+                })
             );
+
+            workers.push(...scrapeWorkers);
             // Workers for crawl jobs
-            workers.push(
-                ...AVAILABLE_ENGINES.map((engineType: any) =>
-                    WorkerManager.getInstance().getWorker(`crawl-${engineType}`, async (job: Job) => {
+            const crawlWorkers = await Promise.all(
+                AVAILABLE_ENGINES.map(async (engineType: any) => {
+                    const worker = await WorkerManager.getInstance().getWorker(`crawl-${engineType}`, async (job: Job) => {
+                        // Mark execution as started when job actually begins processing
+                        if (job.data.scheduled_execution_id) {
+                            await markExecutionStarted(job.data.scheduled_execution_id);
+                        }
+
                         job.updateData({
                             ...job.data,
                             type: JOB_TYPE_CRAWL,
                         });
                         await runJob(job);
-                    })
-                )
+                    });
+
+                    // Add event listeners for scheduled task executions
+                    worker.on('completed', async (job: Job) => {
+                        if (job.data.scheduled_execution_id) {
+                            await updateExecutionStatus(job.data.scheduled_execution_id, 'completed', job);
+                        }
+                    });
+
+                    worker.on('failed', async (job: Job | undefined, error: Error) => {
+                        if (job?.data.scheduled_execution_id) {
+                            await updateExecutionStatus(job.data.scheduled_execution_id, 'failed', job, error);
+                        }
+                    });
+
+                    return worker;
+                })
             );
+
+            workers.push(...crawlWorkers);
         }
 
         await Promise.all(workers);

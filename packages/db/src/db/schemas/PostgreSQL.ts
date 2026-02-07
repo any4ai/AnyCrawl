@@ -259,12 +259,9 @@ export const taskExecutions = p.pgTable("task_executions", {
     status: p.text("status").default("pending").notNull(),
     startedAt: p.timestamp("started_at", { withTimezone: true }),
     completedAt: p.timestamp("completed_at", { withTimezone: true }),
-    durationMs: p.integer("duration_ms"),
     jobUuid: p.uuid("job_uuid").references(() => jobs.uuid),
-    creditsUsed: p.integer("credits_used").default(0).notNull(),
-    itemsProcessed: p.integer("items_processed").default(0).notNull(),
-    itemsSucceeded: p.integer("items_succeeded").default(0).notNull(),
-    itemsFailed: p.integer("items_failed").default(0).notNull(),
+    // Note: creditsUsed, itemsProcessed, itemsSucceeded, itemsFailed, durationMs
+    // are retrieved from jobs table via JOIN - removed to avoid data duplication
     errorMessage: p.text("error_message"),
     errorCode: p.text("error_code"),
     errorDetails: p.jsonb("error_details"),

@@ -429,6 +429,9 @@ importers:
       '@anycrawl/libs':
         specifier: workspace:*
         version: link:../libs
+      '@anycrawl/search':
+        specifier: workspace:*
+        version: link:../search
       '@anycrawl/template-client':
         specifier: workspace:*
         version: link:../template-client

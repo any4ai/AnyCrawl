@@ -258,12 +258,9 @@ export const taskExecutions = p.sqliteTable("task_executions", {
     status: p.text("status").default("pending").notNull(),
     startedAt: p.integer("started_at", { mode: "timestamp" }),
     completedAt: p.integer("completed_at", { mode: "timestamp" }),
-    durationMs: p.integer("duration_ms"),
     jobUuid: p.text("job_uuid").references(() => jobs.uuid),
-    creditsUsed: p.integer("credits_used").default(0).notNull(),
-    itemsProcessed: p.integer("items_processed").default(0).notNull(),
-    itemsSucceeded: p.integer("items_succeeded").default(0).notNull(),
-    itemsFailed: p.integer("items_failed").default(0).notNull(),
+    // Note: creditsUsed, itemsProcessed, itemsSucceeded, itemsFailed, durationMs
+    // are retrieved from jobs table via JOIN - removed to avoid data duplication
     errorMessage: p.text("error_message"),
     errorCode: p.text("error_code"),
     errorDetails: p.text("error_details", { mode: "json" }),

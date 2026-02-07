@@ -1,9 +1,12 @@
 import { Response } from "express";
 import { z } from "zod";
-import { mapSchema, RequestWithAuth, CreditCalculator, estimateTaskCredits } from "@anycrawl/libs";
+import { mapSchema, RequestWithAuth, CreditCalculator, estimateTaskCredits, WebhookEventType } from "@anycrawl/libs";
 import { log } from "@anycrawl/libs";
 import { MapService } from "@anycrawl/scrape";
 import { SearchService } from "@anycrawl/search/SearchService";
+import { randomUUID } from "crypto";
+import { createJob, completedJob, failedJob, STATUS } from "@anycrawl/db";
+import { triggerWebhookEvent } from "../../utils/webhookHelper.js";
 
 export class MapController {
     private mapService: MapService;
@@ -21,6 +24,7 @@ export class MapController {
     }
 
     public map = async (req: RequestWithAuth, res: Response): Promise<void> => {
+        let mapJobId: string | null = null;
         try {
             const requestData = { ...req.body };
 
@@ -46,6 +50,43 @@ export class MapController {
                 }
             }
 
+            // Create job for map request
+            mapJobId = randomUUID();
+            await createJob({
+                job_id: mapJobId,
+                job_type: "map",
+                job_queue_name: "map",
+                url: validatedData.url,
+                req,
+                status: STATUS.PENDING,
+            });
+            req.jobId = mapJobId;
+
+            // Trigger map.created webhook
+            await triggerWebhookEvent(
+                WebhookEventType.MAP_CREATED,
+                mapJobId,
+                {
+                    url: validatedData.url,
+                    status: "created",
+                    limit: validatedData.limit,
+                    include_subdomains: validatedData.include_subdomains,
+                    ignore_sitemap: validatedData.ignore_sitemap,
+                },
+                "map"
+            );
+
+            // Trigger map.started webhook
+            await triggerWebhookEvent(
+                WebhookEventType.MAP_STARTED,
+                mapJobId,
+                {
+                    url: validatedData.url,
+                    status: "started",
+                },
+                "map"
+            );
+
             // Execute map operation (always use search service for site: discovery)
             const result = await this.mapService.map(validatedData.url, {
                 limit: validatedData.limit,
@@ -56,6 +97,22 @@ export class MapController {
 
             // Calculate credits
             req.creditsUsed = CreditCalculator.calculateMapCredits({});
+
+            // Mark job as completed
+            await completedJob(mapJobId, true);
+
+            // Trigger map.completed webhook
+            await triggerWebhookEvent(
+                WebhookEventType.MAP_COMPLETED,
+                mapJobId,
+                {
+                    url: validatedData.url,
+                    status: "completed",
+                    total: result.links.length,
+                    credits_used: req.creditsUsed,
+                },
+                "map"
+            );
 
             res.json({
                 success: true,
@@ -84,6 +141,26 @@ export class MapController {
                 log.error(`[MapController] Error: ${message}`);
 
                 req.creditsUsed = 0;
+
+                // Mark job as failed and trigger webhook
+                if (mapJobId) {
+                    try {
+                        await failedJob(mapJobId, message);
+                        await triggerWebhookEvent(
+                            WebhookEventType.MAP_FAILED,
+                            mapJobId,
+                            {
+                                url: req.body.url,
+                                status: "failed",
+                                error_message: message,
+                            },
+                            "map"
+                        );
+                    } catch (webhookError) {
+                        log.error(`[MapController] Failed to trigger webhook: ${webhookError}`);
+                    }
+                }
+
                 res.status(500).json({
                     success: false,
                     error: "Internal server error",

@@ -34,6 +34,7 @@ router.patch("/scheduled-tasks/:taskId/pause", controllerWrapper(scheduledTasksC
 router.patch("/scheduled-tasks/:taskId/resume", controllerWrapper(scheduledTasksController.resume));
 router.delete("/scheduled-tasks/:taskId", controllerWrapper(scheduledTasksController.delete));
 router.get("/scheduled-tasks/:taskId/executions", controllerWrapper(scheduledTasksController.executions));
+router.delete("/scheduled-tasks/:taskId/executions/:executionId", controllerWrapper(scheduledTasksController.cancelExecution));
 
 // Webhooks routes
 router.post("/webhooks", controllerWrapper(webhooksController.create));

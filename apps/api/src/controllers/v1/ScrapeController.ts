@@ -1,12 +1,13 @@
 import { Response } from "express";
 import { z } from "zod";
-import { scrapeSchema, RequestWithAuth, CreditCalculator } from "@anycrawl/libs";
+import { scrapeSchema, RequestWithAuth, CreditCalculator, WebhookEventType } from "@anycrawl/libs";
 import { QueueManager, CrawlerErrorType, AVAILABLE_ENGINES } from "@anycrawl/scrape";
 import { STATUS, createJob, failedJob } from "@anycrawl/db";
 import { log } from "@anycrawl/libs";
 import { TemplateHandler, TemplateVariableMapper } from "../../utils/templateHandler.js";
 import { validateTemplateOnlyFields } from "../../utils/templateValidator.js";
 import { renderUrlTemplate } from "../../utils/urlTemplate.js";
+import { triggerWebhookEvent } from "../../utils/webhookHelper.js";
 export class ScrapeController {
     public handle = async (req: RequestWithAuth, res: Response): Promise<void> => {
         let jobId: string | null = null;
@@ -56,6 +57,30 @@ export class ScrapeController {
             });
             // Propagate jobId for downstream middlewares (e.g., credits logging)
             req.jobId = jobId;
+
+            // Trigger scrape.created webhook
+            await triggerWebhookEvent(
+                WebhookEventType.SCRAPE_CREATED,
+                jobId,
+                {
+                    url: jobPayload.url,
+                    status: "created",
+                    engine: engineName,
+                },
+                "scrape"
+            );
+
+            // Trigger scrape.started webhook
+            await triggerWebhookEvent(
+                WebhookEventType.SCRAPE_STARTED,
+                jobId,
+                {
+                    url: jobPayload.url,
+                    status: "started",
+                },
+                "scrape"
+            );
+
             // waiting job done
             const job = await QueueManager.getInstance().waitJobDone(`scrape-${engineName}`, jobId, jobPayload.options.timeout || 60_000);
             const { uniqueKey, queueName, options, engine, ...jobData } = job;
@@ -65,6 +90,19 @@ export class ScrapeController {
                 const message = job.message || "The scraping task could not be completed";
                 await QueueManager.getInstance().cancelJob(`scrape-${engineName}`, jobId);
                 await failedJob(jobId, message, false, { total: 1, completed: 0, failed: 1 });
+
+                // Trigger scrape.cancelled webhook
+                await triggerWebhookEvent(
+                    WebhookEventType.SCRAPE_CANCELLED,
+                    jobId,
+                    {
+                        url: jobPayload.url,
+                        status: "cancelled",
+                        error_message: message,
+                    },
+                    "scrape"
+                );
+
                 // Ensure no credits are deducted for failed scrape
                 req.creditsUsed = 0;
                 res.status(200).json({

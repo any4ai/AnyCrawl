@@ -13,10 +13,10 @@ import {
     ResponseStatus,
     CrawlerResponse
 } from "../types/crawler.js";
-import { insertJobResult, failedJob, completedJob } from "@anycrawl/db";
+import { insertJobResult, failedJob, completedJob, getDB, schemas, eq, sql } from "@anycrawl/db";
 import { JOB_RESULT_STATUS } from "../../../db/dist/map.js";
 import { ProgressManager } from "../managers/Progress.js";
-import { JOB_TYPE_CRAWL, JOB_TYPE_SCRAPE } from "@anycrawl/libs";
+import { JOB_TYPE_CRAWL, JOB_TYPE_SCRAPE, CreditCalculator } from "@anycrawl/libs";
 import type { RequestTrafficMetric } from "@anycrawl/libs";
 import { CrawlLimitReachedError } from "../errors/index.js";
 import type { CrawlingContext, EngineOptions } from "../types/engine.js";
@@ -1065,6 +1065,50 @@ export abstract class BaseEngine {
                     // Update counters + completed in one call
                     try {
                         await this.jobManager.markCompleted(jobId, queueName, data);
+
+                        // For scheduled task scrape jobs, calculate and update creditsUsed
+                        // (API-triggered scrape jobs are handled by DeductCreditsMiddleware)
+                        const isScheduledTask = !!context.request.userData.scheduled_task_id;
+                        if (isScheduledTask && process.env.ANYCRAWL_API_CREDITS_ENABLED === 'true') {
+                            const scrapeOptions = context.request.userData.options || {};
+                            const creditsUsed = CreditCalculator.calculateScrapeCredits({
+                                proxy: scrapeOptions.proxy,
+                                json_options: scrapeOptions.json_options,
+                                formats: scrapeOptions.formats,
+                                extract_source: scrapeOptions.extract_source,
+                            });
+
+                            // Update job creditsUsed and deduct from apiKey
+                            try {
+                                const db = await getDB();
+                                await db.transaction(async (tx: any) => {
+                                    // Update job creditsUsed
+                                    await tx.update(schemas.jobs).set({
+                                        creditsUsed: creditsUsed,
+                                        deductedAt: new Date(),
+                                        updatedAt: new Date(),
+                                    }).where(eq(schemas.jobs.jobId, jobId));
+
+                                    // Get apiKey from job and deduct credits
+                                    const [jobRow] = await tx
+                                        .select({ apiKey: schemas.jobs.apiKey })
+                                        .from(schemas.jobs)
+                                        .where(eq(schemas.jobs.jobId, jobId));
+
+                                    if (jobRow?.apiKey) {
+                                        await tx.update(schemas.apiKey).set({
+                                            credits: sql`${schemas.apiKey.credits} - ${creditsUsed}`,
+                                            lastUsedAt: new Date(),
+                                        }).where(eq(schemas.apiKey.uuid, jobRow.apiKey));
+
+                                        log.info(`[${queueName}] [${jobId}] Scheduled task scrape: deducted ${creditsUsed} credits`);
+                                    }
+                                });
+                            } catch (creditError) {
+                                log.error(`[${queueName}] [${jobId}] Failed to update credits for scheduled task scrape: ${creditError}`);
+                            }
+                        }
+
                         await completedJob(jobId, true, { total: 1, completed: 1, failed: 0 });
                         await BandwidthManager.getInstance().flushJob(jobId);
                     } catch { }

@@ -1,10 +1,10 @@
 import { log } from "crawlee";
-import { getDB, schemas, eq, sql } from "@anycrawl/db";
+import { getDB, schemas, eq, sql, completedJob, failedJob } from "@anycrawl/db";
 import { QueueManager } from "./Queue.js";
 import { randomUUID } from "crypto";
 import { Job, Queue } from "bullmq";
 import IORedis from "ioredis";
-import { WebhookEventType, estimateTaskCredits, isScheduledTasksLimitEnabled, getScheduledTasksLimit, buildAutoPauseReason } from "@anycrawl/libs";
+import { WebhookEventType, estimateTaskCredits, isScheduledTasksLimitEnabled, getScheduledTasksLimit, buildAutoPauseReason, CreditCalculator } from "@anycrawl/libs";
 import { CronExpressionParser } from "cron-parser";
 
 /**
@@ -194,6 +194,103 @@ export class SchedulerManager {
     }
 
     /**
+     * Cancel a single execution
+     *
+     * Cancels a scheduled task execution that is currently pending or running.
+     * This method will:
+     * 1. Validate the execution exists and is in a cancellable state (pending/running)
+     * 2. Attempt to remove the associated BullMQ job from the queue (best effort)
+     * 3. Update the execution status to "cancelled" in the database
+     * 4. Update the job status to "cancelled" if the job exists
+     *
+     * @param executionUuid - The UUID of the execution to cancel
+     * @returns Promise resolving to an object with:
+     *   - success: boolean indicating if the cancellation was successful
+     *   - message: string describing the result or error
+     *
+     * @example
+     * ```typescript
+     * const scheduler = SchedulerManager.getInstance();
+     * const result = await scheduler.cancelExecution('execution-uuid');
+     * if (result.success) {
+     *   console.log('Execution cancelled');
+     * } else {
+     *   console.error(result.message);
+     * }
+     * ```
+     */
+    public async cancelExecution(executionUuid: string): Promise<{ success: boolean; message: string }> {
+        try {
+            const db = await getDB();
+
+            // Find and validate execution
+            const executions = await db
+                .select()
+                .from(schemas.taskExecutions)
+                .where(eq(schemas.taskExecutions.uuid, executionUuid))
+                .limit(1);
+
+            if (executions.length === 0) {
+                return { success: false, message: `Execution not found` };
+            }
+
+            const execution = executions[0];
+
+            if (!["pending", "running"].includes(execution.status)) {
+                return { success: false, message: `Execution is already ${execution.status}` };
+            }
+
+            // Try to cancel BullMQ job (best effort)
+            if (execution.jobUuid) {
+                try {
+                    const jobs = await db
+                        .select()
+                        .from(schemas.jobs)
+                        .where(eq(schemas.jobs.uuid, execution.jobUuid))
+                        .limit(1);
+
+                    if (jobs.length > 0) {
+                        const queueManager = QueueManager.getInstance();
+                        const queue = queueManager.getQueue(jobs[0].jobQueueName);
+                        const bullmqJob = await queue.getJob(jobs[0].jobId);
+
+                        if (bullmqJob) {
+                            await bullmqJob.remove();
+                        }
+
+                        // Update job status
+                        await db
+                            .update(schemas.jobs)
+                            .set({ status: "cancelled", updatedAt: new Date() })
+                            .where(eq(schemas.jobs.uuid, execution.jobUuid));
+                    }
+                } catch (error) {
+                    log.warning(`[SCHEDULER] Failed to cancel BullMQ job: ${error}`);
+                }
+            }
+
+            // Update execution status
+            await db
+                .update(schemas.taskExecutions)
+                .set({
+                    status: "cancelled",
+                    completedAt: new Date(),
+                    errorMessage: "Cancelled by user",
+                })
+                .where(eq(schemas.taskExecutions.uuid, executionUuid));
+
+            log.info(`[SCHEDULER] Cancelled execution ${executionUuid}`);
+            return { success: true, message: "Execution cancelled successfully" };
+        } catch (error) {
+            log.error(`[SCHEDULER] Failed to cancel execution: ${error}`);
+            return {
+                success: false,
+                message: error instanceof Error ? error.message : String(error),
+            };
+        }
+    }
+
+    /**
      * Process a scheduled task job (called by the worker)
      * This is where the actual scheduling logic happens
      */
@@ -351,7 +448,7 @@ export class SchedulerManager {
 
             // Use transaction to ensure atomicity of execution record creation and job trigger
             // If triggerJob() fails, the execution record will be rolled back
-            let jobId: string = "";
+            let jobUuid: string = "";
 
             await db.transaction(async (tx: any) => {
                 // Create execution record
@@ -370,15 +467,17 @@ export class SchedulerManager {
                 log.info(`[SCHEDULER] 🚀 Executing task: ${task.name} (execution #${executionNumber})`);
 
                 // Trigger the actual scrape/crawl job (if this fails, transaction rolls back)
-                jobId = await this.triggerJob(task, executionUuid);
+                // Pass tx to ensure job creation happens in the same transaction
+                // Returns the job UUID (database primary key) for foreign key reference
+                jobUuid = await this.triggerJob(task, executionUuid, tx);
 
                 // Update execution with job UUID and status
+                // Note: startedAt will be set by Worker when job actually starts processing
                 await tx
                     .update(schemas.taskExecutions)
                     .set({
-                        jobUuid: jobId,
+                        jobUuid: jobUuid,
                         status: "running",
-                        startedAt: new Date(),
                     })
                     .where(eq(schemas.taskExecutions.uuid, executionUuid));
             });
@@ -406,7 +505,7 @@ export class SchedulerManager {
                 })
                 .where(eq(schemas.scheduledTasks.uuid, task.uuid));
 
-            log.info(`[SCHEDULER] ✅ Task ${task.name} triggered job ${jobId}`);
+            log.info(`[SCHEDULER] ✅ Task ${task.name} triggered job ${jobUuid}`);
 
             // Trigger webhook for task execution
             try {
@@ -420,7 +519,7 @@ export class SchedulerManager {
                             task_type: task.taskType,
                             execution_id: executionUuid,
                             execution_number: executionNumber,
-                            job_id: jobId,
+                            job_id: jobUuid,
                             status: "executed",
                         },
                         "task",
@@ -443,6 +542,14 @@ export class SchedulerManager {
                             status: "failed",
                             completedAt: new Date(),
                             errorMessage: error instanceof Error ? error.message : String(error),
+                            errorCode: error instanceof Error ? (error.name || 'SCHEDULER_ERROR') : 'SCHEDULER_ERROR',
+                            errorDetails: {
+                                name: error instanceof Error ? error.name : 'Error',
+                                message: error instanceof Error ? error.message : String(error),
+                                stack: error instanceof Error ? error.stack : undefined,
+                                timestamp: new Date().toISOString(),
+                                source: 'scheduler',
+                            },
                         })
                         .where(eq(schemas.taskExecutions.uuid, executionUuid));
                 } catch (updateError) {
@@ -566,10 +673,10 @@ export class SchedulerManager {
         }
     }
 
-    private async triggerJob(task: any, executionUuid: string): Promise<string> {
+    private async triggerJob(task: any, executionUuid: string, dbOrTx?: any): Promise<string> {
         const queueManager = QueueManager.getInstance();
         const payload = task.taskPayload;
-        const db = await getDB();
+        const db = dbOrTx || await getDB();
 
         let actualTaskType = task.taskType;
         let engine = payload.engine || "cheerio";
@@ -621,29 +728,268 @@ export class SchedulerManager {
         // Create queue name based on actual task type and engine
         const queueName = `${actualTaskType}-${engine}`;
 
-        // Get or create the queue
-        const queue = queueManager.getQueue(queueName);
-
         // Generate job ID
         const jobId = randomUUID();
 
-        // Add job to queue
-        await queue.add(
-            actualTaskType,
-            {
-                ...payload,
-                type: actualTaskType,
-                engine: engine,
-                scheduled_task_id: task.uuid,
-                scheduled_execution_id: executionUuid,
-                parentId: jobId,
-            },
+        // Extract URL from payload based on task type
+        let url = "scheduled-task";
+        if (payload.url) {
+            url = payload.url;
+            // Ensure URL has protocol
+            if (!url.startsWith('http://') && !url.startsWith('https://')) {
+                url = `https://${url}`;
+            }
+        } else if (payload.query) {
+            url = `search:${payload.query}`;
+        } else if (actualTaskType === "map" && payload.url) {
+            url = payload.url;
+            // Ensure URL has protocol
+            if (!url.startsWith('http://') && !url.startsWith('https://')) {
+                url = `https://${url}`;
+            }
+        }
+
+        // Handle search and map tasks synchronously (they don't have dedicated workers)
+        if (actualTaskType === "search" || actualTaskType === "map") {
+            return await this.executeSearchOrMapTask(
+                actualTaskType,
+                task,
+                payload,
+                jobId,
+                url,
+                executionUuid,
+                db
+            );
+        }
+
+        // For scrape/crawl tasks, add to queue for async processing
+        // Prepare job data - also fix URL in payload
+        const jobData = {
+            ...payload,
+            url: payload.url && !payload.url.startsWith('http://') && !payload.url.startsWith('https://')
+                ? `https://${payload.url}`
+                : payload.url,
+            type: actualTaskType,
+            engine: engine,
+            queueName: queueName,  // Add queueName field
+            scheduled_task_id: task.uuid,
+            scheduled_execution_id: executionUuid,
+            parentId: jobId,
+        };
+
+        // Add job to queue using QueueManager (like other controllers do)
+        log.info(`[SCHEDULER] Adding job to queue: ${queueName}`);
+        log.info(`[SCHEDULER]   Job ID: ${jobId}`);
+        log.info(`[SCHEDULER]   URL: ${jobData.url}`);
+        log.info(`[SCHEDULER]   Type: ${jobData.type}`);
+        log.info(`[SCHEDULER]   Engine: ${jobData.engine}`);
+        log.info(`[SCHEDULER]   QueueName: ${jobData.queueName}`);
+
+        await queueManager.getQueue(queueName).add(
+            queueName,  // Use queueName as job name
+            jobData,
             {
                 jobId: jobId,
+                attempts: 3,
+                backoff: {
+                    type: "exponential",
+                    delay: 1000,
+                },
             }
         );
 
-        return jobId;
+        log.info(`[SCHEDULER] Job added to BullMQ queue successfully`);
+
+        // Then create job record in database
+        // This ensures the foreign key constraint is satisfied when task_executions references this job
+        const insertedJob = await db.insert(schemas.jobs).values({
+            jobId: jobId,
+            jobType: actualTaskType,
+            jobQueueName: queueName,
+            jobExpireAt: new Date(Date.now() + 3 * 60 * 60 * 1000), // 3 hours default
+            url: url,
+            payload: payload,
+            status: "pending",
+            apiKey: task.apiKey,
+            userId: task.userId,
+            origin: "scheduled-task", // Origin is "scheduled-task" not "scheduler"
+            isSuccess: false,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+        }).returning({ uuid: schemas.jobs.uuid });
+
+        // Get the UUID of the inserted job (this is what task_executions.jobUuid references)
+        const jobUuid = insertedJob[0].uuid;
+
+        // Return the job UUID (not jobId) - this is what task_executions.jobUuid references
+        return jobUuid;
+    }
+
+    /**
+     * Execute search or map task synchronously
+     * These tasks don't have dedicated workers, so we execute them directly in the scheduler
+     */
+    private async executeSearchOrMapTask(
+        taskType: "search" | "map",
+        task: any,
+        payload: any,
+        jobId: string,
+        url: string,
+        executionUuid: string,
+        db: any
+    ): Promise<string> {
+        const startedAt = new Date();
+        let creditsUsed = 0;
+        let isSuccess = false;
+        let errorMessage: string | undefined;
+        let errorCode: string | undefined;
+        let errorDetails: any | undefined;
+        let resultData: any;
+
+        log.info(`[SCHEDULER] Executing ${taskType} task synchronously: ${task.name}`);
+        log.info(`[SCHEDULER]   Job ID: ${jobId}`);
+        log.info(`[SCHEDULER]   URL: ${url}`);
+
+        // Create job record first
+        const insertedJob = await db.insert(schemas.jobs).values({
+            jobId: jobId,
+            jobType: taskType,
+            jobQueueName: `${taskType}-sync`,
+            jobExpireAt: new Date(Date.now() + 1 * 60 * 60 * 1000), // 1 hour for sync tasks
+            url: url,
+            payload: payload,
+            status: "pending",
+            apiKey: task.apiKey,
+            userId: task.userId,
+            origin: "scheduled-task",
+            isSuccess: false,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+        }).returning({ uuid: schemas.jobs.uuid });
+
+        const jobUuid = insertedJob[0].uuid;
+
+        try {
+            if (taskType === "search") {
+                // Execute search task
+                // @ts-ignore - Dynamic import to avoid circular dependency
+                const { SearchService } = await import("@anycrawl/search");
+                const searchService = new SearchService({
+                    defaultEngine: process.env.ANYCRAWL_SEARCH_DEFAULT_ENGINE,
+                    enabledEngines: process.env.ANYCRAWL_SEARCH_ENABLED_ENGINES?.split(',').map(e => e.trim()),
+                    searxngUrl: process.env.ANYCRAWL_SEARXNG_URL,
+                    acEngineUrl: process.env.ANYCRAWL_AC_ENGINE_URL,
+                });
+
+                const results = await searchService.search(payload.engine, {
+                    query: payload.query,
+                    limit: payload.limit,
+                    offset: payload.offset,
+                    lang: payload.lang,
+                    country: payload.country,
+                    timeRange: payload.timeRange,
+                    sources: payload.sources,
+                    safe_search: payload.safe_search,
+                });
+
+                resultData = results;
+                creditsUsed = CreditCalculator.calculateSearchCredits({});
+                isSuccess = true;
+
+                log.info(`[SCHEDULER] Search completed: ${results.length} results`);
+
+            } else if (taskType === "map") {
+                // Execute map task
+                const { MapService } = await import("../services/MapService.js");
+                // @ts-ignore - Dynamic import to avoid circular dependency
+                const { SearchService } = await import("@anycrawl/search");
+
+                const mapService = new MapService();
+                const searchService = new SearchService({
+                    defaultEngine: process.env.ANYCRAWL_SEARCH_DEFAULT_ENGINE,
+                    enabledEngines: process.env.ANYCRAWL_SEARCH_ENABLED_ENGINES?.split(',').map(e => e.trim()),
+                    searxngUrl: process.env.ANYCRAWL_SEARXNG_URL,
+                    acEngineUrl: process.env.ANYCRAWL_AC_ENGINE_URL,
+                });
+
+                const mapUrl = payload.url?.startsWith('http://') || payload.url?.startsWith('https://')
+                    ? payload.url
+                    : `https://${payload.url}`;
+
+                const result = await mapService.map(mapUrl, {
+                    limit: payload.limit,
+                    includeSubdomains: payload.include_subdomains,
+                    ignoreSitemap: payload.ignore_sitemap,
+                    searchService: searchService,
+                });
+
+                resultData = result.links;
+                creditsUsed = CreditCalculator.calculateMapCredits({});
+                isSuccess = true;
+
+                log.info(`[SCHEDULER] Map completed: ${result.links.length} links`);
+            }
+
+            // Update job as completed
+            await completedJob(jobId, true, {
+                total: Array.isArray(resultData) ? resultData.length : 1,
+                completed: Array.isArray(resultData) ? resultData.length : 1,
+                failed: 0,
+            });
+
+        } catch (error) {
+            errorMessage = error instanceof Error ? error.message : String(error);
+            errorCode = error instanceof Error ? (error.name || 'SYNC_TASK_ERROR') : 'SYNC_TASK_ERROR';
+            errorDetails = {
+                name: error instanceof Error ? error.name : 'Error',
+                message: error instanceof Error ? error.message : String(error),
+                stack: error instanceof Error ? error.stack : undefined,
+                timestamp: new Date().toISOString(),
+                source: 'scheduler',
+                taskType: taskType,
+            };
+            log.error(`[SCHEDULER] ${taskType} task failed: ${errorMessage}`);
+
+            // Update job as failed
+            await failedJob(jobId, errorMessage, false, { total: 1, completed: 0, failed: 1 });
+        }
+
+        // Deduct credits if successful and credits are enabled
+        if (isSuccess && creditsUsed > 0 && process.env.ANYCRAWL_API_CREDITS_ENABLED === 'true' && task.apiKey) {
+            try {
+                await db.transaction(async (tx: any) => {
+                    // Update job creditsUsed
+                    await tx.update(schemas.jobs).set({
+                        creditsUsed: creditsUsed,
+                        deductedAt: new Date(),
+                        updatedAt: new Date(),
+                    }).where(eq(schemas.jobs.jobId, jobId));
+
+                    // Deduct from apiKey
+                    await tx.update(schemas.apiKey).set({
+                        credits: sql`${schemas.apiKey.credits} - ${creditsUsed}`,
+                        lastUsedAt: new Date(),
+                    }).where(eq(schemas.apiKey.uuid, task.apiKey));
+
+                    log.info(`[SCHEDULER] Deducted ${creditsUsed} credits for ${taskType} task`);
+                });
+            } catch (creditError) {
+                log.error(`[SCHEDULER] Failed to deduct credits: ${creditError}`);
+            }
+        }
+
+        // Update execution record with startedAt and completedAt
+        const completedAt = new Date();
+        await db.update(schemas.taskExecutions).set({
+            startedAt: startedAt,
+            completedAt: completedAt,
+            status: isSuccess ? "completed" : "failed",
+            errorMessage: errorMessage,
+            errorCode: errorCode,
+            errorDetails: errorDetails,
+        }).where(eq(schemas.taskExecutions.uuid, executionUuid));
+
+        return jobUuid;
     }
 
     /**
@@ -857,12 +1203,19 @@ export class SchedulerManager {
         try {
             const staleThreshold = new Date(Date.now() - 5 * 60 * 1000); // 5 minutes ago
 
+            // Case 1: Pending executions that never started (startedAt IS NULL)
             const result = await db
                 .update(schemas.taskExecutions)
                 .set({
                     status: "failed",
                     completedAt: new Date(),
                     errorMessage: "Auto-failed: Execution stuck in pending state (possible process crash or timeout)",
+                    errorCode: "STALE_PENDING_TIMEOUT",
+                    errorDetails: {
+                        reason: "pending_timeout",
+                        threshold_minutes: 5,
+                        timestamp: new Date().toISOString(),
+                    },
                 })
                 .where(
                     sql`${schemas.taskExecutions.status} = 'pending'
@@ -872,10 +1225,242 @@ export class SchedulerManager {
                 .returning({ uuid: schemas.taskExecutions.uuid });
 
             if (result.length > 0) {
-                log.warning(`[SCHEDULER] 🧹 Cleaned up ${result.length} stale pending execution(s)`);
+                log.warning(`[SCHEDULER] 🧹 Cleaned up ${result.length} stale pending execution(s) (never started)`);
             }
+
+            // Case 2: Pending executions that have startedAt but status never changed to running
+            // This can happen if worker crashed after markExecutionStarted but before status update
+            const stalePendingWithStart = await db
+                .update(schemas.taskExecutions)
+                .set({
+                    status: "failed",
+                    completedAt: new Date(),
+                    errorMessage: "Auto-failed: Execution stuck in pending state with startedAt set (worker crash)",
+                    errorCode: "STALE_PENDING_STARTED",
+                    errorDetails: {
+                        reason: "pending_started_timeout",
+                        threshold_minutes: 5,
+                        timestamp: new Date().toISOString(),
+                    },
+                })
+                .where(
+                    sql`${schemas.taskExecutions.status} = 'pending'
+                        AND ${schemas.taskExecutions.startedAt} IS NOT NULL
+                        AND ${schemas.taskExecutions.startedAt} < ${staleThreshold}`
+                )
+                .returning({ uuid: schemas.taskExecutions.uuid });
+
+            if (stalePendingWithStart.length > 0) {
+                log.warning(`[SCHEDULER] 🧹 Cleaned up ${stalePendingWithStart.length} stale pending execution(s) (started but stuck)`);
+            }
+
+            // Also cleanup stale running executions based on task type
+            await this.cleanupStaleRunningExecutions(db);
         } catch (error) {
             log.error(`[SCHEDULER] Error cleaning up stale executions: ${error}`);
+        }
+    }
+
+    /**
+     * Cleanup stale running executions based on task type
+     * Different task types have different timeout thresholds:
+     * - scrape: 30 minutes (single page should not take longer)
+     * - search: 1 hour (searches up to 200 results, each result may be scraped)
+     * - map: 30 minutes (sitemap + search discovery)
+     * - crawl: 1 hour since last job activity (checks jobs table for recent updates)
+     * - template: resolved to actual type from jobs.jobType
+     */
+    private async cleanupStaleRunningExecutions(db: Awaited<ReturnType<typeof getDB>>): Promise<void> {
+        try {
+            // Timeout thresholds in milliseconds
+            const SCRAPE_TIMEOUT_MS = 30 * 60 * 1000;  // 30 minutes
+            const SEARCH_TIMEOUT_MS = 60 * 60 * 1000;  // 1 hour (searches + scrapes multiple pages)
+            const MAP_TIMEOUT_MS = 30 * 60 * 1000;     // 30 minutes
+            const CRAWL_INACTIVITY_MS = 60 * 60 * 1000; // 1 hour of inactivity
+            const RUNNING_NO_START_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes for running without startedAt
+
+            const now = new Date();
+
+            // Case 0: Running executions that never had startedAt set (Worker never picked up the job)
+            // This can happen if Worker crashed, queue mismatch, or job was never processed
+            const runningNoStartThreshold = new Date(now.getTime() - RUNNING_NO_START_TIMEOUT_MS);
+            const staleRunningNoStart = await db
+                .update(schemas.taskExecutions)
+                .set({
+                    status: "failed",
+                    completedAt: now,
+                    errorMessage: "Auto-failed: Execution stuck in running state without startedAt (Worker never started processing)",
+                    errorCode: "RUNNING_NO_START_TIMEOUT",
+                    errorDetails: {
+                        reason: "running_no_start",
+                        threshold_minutes: Math.round(RUNNING_NO_START_TIMEOUT_MS / 60000),
+                        timestamp: now.toISOString(),
+                    },
+                })
+                .where(
+                    sql`${schemas.taskExecutions.status} = 'running'
+                        AND ${schemas.taskExecutions.startedAt} IS NULL
+                        AND ${schemas.taskExecutions.createdAt} < ${runningNoStartThreshold}`
+                )
+                .returning({ uuid: schemas.taskExecutions.uuid, scheduledTaskUuid: schemas.taskExecutions.scheduledTaskUuid });
+
+            if (staleRunningNoStart.length > 0) {
+                log.warning(`[SCHEDULER] 🧹 Cleaned up ${staleRunningNoStart.length} stale running execution(s) (never started)`);
+
+                // Update failedExecutions counter for affected tasks
+                for (const exec of staleRunningNoStart) {
+                    if (exec.scheduledTaskUuid) {
+                        await db
+                            .update(schemas.scheduledTasks)
+                            .set({
+                                failedExecutions: sql`${schemas.scheduledTasks.failedExecutions} + 1`,
+                                consecutiveFailures: sql`${schemas.scheduledTasks.consecutiveFailures} + 1`,
+                                updatedAt: now,
+                            })
+                            .where(eq(schemas.scheduledTasks.uuid, exec.scheduledTaskUuid));
+                    }
+                }
+            }
+
+            // Get all running executions with their task info and job type
+            // For template tasks, we need the actual job type from jobs table
+            const runningExecutions = await db
+                .select({
+                    executionUuid: schemas.taskExecutions.uuid,
+                    scheduledTaskUuid: schemas.taskExecutions.scheduledTaskUuid,
+                    jobUuid: schemas.taskExecutions.jobUuid,
+                    startedAt: schemas.taskExecutions.startedAt,
+                    taskType: schemas.scheduledTasks.taskType,
+                    jobType: schemas.jobs.jobType,
+                    jobUpdatedAt: schemas.jobs.updatedAt,
+                })
+                .from(schemas.taskExecutions)
+                .innerJoin(
+                    schemas.scheduledTasks,
+                    eq(schemas.taskExecutions.scheduledTaskUuid, schemas.scheduledTasks.uuid)
+                )
+                .leftJoin(
+                    schemas.jobs,
+                    eq(schemas.taskExecutions.jobUuid, schemas.jobs.uuid)
+                )
+                .where(eq(schemas.taskExecutions.status, "running"));
+
+            let cleanedCount = 0;
+
+            for (const execution of runningExecutions) {
+                // Skip if startedAt is null - these are handled by Case 0 above
+                if (!execution.startedAt) continue;
+
+                const runningTime = now.getTime() - new Date(execution.startedAt).getTime();
+                let shouldTimeout = false;
+                let timeoutReason = "";
+                let thresholdMinutes = 0;
+
+                // Determine actual task type:
+                // - For template tasks, use jobType from jobs table (the actual executed type)
+                // - Otherwise use taskType from scheduled_tasks
+                const scheduledTaskType = execution.taskType?.toLowerCase() || "scrape";
+                const actualTaskType = scheduledTaskType === "template"
+                    ? (execution.jobType?.toLowerCase() || "scrape")
+                    : scheduledTaskType;
+
+                if (actualTaskType === "crawl") {
+                    // For crawl tasks, check if there's been recent activity on the job
+                    if (execution.jobUuid && execution.jobUpdatedAt) {
+                        const lastActivity = new Date(execution.jobUpdatedAt).getTime();
+                        const inactiveTime = now.getTime() - lastActivity;
+
+                        if (inactiveTime > CRAWL_INACTIVITY_MS) {
+                            shouldTimeout = true;
+                            timeoutReason = "crawl_inactivity";
+                            thresholdMinutes = Math.round(CRAWL_INACTIVITY_MS / 60000);
+                        }
+                    } else if (runningTime > CRAWL_INACTIVITY_MS) {
+                        // No job found or no updatedAt, use running time
+                        shouldTimeout = true;
+                        timeoutReason = "crawl_no_activity";
+                        thresholdMinutes = Math.round(CRAWL_INACTIVITY_MS / 60000);
+                    }
+                } else if (actualTaskType === "search") {
+                    if (runningTime > SEARCH_TIMEOUT_MS) {
+                        shouldTimeout = true;
+                        timeoutReason = "search_timeout";
+                        thresholdMinutes = Math.round(SEARCH_TIMEOUT_MS / 60000);
+                    }
+                } else if (actualTaskType === "map") {
+                    if (runningTime > MAP_TIMEOUT_MS) {
+                        shouldTimeout = true;
+                        timeoutReason = "map_timeout";
+                        thresholdMinutes = Math.round(MAP_TIMEOUT_MS / 60000);
+                    }
+                } else {
+                    // scrape (default)
+                    if (runningTime > SCRAPE_TIMEOUT_MS) {
+                        shouldTimeout = true;
+                        timeoutReason = "scrape_timeout";
+                        thresholdMinutes = Math.round(SCRAPE_TIMEOUT_MS / 60000);
+                    }
+                }
+
+                if (shouldTimeout) {
+                    // Update execution to failed
+                    await db
+                        .update(schemas.taskExecutions)
+                        .set({
+                            status: "failed",
+                            completedAt: now,
+                            errorMessage: `Auto-failed: Execution timed out after ${thresholdMinutes} minutes (${timeoutReason})`,
+                            errorCode: "EXECUTION_TIMEOUT",
+                            errorDetails: {
+                                reason: timeoutReason,
+                                threshold_minutes: thresholdMinutes,
+                                running_time_ms: runningTime,
+                                scheduled_task_type: scheduledTaskType,
+                                actual_task_type: actualTaskType,
+                                timestamp: now.toISOString(),
+                            },
+                        })
+                        .where(eq(schemas.taskExecutions.uuid, execution.executionUuid));
+
+                    // Update scheduled_tasks failedExecutions counter
+                    if (execution.scheduledTaskUuid) {
+                        await db
+                            .update(schemas.scheduledTasks)
+                            .set({
+                                failedExecutions: sql`${schemas.scheduledTasks.failedExecutions} + 1`,
+                                consecutiveFailures: sql`${schemas.scheduledTasks.consecutiveFailures} + 1`,
+                                updatedAt: now,
+                            })
+                            .where(eq(schemas.scheduledTasks.uuid, execution.scheduledTaskUuid));
+                    }
+
+                    // Also update the associated job if exists
+                    if (execution.jobUuid) {
+                        await db
+                            .update(schemas.jobs)
+                            .set({
+                                status: "failed",
+                                errorMessage: `Execution timed out after ${thresholdMinutes} minutes`,
+                                isSuccess: false,
+                                updatedAt: now,
+                            })
+                            .where(eq(schemas.jobs.uuid, execution.jobUuid));
+                    }
+
+                    cleanedCount++;
+                    log.warning(
+                        `[SCHEDULER] 🧹 Timed out execution ${execution.executionUuid} ` +
+                        `(type: ${actualTaskType}${scheduledTaskType === "template" ? " (template)" : ""}, ` +
+                        `reason: ${timeoutReason}, running: ${Math.round(runningTime / 60000)}min)`
+                    );
+                }
+            }
+
+            if (cleanedCount > 0) {
+                log.warning(`[SCHEDULER] 🧹 Cleaned up ${cleanedCount} stale running execution(s)`);
+            }
+        } catch (error) {
+            log.error(`[SCHEDULER] Error cleaning up stale running executions: ${error}`);
         }
     }
 

@@ -167,6 +167,20 @@ export const baseSchema = z.object({
      * The source format to use for JSON extraction (html or markdown)
      */
     extract_source: z.enum(EXTRACT_SOURCES).default("markdown"),
+
+    /**
+     * Cache control: Maximum age of cached content in milliseconds.
+     * - undefined: Use default (2 days)
+     * - 0: Force refresh, skip cache
+     * - > 0: Accept cached content within this age
+     */
+    max_age: z.number().min(0).optional(),
+
+    /**
+     * Cache control: Whether to store the result in cache.
+     * Default is true.
+     */
+    store_in_cache: z.boolean().default(true),
 });
 
 export type BaseSchema = z.infer<typeof baseSchema>;

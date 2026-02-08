@@ -169,16 +169,29 @@ print(result['data']['markdown'])
 | Parameter           | Type                     | Required | Default        | Description                                                                                                                                 |
 | ------------------- | ------------------------ | -------- | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------- | --------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
 | `url`               | string                   | Yes      | -              | URL to scrape, must be a valid HTTP/HTTPS address                                                                                           |
+| `template_id`       | string                   | No       | -              | Template ID to use for this scrape                                                                                                          |
+| `variables`         | object                   | No       | -              | Template variables (only used when `template_id` is provided)                                                                               |
 | `engine`            | enum                     | No       | `cheerio`      | Scraping engine type, options: `cheerio`, `playwright`, `puppeteer`                                                                         |
 | `formats`           | array                    | No       | `["markdown"]` | Output formats, options: `markdown`, `html`, `text`, `screenshot`, `screenshot@fullPage`, `rawHtml`, `json`, `summary`, `links`                      |
 | `timeout`           | number                   | No       | `30000`        | Timeout in milliseconds, default: 30000                                                                                                     |
+| `retry`             | boolean                  | No       | `false`        | Whether to retry on failure                                                                                                                 |
+| `max_age`           | number                   | No       | -              | Cache max age (ms). Use `0` to skip cache read; omit to use server default                                                                     |
+| `store_in_cache`    | boolean                  | No       | `true`         | Whether to write Page Cache for this scrape                                                                                                  |
 | `wait_for`          | number                   | No       | -              | Delay before extraction (ms); browser engines only; lower priority than `wait_for_selector`                                                 |
+| `wait_until`        | enum                     | No       | -              | Navigation wait condition for browser engines: `load`, `domcontentloaded`, `networkidle`, `commit`                                           |
 | `wait_for_selector` | string, object, or array | No       | -              | Wait for one or multiple selectors (browser engines only). Accepts a CSS selector string, an object `{ selector: string, state?: "attached" | "visible" | "hidden" | "detached", timeout?: number }`, or an array mixing strings/objects. Each entry is awaited sequentially. Takes priority over `wait_for`. |
 | `include_tags`      | array                    | No       | -              | Include tags, like: `h1`                                                                                                                    |
 | `exclude_tags`      | array                    | No       | -              | Exclude tags, like: `h1`                                                                                                                    |
+| `only_main_content` | boolean                  | No       | `true`         | Only extract main content, removing headers, footers, navigation, etc. (`include_tags` takes precedence)                                     |
 | `proxy`             | string (URI)             | No       | -              | Proxy server address, format: `http://proxy:port` or `https://proxy:port`                                                                   |
 | `json_options`      | json                     | No       | -              | JSON options, like: `{"schema": {}, "prompt": true}`                                                                                        |
 | `extract_source`    | enum                     | No       | `markdown`     | Source to extract JSON from: `markdown` (default) or `html`                                                                                 |
+
+### Cache behavior
+
+- `max_age` controls cache reads. `0` forces a refresh.
+- `store_in_cache=false` skips cache writes.
+- On a cache hit, the response includes `cachedAt` and `maxAge` (ms).
 
 ### Engine Types
 
@@ -325,6 +338,21 @@ or
         "html": "<html><head><meta name=\"color-scheme\" content=\"light dark\"></head><body><pre style=\"word-wrap: break-word; white-space: pre-wrap;\">200 OK</pre></body></html>",
         "screenshot": "http://localhost:8080/v1/public/storage/file/screenshot-c9fb76c4-2d7b-41f9-9141-b9ec9af58b39.jpeg",
         "timestamp": "2025-07-01T04:38:02.951Z"
+    }
+}
+```
+
+#### Cache Hit Response
+
+```json
+{
+    "success": true,
+    "data": {
+        "url": "https://example.com",
+        "status": "completed",
+        "jobId": "c9fb76c4-2d7b-41f9-9141-b9ec9af58b39",
+        "cachedAt": "2026-02-08T12:34:56.000Z",
+        "maxAge": 172800000
     }
 }
 ```

@@ -101,6 +101,8 @@ export const jobs = p.sqliteTable("jobs", {
     creditsUsed: p.integer("credits_used").notNull().default(0),
     // Credit deduction timestamp (null = not yet deducted, set when deduction completes)
     deductedAt: p.integer("deducted_at", { mode: "timestamp" }),
+    // Number of cache hits recorded for this job
+    cacheHits: p.integer("cache_hits").notNull().default(0),
     // Network traffic usage (application layer bytes)
     trafficBytes: p.integer("traffic_bytes").notNull().default(0),
     trafficRequestBytes: p.integer("traffic_request_bytes").notNull().default(0),
@@ -329,4 +331,53 @@ export const webhookDeliveries = p.sqliteTable("webhook_deliveries", {
     nextRetryAt: p.integer("next_retry_at", { mode: "timestamp" }),
     createdAt: p.integer("created_at", { mode: "timestamp" }).notNull().$defaultFn(() => new Date()),
     deliveredAt: p.integer("delivered_at", { mode: "timestamp" }),
+});
+
+// Cache tables for storing scraped page data
+export const pageCache = p.sqliteTable("page_cache", {
+    uuid: p
+        .text("uuid")
+        .primaryKey()
+        .$defaultFn(() => randomUUID()),
+    // URL information
+    url: p.text("url").notNull(),
+    urlHash: p.text("url_hash").notNull(),
+    domain: p.text("domain").notNull(),
+    // S3 storage reference
+    s3Key: p.text("s3_key").notNull(),
+    contentHash: p.text("content_hash"),
+    // Metadata
+    title: p.text("title"),
+    description: p.text("description"),
+    statusCode: p.integer("status_code").notNull(),
+    contentType: p.text("content_type"),
+    contentLength: p.integer("content_length"),
+    // Options hash for cache key matching
+    optionsHash: p.text("options_hash").notNull(),
+    // Scrape configuration snapshot
+    engine: p.text("engine"),
+    isMobile: p.integer("is_mobile", { mode: "boolean" }).default(false),
+    hasProxy: p.integer("has_proxy", { mode: "boolean" }).default(false),
+    hasScreenshot: p.integer("has_screenshot", { mode: "boolean" }).default(false),
+    // Timestamps
+    scrapedAt: p.integer("scraped_at", { mode: "timestamp" }).notNull(),
+    createdAt: p.integer("created_at", { mode: "timestamp" }).notNull().$defaultFn(() => new Date()),
+});
+
+export const mapCache = p.sqliteTable("map_cache", {
+    uuid: p
+        .text("uuid")
+        .primaryKey()
+        .$defaultFn(() => randomUUID()),
+    // Domain information
+    domain: p.text("domain").notNull(),
+    domainHash: p.text("domain_hash").notNull(),
+    // Discovered URLs
+    urls: p.text("urls", { mode: "json" }).notNull().$type<Array<{ url: string; title?: string; description?: string }>>(),
+    urlCount: p.integer("url_count").notNull(),
+    // Source of discovery
+    source: p.text("source").notNull(), // 'sitemap' | 'search' | 'crawl'
+    // Timestamps
+    discoveredAt: p.integer("discovered_at", { mode: "timestamp" }).notNull(),
+    createdAt: p.integer("created_at", { mode: "timestamp" }).notNull().$defaultFn(() => new Date()),
 });

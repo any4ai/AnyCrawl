@@ -16,6 +16,7 @@ export const getJobResults = Job.getJobResults;
 export const getJobResultsPaginated = Job.getJobResultsPaginated;
 export const getJobResultsCount = Job.getJobResultsCount;
 export const updateJobCounts = Job.updateCounts;
+export const updateJobCacheHits = Job.updateCacheHits;
 export const addJobTraffic = Job.addTraffic;
 
 
@@ -34,7 +35,9 @@ export {
     scheduledTasks,
     taskExecutions,
     webhookSubscriptions,
-    webhookDeliveries
+    webhookDeliveries,
+    pageCache,
+    mapCache
 } from "./db/schemas/PostgreSQL.js";
 
 export { eq, and, gt, gte, sql, getDB, schemas, STATUS, JOB_RESULT_STATUS, Job };

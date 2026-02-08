@@ -2,6 +2,7 @@ import { Sitemap, RobotsTxtFile, gotScraping, extractUrlsFromCheerio } from "cra
 import * as cheerio from "cheerio";
 import { log } from "@anycrawl/libs";
 import proxyConfiguration from "../managers/Proxy.js";
+import { CacheManager } from "../managers/Cache.js";
 
 /**
  * Map link item with optional title and description
@@ -20,6 +21,8 @@ export interface MapOptions {
     includeSubdomains?: boolean;
     ignoreSitemap?: boolean;
     searchService?: any;
+    maxAge?: number;
+    useIndex?: boolean;
 }
 
 /**
@@ -27,6 +30,7 @@ export interface MapOptions {
  */
 export interface MapResult {
     links: MapLink[];
+    fromCache?: boolean;
 }
 
 /**
@@ -40,8 +44,22 @@ export class MapService {
      * Main entry point - combines all three sources
      */
     async map(url: string, options: MapOptions = {}): Promise<MapResult> {
-        const urlMap: Map<string, MapLink> = new Map();
+        const cacheManager = CacheManager.getInstance();
         const baseUrl = new URL(url);
+
+        // Check cache first (if max_age > 0 or undefined)
+        if (options.maxAge !== 0) {
+            const cached = await cacheManager.getMapFromCache(url, 'combined', options.maxAge);
+            if (cached) {
+                let links = cached.urls;
+                // Apply domain filter and limit
+                links = this.filterByDomain(links, baseUrl, options.includeSubdomains ?? false);
+                links = links.slice(0, options.limit ?? 5000);
+                return { links, fromCache: true };
+            }
+        }
+
+        const urlMap: Map<string, MapLink> = new Map();
 
         // Track source statistics
         let sitemapCount = 0;
@@ -112,6 +130,27 @@ export class MapService {
             log.warning(`[MapService] Failed to get page links: ${error instanceof Error ? error.message : String(error)}`);
         }
 
+        // 4. Page cache index (if enabled)
+        let indexCount = 0;
+        if (options.useIndex !== false) {
+            try {
+                const indexUrls = await cacheManager.getUrlsFromPageCacheIndex(url, options.limit);
+                indexCount = indexUrls.length;
+                indexUrls.forEach(link => {
+                    const existing = urlMap.get(link.url);
+                    if (existing) {
+                        existing.title = existing.title || link.title;
+                        existing.description = existing.description || link.description;
+                    } else {
+                        urlMap.set(link.url, link);
+                    }
+                });
+                log.info(`[MapService] Found ${indexCount} URLs from page cache index`);
+            } catch (error) {
+                log.warning(`[MapService] Failed to get URLs from page cache index: ${error instanceof Error ? error.message : String(error)}`);
+            }
+        }
+
         // Filter, sort, limit
         let links = Array.from(urlMap.values());
         const totalBeforeFilter = links.length;
@@ -120,7 +159,13 @@ export class MapService {
         links = links.slice(0, options.limit ?? 5000);
 
         // Log summary with source breakdown
-        log.info(`[MapService] Summary: sitemap=${sitemapCount}, search=${searchCount}, pageLinks=${pageLinksCount}, total=${totalBeforeFilter}, afterFilter=${links.length}`);
+        log.info(`[MapService] Summary: sitemap=${sitemapCount}, search=${searchCount}, pageLinks=${pageLinksCount}, index=${indexCount}, total=${totalBeforeFilter}, afterFilter=${links.length}`);
+
+        // Save to cache (save unfiltered results for reuse)
+        if (links.length > 0) {
+            await cacheManager.saveMapToCache(url, 'combined', Array.from(urlMap.values()));
+        }
+
         return { links };
     }
 

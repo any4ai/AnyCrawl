@@ -10,6 +10,7 @@
         "---Features---",
         "scrape",
         "crawl",
+        "cache",
         "search",
         "map",
         "json-mode",

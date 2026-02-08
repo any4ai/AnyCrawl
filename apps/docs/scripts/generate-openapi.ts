@@ -5,7 +5,7 @@ import { writeFileSync } from 'fs';
 import { join } from 'path';
 
 // Import real schemas from API workspace packages
-import { searchSchema, baseSchema, jsonOptionsSchema, ALLOWED_ENGINES, EXTRACT_SOURCES, crawlSchema } from '@anycrawl/libs';
+import { searchSchema, baseSchema, jsonOptionsSchema, ALLOWED_ENGINES, EXTRACT_SOURCES, crawlSchema, mapSchema } from '@anycrawl/libs';
 
 // Build request input schema from API baseSchema (avoid transformed schema that lacks .openapi)
 // Cast to any to allow .openapi chaining locally. We only need types for the generated document shape.
@@ -17,6 +17,11 @@ const scrapeInputSchema: any = (baseSchema as any).pick({
     timeout: true,
     retry: true,
     wait_for: true,
+    wait_until: true,
+    wait_for_selector: true,
+    only_main_content: true,
+    max_age: true,
+    store_in_cache: true,
     include_tags: true,
     exclude_tags: true,
     json_options: true,
@@ -84,6 +89,27 @@ const scrapeSchemaForOpenAPI = withOpenApi(
             description: 'Delay before processing (ms)',
             example: 1000
         }),
+        wait_until: withOpenApi((scrapeInputSchema as any).shape.wait_until, {
+            description: 'Navigation wait condition for browser engines',
+            example: 'networkidle'
+        }),
+        wait_for_selector: withOpenApi((scrapeInputSchema as any).shape.wait_for_selector, {
+            description: 'Wait for one or multiple selectors before extraction (browser engines only)'
+        }),
+        only_main_content: withOpenApi((scrapeInputSchema as any).shape.only_main_content, {
+            description: 'Only extract main content, removing headers, footers, navigation, etc.',
+            example: true,
+            default: true
+        }),
+        max_age: withOpenApi((scrapeInputSchema as any).shape.max_age, {
+            description: 'Cache max age (ms). Use 0 to skip cache reads; omit to use server default.',
+            example: 172800000
+        }),
+        store_in_cache: withOpenApi((scrapeInputSchema as any).shape.store_in_cache, {
+            description: 'Whether to write Page Cache for this scrape',
+            example: true,
+            default: true
+        }),
         include_tags: withOpenApi((scrapeInputSchema as any).shape.include_tags, {
             description: 'Only include elements with these CSS selectors',
             example: []
@@ -112,6 +138,10 @@ const scrapeOptionsForOpenAPI: any = (() => {
         formats: true,
         timeout: true,
         wait_for: true,
+        wait_for_selector: true,
+        only_main_content: true,
+        max_age: true,
+        store_in_cache: true,
         include_tags: true,
         exclude_tags: true,
         json_options: true,
@@ -136,6 +166,23 @@ const scrapeOptionsForOpenAPI: any = (() => {
                 description: 'Delay before processing (ms)',
                 example: 1000
             }),
+            wait_for_selector: withOpenApi((picked as any).shape.wait_for_selector, {
+                description: 'Wait for one or multiple selectors before extraction (browser engines only)'
+            }),
+            only_main_content: withOpenApi((picked as any).shape.only_main_content, {
+                description: 'Only extract main content, removing headers, footers, navigation, etc.',
+                example: true,
+                default: true
+            }),
+            max_age: withOpenApi((picked as any).shape.max_age, {
+                description: 'Cache max age (ms). Use 0 to skip cache reads; omit to use server default.',
+                example: 172800000
+            }),
+            store_in_cache: withOpenApi((picked as any).shape.store_in_cache, {
+                description: 'Whether to write Page Cache for per-URL scrapes',
+                example: true,
+                default: true
+            }),
             include_tags: withOpenApi((picked as any).shape.include_tags, {
                 description: 'Only include elements with these CSS selectors',
                 example: []
@@ -157,8 +204,80 @@ const scrapeOptionsForOpenAPI: any = (() => {
     );
 })();
 
+// Search enrichment scrape options (includes wait_until; omits only_main_content)
+const searchScrapeOptionsForOpenAPI: any = (() => {
+    const picked: any = (scrapeInputSchema as any).pick({
+        proxy: true,
+        formats: true,
+        timeout: true,
+        wait_for: true,
+        wait_until: true,
+        wait_for_selector: true,
+        max_age: true,
+        store_in_cache: true,
+        include_tags: true,
+        exclude_tags: true,
+        json_options: true,
+        extract_source: true,
+    });
+
+    return withOpenApi(
+        (picked as any).extend({
+            proxy: withOpenApi((picked as any).shape.proxy, {
+                description: 'Proxy URL to route the request through (e.g., http://user:pass@host:port)'
+            }),
+            formats: withOpenApi((picked as any).shape.formats, {
+                description: 'Output formats to return',
+                example: ['markdown']
+            }),
+            timeout: withOpenApi((picked as any).shape.timeout, {
+                description: 'Request timeout in milliseconds',
+                example: 60000,
+                default: 60000
+            }),
+            wait_for: withOpenApi((picked as any).shape.wait_for, {
+                description: 'Delay before processing (ms)',
+                example: 1000
+            }),
+            wait_until: withOpenApi((picked as any).shape.wait_until, {
+                description: 'Navigation wait condition for browser engines',
+                example: 'networkidle'
+            }),
+            wait_for_selector: withOpenApi((picked as any).shape.wait_for_selector, {
+                description: 'Wait for one or multiple selectors before extraction (browser engines only)'
+            }),
+            max_age: withOpenApi((picked as any).shape.max_age, {
+                description: 'Cache max age (ms). Use 0 to skip cache reads; omit to use server default.',
+                example: 172800000
+            }),
+            store_in_cache: withOpenApi((picked as any).shape.store_in_cache, {
+                description: 'Whether to write Page Cache for per-URL scrapes',
+                example: true,
+                default: true
+            }),
+            include_tags: withOpenApi((picked as any).shape.include_tags, {
+                description: 'Only include elements with these CSS selectors',
+                example: []
+            }),
+            exclude_tags: withOpenApi((picked as any).shape.exclude_tags, {
+                description: 'Exclude elements with these CSS selectors',
+                example: []
+            }),
+            json_options: withOpenApi((jsonOptionsSchemaForDocs as any).optional(), {
+                description: 'Advanced: JSON extraction options (optional). Leave empty to omit from request.'
+            }),
+            extract_source: z.enum(EXTRACT_SOURCES as any).openapi({
+                description: 'The source format to use for JSON extraction (html or markdown)',
+                example: 'markdown',
+                default: 'markdown'
+            })
+        }).partial(),
+        { description: 'Per-result scraping options used during search enrichment' }
+    );
+})();
+
 const searchSchemaForOpenAPI = withOpenApi(
-    (searchSchema as any).extend({
+    (searchSchema as any).omit({ template_id: true, variables: true }).extend({
         engine: withOpenApi((searchSchema as any).shape.engine, {
             description: 'The search engine to be used',
             example: 'google'
@@ -198,7 +317,7 @@ const searchSchemaForOpenAPI = withOpenApi(
         }),
         // Reuse crawl scrape options and add engine for search enrichment (no duplication)
         scrape_options: withOpenApi(
-            (scrapeOptionsForOpenAPI as any).extend({
+            (searchScrapeOptionsForOpenAPI as any).extend({
                 engine: z.enum(ALLOWED_ENGINES as any).openapi({
                     description: 'Scraping engine used to enrich each search result URL',
                     example: 'cheerio'
@@ -212,6 +331,73 @@ const searchSchemaForOpenAPI = withOpenApi(
     }),
     { description: 'Request schema for web search', example: { engine: 'google', query: 'OpenAI ChatGPT', limit: 10, offset: 0, pages: 1 } }
 );
+
+const mapSchemaForOpenAPI = withOpenApi(
+    (mapSchema as any).extend({
+        url: withOpenApi((mapSchema as any).shape.url, {
+            description: 'The URL to map',
+            example: 'https://example.com'
+        }),
+        limit: withOpenApi((mapSchema as any).shape.limit, {
+            description: 'Maximum number of URLs to return',
+            example: 5000,
+            default: 5000
+        }),
+        include_subdomains: withOpenApi((mapSchema as any).shape.include_subdomains, {
+            description: 'Include subdomain URLs',
+            example: false,
+            default: false
+        }),
+        ignore_sitemap: withOpenApi((mapSchema as any).shape.ignore_sitemap, {
+            description: 'Skip sitemap parsing',
+            example: false,
+            default: false
+        }),
+        max_age: withOpenApi((mapSchema as any).shape.max_age, {
+            description: 'Cache max age (ms). Use 0 to skip cache reads; omit to use server default.',
+            example: 172800000
+        }),
+        use_index: withOpenApi((mapSchema as any).shape.use_index, {
+            description: 'Whether to use Page Cache index for URL discovery',
+            example: true,
+            default: true
+        })
+    }),
+    { description: 'Request schema for mapping site URLs', example: { url: 'https://example.com', limit: 5000 } }
+);
+
+const mapLinkSchemaForOpenAPI = z.object({
+    url: z.string().url().openapi({
+        description: 'Discovered URL',
+        example: 'https://example.com/about'
+    }),
+    title: z.string().openapi({
+        description: 'Optional title for the URL',
+        example: 'About Us'
+    }).optional(),
+    description: z.string().openapi({
+        description: 'Optional description for the URL',
+        example: 'Company overview and mission'
+    }).optional(),
+});
+
+const mapSuccessResponseSchema = z.object({
+    success: z.literal(true).openapi({
+        description: 'Indicates the map request was successful'
+    }),
+    data: z.array(mapLinkSchemaForOpenAPI).openapi({
+        description: 'Array of discovered URLs',
+        example: [
+            {
+                url: 'https://example.com/',
+                title: 'Home',
+                description: 'Example homepage'
+            }
+        ]
+    })
+}).openapi({
+    description: 'Successful map response format containing discovered URLs'
+});
 
 // scrapeOptionsForOpenAPI defined above
 
@@ -305,6 +491,14 @@ const scrapeSuccessResponseSchema = z.object({
                 description: 'Additional metadata extracted from the page',
                 example: []
             }),
+            cachedAt: z.string().datetime().openapi({
+                description: 'When the cached content was stored (cache hit only)',
+                example: '2026-02-08T12:34:56.000Z'
+            }).optional(),
+            maxAge: z.number().openapi({
+                description: 'Cache max age used for the read (ms, cache hit only)',
+                example: 172800000
+            }).optional(),
             timestamp: z.string().datetime().openapi({
                 description: 'Timestamp when the scraping was completed',
                 example: '2025-05-25T07:56:44.162Z'
@@ -915,6 +1109,64 @@ const document = createDocument({
                     }
                 }
             }
+        },
+        '/v1/map': {
+            post: {
+                summary: 'Map',
+                description: 'Discover URLs for a site using sitemap, search, and page links',
+                tags: ['Map'],
+                security: [{ bearerAuth: [] }],
+                requestBody: {
+                    required: true,
+                    content: {
+                        'application/json': {
+                            schema: mapSchemaForOpenAPI
+                        }
+                    }
+                },
+                responses: {
+                    '200': {
+                        description: 'Map successful',
+                        content: {
+                            'application/json': {
+                                schema: mapSuccessResponseSchema
+                            }
+                        }
+                    },
+                    '400': {
+                        description: 'Bad request - validation error',
+                        content: {
+                            'application/json': {
+                                schema: errorResponseSchema
+                            }
+                        }
+                    },
+                    '401': {
+                        description: 'Unauthorized - missing or invalid authentication',
+                        content: {
+                            'application/json': {
+                                schema: unauthorizedResponseSchema
+                            }
+                        }
+                    },
+                    '402': {
+                        description: 'Payment required - subscription or credits needed',
+                        content: {
+                            'application/json': {
+                                schema: InsufficientCreditsResponseSchema
+                            }
+                        }
+                    },
+                    '500': {
+                        description: 'Internal server error',
+                        content: {
+                            'application/json': {
+                                schema: internalServerErrorResponseSchema
+                            }
+                        }
+                    }
+                }
+            }
         }
     },
     components: {
@@ -943,6 +1195,10 @@ const document = createDocument({
         {
             name: 'Search',
             description: 'SERP, search engine results page'
+        },
+        {
+            name: 'Map',
+            description: 'Discover URLs for a site (sitemap, search, and page links)'
         }
     ]
 });

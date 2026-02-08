@@ -5,7 +5,7 @@ import { log } from "@anycrawl/libs";
 import { MapService } from "@anycrawl/scrape";
 import { SearchService } from "@anycrawl/search/SearchService";
 import { randomUUID } from "crypto";
-import { createJob, completedJob, failedJob, STATUS } from "@anycrawl/db";
+import { createJob, completedJob, failedJob, STATUS, updateJobCacheHits } from "@anycrawl/db";
 import { triggerWebhookEvent } from "../../utils/webhookHelper.js";
 
 export class MapController {
@@ -93,7 +93,16 @@ export class MapController {
                 includeSubdomains: validatedData.include_subdomains,
                 ignoreSitemap: validatedData.ignore_sitemap,
                 searchService: this.searchService,
+                maxAge: validatedData.max_age,
+                useIndex: validatedData.use_index,
             });
+            if (result.fromCache) {
+                try {
+                    await updateJobCacheHits(mapJobId, 1);
+                } catch (cacheUpdateError) {
+                    log.warning(`[MapController] Failed to update cache hits for job_id=${mapJobId}: ${cacheUpdateError}`);
+                }
+            }
 
             // Calculate credits
             req.creditsUsed = CreditCalculator.calculateMapCredits({});

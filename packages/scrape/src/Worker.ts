@@ -222,6 +222,7 @@ async function runJob(job: Job) {
         {
             jobId: currentJobId, // Use queue job ID for status updates
             parentId: parentId, // Use parent job ID for result recording
+            engine: engineType,
             queueName: job.data.queueName,
             type: jobType,
             // Ensure template variables are available to the engine context

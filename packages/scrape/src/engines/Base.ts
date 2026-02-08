@@ -16,6 +16,7 @@ import {
 import { insertJobResult, failedJob, completedJob, getDB, schemas, eq, sql } from "@anycrawl/db";
 import { JOB_RESULT_STATUS } from "../../../db/dist/map.js";
 import { ProgressManager } from "../managers/Progress.js";
+import { CacheManager } from "../managers/Cache.js";
 import { JOB_TYPE_CRAWL, JOB_TYPE_SCRAPE, CreditCalculator } from "@anycrawl/libs";
 import type { RequestTrafficMetric } from "@anycrawl/libs";
 import { CrawlLimitReachedError } from "../errors/index.js";
@@ -1001,6 +1002,56 @@ export abstract class BaseEngine {
                 // Only save result if shouldScrape is true
                 if (shouldScrape) {
                     await insertJobResult(resultJobId, context.request.url, data, JOB_RESULT_STATUS.SUCCESS);
+
+                    // Save to cache if enabled and conditions are met
+                    try {
+                        const options = context.request.userData.options || {};
+                        if (!isHttpError && options.store_in_cache !== false) {
+                            const status = this.extractResponseStatus(context.response as CrawlerResponse);
+                            const rawHeaders: any =
+                                typeof (context.response as any)?.headers === "function"
+                                    ? (context.response as any).headers()
+                                    : ((context.response as any)?.headers ?? {});
+                            const contentTypeHeader = rawHeaders["content-type"] ?? rawHeaders["Content-Type"];
+                            const contentLengthHeader = rawHeaders["content-length"] ?? rawHeaders["Content-Length"];
+                            const contentType = typeof contentTypeHeader === "string" ? contentTypeHeader : undefined;
+                            let contentLength: number | undefined = undefined;
+                            if (contentLengthHeader !== undefined) {
+                                const parsed = Number.parseInt(String(contentLengthHeader), 10);
+                                if (Number.isFinite(parsed) && parsed > 0) {
+                                    contentLength = parsed;
+                                }
+                            }
+
+                            await CacheManager.getInstance().saveToCache(
+                                context.request.url,
+                                {
+                                    url: context.request.url,
+                                    formats: options.formats,
+                                    json_options: options.json_options,
+                                    include_tags: options.include_tags,
+                                    exclude_tags: options.exclude_tags,
+                                    proxy: options.proxy,
+                                    only_main_content: options.only_main_content,
+                                    extract_source: options.extract_source,
+                                    wait_for: options.wait_for,
+                                    wait_until: options.wait_until,
+                                    wait_for_selector: options.wait_for_selector,
+                                    template_id: options.template_id,
+                                    store_in_cache: options.store_in_cache,
+                                    engine: (context.request.userData as any).engine,
+                                },
+                                { url: context.request.url, ...data },
+                                {
+                                    statusCode: status.statusCode,
+                                    contentType,
+                                    contentLength,
+                                }
+                            );
+                        }
+                    } catch (cacheError) {
+                        log.warning(`[CACHE] Failed to save cache for ${context.request.url}: ${cacheError}`);
+                    }
                 } else {
                     log.info(`[${context.request.userData.queueName}] [${context.request.userData.jobId}] Skipping scrape for ${context.request.url} (not in scrape_paths)`);
                 }

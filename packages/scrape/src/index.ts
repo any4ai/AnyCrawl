@@ -34,3 +34,6 @@ export * from "./HttpClient.js";
 
 // Services
 export * from "./services/MapService.js";
+
+// Cache Manager
+export * from "./managers/Cache.js";

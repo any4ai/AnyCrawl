@@ -88,6 +88,7 @@ export class Utils {
             label: queueName,
             userData: {
                 jobId: job.id,
+                engine: job.data.engine,
                 queueName: "scrape",
                 type: "temporary_scrape",
                 options: {},

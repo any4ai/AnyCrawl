@@ -7,3 +7,4 @@ export * from "./proxy.js";
 export * from "./scheduled-tasks.js";
 export * from "./types/index.js";
 export * from "./data/index.js";
+export * from "./cache/index.js";

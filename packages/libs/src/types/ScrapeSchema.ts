@@ -18,6 +18,8 @@ const pickedSchema = baseSchema.pick({
     only_main_content: true,
     json_options: true,
     extract_source: true,
+    max_age: true,
+    store_in_cache: true,
 });
 
 export const scrapeSchema = pickedSchema.transform((data: z.infer<typeof pickedSchema>) => ({
@@ -38,6 +40,8 @@ export const scrapeSchema = pickedSchema.transform((data: z.infer<typeof pickedS
         only_main_content: data.only_main_content,
         json_options: data.json_options,
         extract_source: data.extract_source,
+        max_age: data.max_age,
+        store_in_cache: data.store_in_cache,
     }
 }));
 

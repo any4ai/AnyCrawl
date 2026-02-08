@@ -16,6 +16,8 @@ const scrapeOptionsInputSchema = baseSchema
         exclude_tags: true,
         json_options: true,
         extract_source: true,
+        max_age: true,
+        store_in_cache: true,
     })
     .strict();
 

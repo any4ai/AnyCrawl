@@ -59,6 +59,8 @@ const selectedSchema = baseSchema
         only_main_content: true,
         json_options: true,
         extract_source: true,
+        max_age: true,
+        store_in_cache: true,
     });
 // Extract scrape option fields from baseSchema for reuse (same as ScrapeSchema)
 const scrapeOptionsInputSchema = selectedSchema

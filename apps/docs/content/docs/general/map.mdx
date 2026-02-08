@@ -175,6 +175,14 @@ print(result['data'])
 | `limit` | number | No | `5000` | Maximum number of URLs to return (1-50000) |
 | `include_subdomains` | boolean | No | `false` | Include URLs from subdomains (e.g., blog.example.com) |
 | `ignore_sitemap` | boolean | No | `false` | Skip sitemap parsing, only use search engine and page links |
+| `max_age` | number | No | - | Cache max age (ms). Use `0` to skip cache reads; omit to use server default |
+| `use_index` | boolean | No | `true` | Whether to use Page Cache index (`page_cache`) as an additional URL source |
+
+### Cache behavior
+
+- `max_age` controls Map Cache reads. `0` forces a refresh.
+- `use_index=false` disables the Page Cache index source (requires Page Cache to be enabled to have any effect).
+- `/v1/map` does not return `fromCache` in the response (cache usage is internal).
 
 ### URL Discovery Sources
 

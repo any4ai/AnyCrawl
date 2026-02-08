@@ -18,11 +18,7 @@ export function getScheduledTasksLimit(tier: SubscriptionTier): number {
     const freeLimit = parseInt(process.env.ANYCRAWL_SCHEDULED_TASKS_LIMIT_FREE || "1");
     const paidLimit = parseInt(process.env.ANYCRAWL_SCHEDULED_TASKS_LIMIT_PAID || "100");
 
-    const limits: Record<string, number> = {
-        free: freeLimit,
-        paid: paidLimit,
-    };
-    return limits[tier] ?? freeLimit;
+    return tier === "free" ? freeLimit : paidLimit;
 }
 
 /**

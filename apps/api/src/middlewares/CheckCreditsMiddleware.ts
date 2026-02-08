@@ -3,6 +3,20 @@ import { RequestWithAuth } from "@anycrawl/libs";
 import { log } from "@anycrawl/libs/log";
 import { getDB, schemas, eq } from "@anycrawl/db";
 
+// Routes that require credit check (billing endpoints)
+const CREDIT_CHECK_ROUTES = [
+    { method: "POST", path: "/v1/scrape" },
+    { method: "POST", path: "/v1/crawl" },
+    { method: "POST", path: "/v1/map" },
+    { method: "POST", path: "/v1/search" },
+];
+
+const shouldCheckCredits = (method: string, path: string): boolean => {
+    return CREDIT_CHECK_ROUTES.some((route) => {
+        return route.method === method && route.path === path;
+    });
+};
+
 export const checkCreditsMiddleware = async (
     req: RequestWithAuth,
     res: Response,
@@ -13,6 +27,13 @@ export const checkCreditsMiddleware = async (
         next();
         return;
     }
+
+    // Only check credits for billing endpoints (scrape, crawl, map, search)
+    if (!shouldCheckCredits(req.method, req.path)) {
+        next();
+        return;
+    }
+
     req.checkCredits = true;
 
     try {

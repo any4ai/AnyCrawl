@@ -1,4 +1,4 @@
-import { eq, and, gt, gte, sql } from "drizzle-orm";
+import { eq, and, gt, gte, sql, desc } from "drizzle-orm";
 import { getDB, schemas } from "./db/index.js";
 import { STATUS, JOB_RESULT_STATUS } from "./map.js";
 import { Job, CreateJobParams } from "./model/Job.js";
@@ -40,5 +40,5 @@ export {
     mapCache
 } from "./db/schemas/PostgreSQL.js";
 
-export { eq, and, gt, gte, sql, getDB, schemas, STATUS, JOB_RESULT_STATUS, Job };
+export { eq, and, gt, gte, sql, desc, getDB, schemas, STATUS, JOB_RESULT_STATUS, Job };
 export type { CreateJobParams, CreateTemplateParams };

@@ -187,7 +187,11 @@ export class SearchController {
                                 if (!result.url) continue; // Ensure url is a string for RequestTask
                                 const resultUrl = result.url as string;
                                 if (shouldCheckCache) {
-                                    const cached = await cacheManager.getFromCache(resultUrl, cacheOptions, maxAge);
+                                    const cached = await cacheManager.getFromCache(
+                                        resultUrl,
+                                        { ...cacheOptions, url: resultUrl },
+                                        maxAge
+                                    );
                                     if (cached) {
                                         const cachedData: any = { ...cached, maxAge: effectiveMaxAge };
                                         if ("fromCache" in cachedData) delete cachedData.fromCache;

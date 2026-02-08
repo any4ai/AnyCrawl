@@ -1,6 +1,5 @@
 import { log } from "crawlee";
-import { getDB, schemas, eq, gt, and } from "@anycrawl/db";
-import { desc } from "drizzle-orm";
+import { getDB, schemas, eq, gt, and, desc } from "@anycrawl/db";
 import { computeCacheKey, shouldCache, getCacheConfig, getContentFromS3, saveContentToS3, computeDomainHash } from "@anycrawl/libs";
 import type { CachedResult, CachedContent, CacheKeyParams, MapCacheEntry, MapCacheResult } from "@anycrawl/libs";
 import { createHash } from "crypto";

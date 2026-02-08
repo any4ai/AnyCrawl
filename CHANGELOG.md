@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.0-beta.13] - 2026-02-08
+
+### Added
+
+- Page cache (S3-backed) and map cache (DB-backed) with cache controls (`max_age`, `store_in_cache`, `use_index`) across scrape/crawl/map plus cache hit tracking
+- Map API for website URL discovery/extraction (with default search engine discovery behavior)
+- `links` output format to extract all URLs from scraped pages (scrape/crawl/search)
+- `summary` output format for content summarization
+- Comprehensive webhook events for scrape/crawl/search/map and scheduled task execution cancel endpoint with enhanced execution metrics
+- Subscription tiers with scheduled task limits and credit estimation
+- JS SDK support for the Map API
+
+### Changed
+
+- HTML to Markdown conversion improvements (GFM support, smart main-content extraction, lazy-loaded images, section support)
+- URL extraction now uses Crawlee implementation
+
+### Fixed
+
+- Search credits calculation now accounts for page count
+- Cache key parameter handling in caching layer
+- Docs metadata generation when page description is missing
+
 ## [1.0.0-beta.12] - 2026-01-31
 
 ### Added

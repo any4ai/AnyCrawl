@@ -1,8 +1,17 @@
-export type ApiResponse<T> = { success: true; data: T } | { success: false; error: string; message?: string; data?: any };
+export type ApiResponse<T> =
+    | { success: true; data: T }
+    | { success: false; error: string; message?: string; data?: any };
 
 export type ExtractSource = 'html' | 'markdown';
 export type Engine = 'playwright' | 'cheerio' | 'puppeteer';
-export type ScrapeFormat = 'markdown' | 'html' | 'text' | 'screenshot' | 'screenshot@fullPage' | 'rawHtml' | 'json';
+export type ScrapeFormat =
+    | 'markdown'
+    | 'html'
+    | 'text'
+    | 'screenshot'
+    | 'screenshot@fullPage'
+    | 'rawHtml'
+    | 'json';
 
 // Project-aligned JSON schema (@anycrawl/libs: jsonSchemaType)
 export type JSONSchema = {
@@ -89,6 +98,7 @@ export type CrawlOptions = {
     strategy?: 'all' | 'same-domain' | 'same-hostname' | 'same-origin';
     limit?: number;
     scrape_options?: Omit<ScrapeOptionsInput, 'retry'>;
+    only_main_content?: boolean;
 };
 
 export type CrawlRequest = {
@@ -132,7 +142,7 @@ export type SearchRequest = {
     pages?: number;
     lang?: any;
     country?: any;
-    scrape_options?: (Omit<ScrapeOptionsInput, 'retry'> & { engine: Engine });
+    scrape_options?: Omit<ScrapeOptionsInput, 'retry'> & { engine: Engine };
     safe_search?: number | null;
 };
 
@@ -151,4 +161,3 @@ export type CrawlAndWaitResult = {
     creditsUsed: number;
     data: any[];
 };
-

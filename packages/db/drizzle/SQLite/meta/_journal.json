@@ -57,6 +57,20 @@
       "when": 1770531122000,
       "tag": "0007_cache_hits",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1770619200000,
+      "tag": "0008_billing_ledger",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "6",
+      "when": 1770710400000,
+      "tag": "0009_billing_charge_details",
+      "breakpoints": true
     }
   ]
 }

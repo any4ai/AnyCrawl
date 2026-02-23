@@ -83,3 +83,5 @@ AY_*.md
 .worktrees/
 .security-key
 logs/security/
+AGENTS.md
+CLAUDE.md

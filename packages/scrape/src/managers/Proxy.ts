@@ -13,7 +13,7 @@ export type { ProxyMode, ResolvedProxyMode };
 export { isProxyMode, getResolvedProxyMode as getResolvedProxyModeName };
 
 export interface ProxyConfigurationFunction {
-    (sessionId: string | number, options?: { request?: Request }): string | null | Promise<string | null>;
+    (sessionId: string | number, options?: { request?: Request; proxyTier?: number }): string | null | Promise<string | null>;
 }
 
 export interface ProxyConfigurationOptions {
@@ -237,7 +237,10 @@ export class ProxyConfiguration extends CrawleeProxyConfiguration {
 
         // First try newUrlFunction
         if (this.newUrlFunction) {
-            const result = await this._callNewUrlFunction(sessionId, { request: options?.request });
+            const result = await this._callNewUrlFunction(sessionId, {
+                request: options?.request,
+                proxyTier: options?.proxyTier,
+            } as any);
             if (result) {
                 url = result;
             }
@@ -705,7 +708,12 @@ const proxyConfiguration = new ProxyConfiguration({
         const requestUrl = options?.request?.url || 'unknown';
         const originalUrl = (options?.request?.userData as any)?.original_url;
         const matchUrl = originalUrl || requestUrl;
-        const proxyTier = (options as any)?.proxyTier || 0;
+        const userDataTier = (options?.request?.userData as any)?._proxyTier;
+        const proxyTierRaw = (options as any)?.proxyTier;
+        const proxyTier =
+            typeof userDataTier === 'number' && Number.isFinite(userDataTier)
+                ? userDataTier
+                : (typeof proxyTierRaw === 'number' && Number.isFinite(proxyTierRaw) ? proxyTierRaw : 0);
 
         // First priority: explicit proxy from request userData (supports modes: auto, base, stealth, or custom URL)
         if (options?.request?.userData?.options?.proxy) {

@@ -107,12 +107,15 @@ export class ScrapeController {
 
                         // Calculate credits (cache hit still costs credits)
                         const scrapeOptions = jobPayload.options || {};
-                        req.creditsUsed = defaultPrice + CreditCalculator.calculateScrapeCredits({
+                        req.billingChargeDetails = CreditCalculator.buildScrapeChargeDetails({
                             proxy: scrapeOptions.proxy,
                             json_options: scrapeOptions.json_options,
                             formats: scrapeOptions.formats,
                             extract_source: scrapeOptions.extract_source,
+                        }, {
+                            templateCredits: defaultPrice,
                         });
+                        req.creditsUsed = req.billingChargeDetails.total;
 
                         // Create a synthetic job record for cache hit so credits/webhooks stay consistent
                         const cacheJobId = randomUUID();
@@ -257,6 +260,7 @@ export class ScrapeController {
 
                 // Ensure no credits are deducted for failed scrape
                 req.creditsUsed = 0;
+                req.billingChargeDetails = undefined;
                 res.status(200).json({
                     success: false,
                     error: "Scrape task failed",
@@ -270,12 +274,15 @@ export class ScrapeController {
 
             // Calculate credits using CreditCalculator
             const scrapeOptions = (jobPayload as any)?.options || {};
-            req.creditsUsed = defaultPrice + CreditCalculator.calculateScrapeCredits({
+            req.billingChargeDetails = CreditCalculator.buildScrapeChargeDetails({
                 proxy: scrapeOptions.proxy,
                 json_options: scrapeOptions.json_options,
                 formats: scrapeOptions.formats,
                 extract_source: scrapeOptions.extract_source,
+            }, {
+                templateCredits: defaultPrice,
             });
+            req.creditsUsed = req.billingChargeDetails.total;
 
             // Add domain prefix to screenshot path if it exists
             if (jobData.screenshot) {
@@ -302,6 +309,7 @@ export class ScrapeController {
                 const message = error.errors.map((err) => err.message).join(", ");
                 // Ensure no credits are deducted for validation failure
                 req.creditsUsed = 0;
+                req.billingChargeDetails = undefined;
                 res.status(400).json({
                     success: false,
                     error: "Validation error",
@@ -328,6 +336,7 @@ export class ScrapeController {
                 }
                 // Ensure no credits are deducted for internal error
                 req.creditsUsed = 0;
+                req.billingChargeDetails = undefined;
                 res.status(500).json({
                     success: false,
                     error: "Internal server error",

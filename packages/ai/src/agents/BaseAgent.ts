@@ -6,6 +6,9 @@ import { log } from "@anycrawl/libs";
 import { LanguageModel } from "ai";
 import { getLLM, getLLMByModel } from "../ProviderRegistry.js";
 
+const DEFAULT_INPUT_COST_PER_TOKEN = 2e-7;
+const DEFAULT_OUTPUT_COST_PER_TOKEN = 8e-7;
+
 /**
  * Base class for all AI agents that interact with language models
  * Provides common functionality for token counting, cost tracking, and model configuration
@@ -20,7 +23,14 @@ export abstract class BaseAgent {
     constructor(modelId: string, costLimit: number | null = null) {
         this.modelId = modelId;
         // If modelId is in provider/model format, use it directly; otherwise resolve by model key
-        this.llm = modelId.includes('/') ? getLLM(modelId) : getLLMByModel(modelId);
+        try {
+            this.llm = modelId.includes('/') ? getLLM(modelId) : getLLMByModel(modelId);
+        } catch (error) {
+            if (!modelId.includes('/')) {
+                throw new Error(`Model ${modelId} is not found`);
+            }
+            throw error;
+        }
         this.costTracking = new CostTracking(costLimit);
 
         // Load model configuration
@@ -126,10 +136,10 @@ export abstract class BaseAgent {
      * Calculate cost based on token usage
      */
     protected calculateCost(inputTokens: number, outputTokens: number): number {
-        if (!this.modelConfig) return 0;
-
-        const inputCost = (this.modelConfig.input_cost_per_token || 0) * inputTokens;
-        const outputCost = (this.modelConfig.output_cost_per_token || 0) * outputTokens;
+        const inputRate = this.modelConfig?.input_cost_per_token ?? DEFAULT_INPUT_COST_PER_TOKEN;
+        const outputRate = this.modelConfig?.output_cost_per_token ?? DEFAULT_OUTPUT_COST_PER_TOKEN;
+        const inputCost = inputRate * inputTokens;
+        const outputCost = outputRate * outputTokens;
 
         return inputCost + outputCost;
     }

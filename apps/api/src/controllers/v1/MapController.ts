@@ -105,7 +105,8 @@ export class MapController {
             }
 
             // Calculate credits
-            req.creditsUsed = CreditCalculator.calculateMapCredits({});
+            req.billingChargeDetails = CreditCalculator.buildMapChargeDetails();
+            req.creditsUsed = req.billingChargeDetails.total;
 
             // Mark job as completed
             await completedJob(mapJobId, true);
@@ -137,6 +138,7 @@ export class MapController {
                 const message = error.errors.map((err) => err.message).join(", ");
 
                 req.creditsUsed = 0;
+                req.billingChargeDetails = undefined;
                 res.status(400).json({
                     success: false,
                     error: "Validation error",
@@ -150,6 +152,7 @@ export class MapController {
                 log.error(`[MapController] Error: ${message}`);
 
                 req.creditsUsed = 0;
+                req.billingChargeDetails = undefined;
 
                 // Mark job as failed and trigger webhook
                 if (mapJobId) {

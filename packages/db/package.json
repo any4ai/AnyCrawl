@@ -12,6 +12,7 @@
         "test:watch": "NODE_OPTIONS=--experimental-vm-modules dotenv-run -r ../.. -- jest --watch --detectOpenHandles",
         "test:coverage": "NODE_OPTIONS=--experimental-vm-modules dotenv-run -r ../.. -- jest --coverage --detectOpenHandles --forceExit",
         "db:generate": "dotenv-run -r ../.. -- drizzle-kit generate",
+        "db:check": "dotenv-run -r ../.. -- drizzle-kit check",
         "db:migrate": "dotenv-run -r ../.. -- drizzle-kit migrate",
         "db:migrate:docker": "drizzle-kit migrate",
         "db:studio": "dotenv-run -r ../.. -- drizzle-kit studio"

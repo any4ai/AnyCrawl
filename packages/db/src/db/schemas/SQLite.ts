@@ -69,6 +69,32 @@ export const requestLog = p.sqliteTable("request_log", {
     createdAt: p.integer("created_at", { mode: "timestamp" }).notNull().$defaultFn(() => new Date()),
 });
 
+export const billingLedger = p.sqliteTable("billing_ledger", {
+    // Primary key with auto-incrementing ID
+    uuid: p
+        .text("uuid")
+        .primaryKey()
+        .$defaultFn(() => randomUUID()),
+    // Billing ownership
+    jobId: p.text("job_id").notNull(),
+    apiKey: p.text("api_key_id").references(() => apiKey.uuid),
+    // Billing metadata
+    mode: p.text("mode").notNull(), // 'delta' | 'target'
+    reason: p.text("reason").notNull(),
+    idempotencyKey: p.text("idempotency_key").notNull().unique(),
+    // Billing amount and usage snapshot
+    charged: p.integer("charged").notNull(),
+    beforeUsed: p.integer("before_used").notNull(),
+    afterUsed: p.integer("after_used").notNull(),
+    // Itemized charge details (nullable for historical rows)
+    chargeDetails: p.text("charge_details", { mode: "json" }).$type<Record<string, unknown>>(),
+    // Credits snapshot (nullable when unavailable)
+    beforeCredits: p.integer("before_credits"),
+    afterCredits: p.integer("after_credits"),
+    // Timestamp
+    createdAt: p.integer("created_at", { mode: "timestamp" }).notNull().$defaultFn(() => new Date()),
+});
+
 export const jobs = p.sqliteTable("jobs", {
     // Primary key with auto-incrementing ID
     uuid: p

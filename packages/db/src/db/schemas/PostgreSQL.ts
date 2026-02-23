@@ -70,6 +70,32 @@ export const requestLog = p.pgTable("request_log", {
     createdAt: p.timestamp("created_at").notNull(),
 });
 
+export const billingLedger = p.pgTable("billing_ledger", {
+    // Primary key with auto-incrementing ID
+    uuid: p
+        .uuid()
+        .primaryKey()
+        .$defaultFn(() => randomUUID()),
+    // Billing ownership
+    jobId: p.text("job_id").notNull(),
+    apiKey: p.uuid("api_key_id").references(() => apiKey.uuid),
+    // Billing metadata
+    mode: p.text("mode").notNull(), // 'delta' | 'target'
+    reason: p.text("reason").notNull(),
+    idempotencyKey: p.text("idempotency_key").notNull().unique(),
+    // Billing amount and usage snapshot
+    charged: p.integer("charged").notNull(),
+    beforeUsed: p.integer("before_used").notNull(),
+    afterUsed: p.integer("after_used").notNull(),
+    // Itemized charge details (nullable for historical rows)
+    chargeDetails: p.jsonb("charge_details"),
+    // Credits snapshot (nullable when unavailable)
+    beforeCredits: p.integer("before_credits"),
+    afterCredits: p.integer("after_credits"),
+    // Timestamp
+    createdAt: p.timestamp("created_at").notNull(),
+});
+
 export const jobs = p.pgTable("jobs", {
     // Primary key with auto-incrementing ID
     uuid: p

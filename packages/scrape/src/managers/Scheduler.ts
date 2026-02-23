@@ -1,11 +1,39 @@
 import { log } from "crawlee";
-import { getDB, schemas, eq, sql, completedJob, failedJob } from "@anycrawl/db";
+import { getDB, schemas, eq, sql, completedJob, failedJob, Billing } from "@anycrawl/db";
 import { QueueManager } from "./Queue.js";
 import { randomUUID } from "crypto";
 import { Job, Queue } from "bullmq";
 import IORedis from "ioredis";
 import { WebhookEventType, estimateTaskCredits, isScheduledTasksLimitEnabled, getScheduledTasksLimit, buildAutoPauseReason, CreditCalculator } from "@anycrawl/libs";
 import { CronExpressionParser } from "cron-parser";
+import { finalizeExecution } from "./ExecutionLifecycle.js";
+
+type TriggerJobResult = {
+    jobUuid: string;
+    dispatchCommitted: boolean;
+};
+
+export function resolveDispatchStateFromError(
+    executionDispatched: boolean,
+    jobUuid: string | undefined,
+    error: unknown
+): { executionDispatched: boolean; jobUuid: string | undefined } {
+    const errorWithDispatch = error as { dispatchCommitted?: boolean; jobUuid?: string };
+    let nextDispatched = executionDispatched;
+    let nextJobUuid = jobUuid;
+
+    if (!nextDispatched && errorWithDispatch?.dispatchCommitted === true) {
+        nextDispatched = true;
+        if (!nextJobUuid && typeof errorWithDispatch.jobUuid === "string" && errorWithDispatch.jobUuid.length > 0) {
+            nextJobUuid = errorWithDispatch.jobUuid;
+        }
+    }
+
+    return {
+        executionDispatched: nextDispatched,
+        jobUuid: nextJobUuid,
+    };
+}
 
 /**
  * SchedulerManager using BullMQ Repeatable Jobs
@@ -270,14 +298,18 @@ export class SchedulerManager {
             }
 
             // Update execution status
-            await db
-                .update(schemas.taskExecutions)
-                .set({
-                    status: "cancelled",
-                    completedAt: new Date(),
-                    errorMessage: "Cancelled by user",
-                })
-                .where(eq(schemas.taskExecutions.uuid, executionUuid));
+            const finalized = await finalizeExecution({
+                db,
+                executionUuid,
+                status: "cancelled",
+                errorMessage: "Cancelled by user",
+                updateTaskStats: false,
+                source: "scheduler",
+            });
+
+            if (!finalized.transitioned) {
+                return { success: false, message: "Execution was already finalized" };
+            }
 
             log.info(`[SCHEDULER] Cancelled execution ${executionUuid}`);
             return { success: true, message: "Execution cancelled successfully" };
@@ -298,6 +330,11 @@ export class SchedulerManager {
         const { taskUuid } = job.data;
         const db = await getDB();
         let executionUuid: string | undefined;
+        let executionNumber: number | undefined;
+        let idempotencyKey: string | undefined;
+        let task: any | undefined;
+        let executionDispatched = false;
+        let jobUuid: string | undefined;
 
         try {
             // Fetch the latest task configuration
@@ -312,7 +349,7 @@ export class SchedulerManager {
                 return;
             }
 
-            const task = tasks[0];
+            task = tasks[0];
 
             // Check if task is still active
             if (!task.isActive) {
@@ -359,7 +396,7 @@ export class SchedulerManager {
 
                 if (requiredCredits > 0) {
                     const creditCheck = await this.checkCreditsWithAmount(task, requiredCredits);
-                    if (!creditCheck.success) {
+                    if (creditCheck.success === false) {
                         log.warning(`[SCHEDULER] ${creditCheck.message}`);
 
                         if (creditCheck.reason === "no_apikey" || creditCheck.reason === "apikey_not_found") {
@@ -443,44 +480,71 @@ export class SchedulerManager {
             }
 
             // Generate idempotency key
-            const idempotencyKey = `${task.uuid}-${Date.now()}`;
-            const executionNumber = task.totalExecutions + 1;
+            idempotencyKey = `${task.uuid}-${Date.now()}`;
+            const executionCreatedAt = new Date();
 
-            // Use transaction to ensure atomicity of execution record creation and job trigger
-            // If triggerJob() fails, the execution record will be rolled back
-            let jobUuid: string = "";
-
+            // Persist execution attempt first (no external side effects in this transaction)
+            // This guarantees every attempt has a durable execution record.
             await db.transaction(async (tx: any) => {
+                // Increment totalExecutions for every attempt and use it as execution number
+                const updatedTask = await tx
+                    .update(schemas.scheduledTasks)
+                    .set({
+                        totalExecutions: sql`${schemas.scheduledTasks.totalExecutions} + 1`,
+                        lastExecutionAt: executionCreatedAt,
+                        updatedAt: executionCreatedAt,
+                    })
+                    .where(eq(schemas.scheduledTasks.uuid, task.uuid))
+                    .returning({ totalExecutions: schemas.scheduledTasks.totalExecutions });
+
+                if (updatedTask.length === 0) {
+                    throw new Error(`Scheduled task ${task.uuid} not found while creating execution`);
+                }
+
+                executionNumber = updatedTask[0].totalExecutions;
+
                 // Create execution record
                 executionUuid = randomUUID();
                 await tx.insert(schemas.taskExecutions).values({
                     uuid: executionUuid,
                     scheduledTaskUuid: task.uuid,
-                    executionNumber: executionNumber,
-                    idempotencyKey: idempotencyKey,
+                    executionNumber: executionNumber!,
+                    idempotencyKey: idempotencyKey!,
                     status: "pending",
                     scheduledFor: new Date(),
                     triggeredBy: "scheduler",
                     createdAt: new Date(),
                 });
+            });
 
-                log.info(`[SCHEDULER] 🚀 Executing task: ${task.name} (execution #${executionNumber})`);
+            if (!executionUuid) {
+                throw new Error(`Failed to create execution record for task ${task.uuid}`);
+            }
 
-                // Trigger the actual scrape/crawl job (if this fails, transaction rolls back)
-                // Pass tx to ensure job creation happens in the same transaction
-                // Returns the job UUID (database primary key) for foreign key reference
-                jobUuid = await this.triggerJob(task, executionUuid, tx);
+            log.info(`[SCHEDULER] 🚀 Executing task: ${task.name} (execution #${executionNumber})`);
 
-                // Update execution with job UUID and status
-                // Note: startedAt will be set by Worker when job actually starts processing
-                await tx
+            // Trigger actual job after execution has been committed
+            // If this fails, execution record remains and will be finalized as failed in catch.
+            const triggerResult = await this.triggerJob(task, executionUuid);
+            jobUuid = triggerResult.jobUuid;
+            executionDispatched = triggerResult.dispatchCommitted;
+
+            // Best effort: for async jobs, move pending -> running and attach job UUID.
+            // For sync search/map tasks, execution may already be completed/failed, so this can no-op.
+            try {
+                await db
                     .update(schemas.taskExecutions)
                     .set({
                         jobUuid: jobUuid,
                         status: "running",
                     })
-                    .where(eq(schemas.taskExecutions.uuid, executionUuid));
-            });
+                    .where(
+                        sql`${schemas.taskExecutions.uuid} = ${executionUuid}
+                            AND ${schemas.taskExecutions.status} = 'pending'`
+                    );
+            } catch (updateError) {
+                log.error(`[SCHEDULER] Failed to mark execution ${executionUuid} as running: ${updateError}`);
+            }
 
             // Calculate next execution time
             let nextExecutionAt: Date | null = null;
@@ -495,15 +559,17 @@ export class SchedulerManager {
             }
 
             // Update task statistics
-            await db
-                .update(schemas.scheduledTasks)
-                .set({
-                    lastExecutionAt: new Date(),
-                    nextExecutionAt: nextExecutionAt,
-                    totalExecutions: sql`${schemas.scheduledTasks.totalExecutions} + 1`,
-                    consecutiveFailures: 0, // Reset on successful trigger
-                })
-                .where(eq(schemas.scheduledTasks.uuid, task.uuid));
+            try {
+                await db
+                    .update(schemas.scheduledTasks)
+                    .set({
+                        nextExecutionAt: nextExecutionAt,
+                        updatedAt: new Date(),
+                    })
+                    .where(eq(schemas.scheduledTasks.uuid, task.uuid));
+            } catch (taskUpdateError) {
+                log.error(`[SCHEDULER] Failed to update nextExecutionAt after dispatch for task ${task.uuid}: ${taskUpdateError}`);
+            }
 
             log.info(`[SCHEDULER] ✅ Task ${task.name} triggered job ${jobUuid}`);
 
@@ -531,115 +597,136 @@ export class SchedulerManager {
                 log.warning(`[SCHEDULER] Failed to trigger webhook for task execution: ${e}`);
             }
         } catch (error) {
+            const dispatchState = resolveDispatchStateFromError(executionDispatched, jobUuid, error);
+            executionDispatched = dispatchState.executionDispatched;
+            jobUuid = dispatchState.jobUuid;
+
             log.error(`[SCHEDULER] Task ${taskUuid} execution failed: ${error}`);
 
-            // Update the execution record to failed status if it was created
-            if (typeof executionUuid !== 'undefined') {
+            const executionErrorMessage = error instanceof Error ? error.message : String(error);
+            const executionErrorCode = error instanceof Error ? (error.name || "SCHEDULER_ERROR") : "SCHEDULER_ERROR";
+            const executionErrorDetails = {
+                name: error instanceof Error ? error.name : "Error",
+                message: executionErrorMessage,
+                stack: error instanceof Error ? error.stack : undefined,
+                timestamp: new Date().toISOString(),
+                source: "scheduler",
+            };
+
+            // Finalize execution and failure side-effects only when dispatch did not succeed.
+            // If dispatch succeeded, later side-effect failures should not flip execution state.
+            if (executionUuid && !executionDispatched) {
                 try {
-                    await db
-                        .update(schemas.taskExecutions)
-                        .set({
-                            status: "failed",
-                            completedAt: new Date(),
-                            errorMessage: error instanceof Error ? error.message : String(error),
-                            errorCode: error instanceof Error ? (error.name || 'SCHEDULER_ERROR') : 'SCHEDULER_ERROR',
-                            errorDetails: {
-                                name: error instanceof Error ? error.name : 'Error',
-                                message: error instanceof Error ? error.message : String(error),
-                                stack: error instanceof Error ? error.stack : undefined,
-                                timestamp: new Date().toISOString(),
-                                source: 'scheduler',
-                            },
-                        })
-                        .where(eq(schemas.taskExecutions.uuid, executionUuid));
+                    const finalized = await finalizeExecution({
+                        db,
+                        executionUuid,
+                        status: "failed",
+                        errorMessage: executionErrorMessage,
+                        errorCode: executionErrorCode,
+                        errorDetails: executionErrorDetails,
+                        allowCreateIfMissing: false,
+                        source: "scheduler",
+                    });
+
+                    if (!finalized.transitioned) {
+                        log.warning(
+                            `[SCHEDULER] Execution ${executionUuid} was already finalized, skipping duplicate failure update`
+                        );
+                    }
                 } catch (updateError) {
                     log.error(`[SCHEDULER] Failed to update execution record to failed: ${updateError}`);
                 }
-            }
 
-            // Trigger webhook for task failure
-            try {
-                if (process.env.ANYCRAWL_WEBHOOKS_ENABLED === "true") {
-                    const failedTask = await db
+                // Trigger webhook for task failure
+                try {
+                    if (process.env.ANYCRAWL_WEBHOOKS_ENABLED === "true") {
+                        const failedTask = await db
+                            .select()
+                            .from(schemas.scheduledTasks)
+                            .where(eq(schemas.scheduledTasks.uuid, taskUuid))
+                            .limit(1);
+
+                        if (failedTask[0]) {
+                            const { WebhookManager } = await import("./Webhook.js");
+                            await WebhookManager.getInstance().triggerEvent(
+                                WebhookEventType.TASK_FAILED,
+                                {
+                                    task_id: taskUuid,
+                                    task_name: failedTask[0].name,
+                                    task_type: failedTask[0].taskType,
+                                    status: "failed",
+                                    error: executionErrorMessage,
+                                },
+                                "task",
+                                taskUuid,
+                                failedTask[0].userId ?? undefined
+                            );
+                        }
+                    }
+                } catch (e) {
+                    log.warning(`[SCHEDULER] Failed to trigger webhook for task failure: ${e}`);
+                }
+
+                // Update failure statistics and next execution time
+                // Always update nextExecutionAt regardless of success/failure
+                let nextExecutionAt: Date | null = null;
+                try {
+                    const taskForCron = await db
                         .select()
                         .from(schemas.scheduledTasks)
                         .where(eq(schemas.scheduledTasks.uuid, taskUuid))
                         .limit(1);
 
-                    if (failedTask[0]) {
-                        const { WebhookManager } = await import("./Webhook.js");
-                        await WebhookManager.getInstance().triggerEvent(
-                            WebhookEventType.TASK_FAILED,
-                            {
-                                task_id: taskUuid,
-                                task_name: failedTask[0].name,
-                                task_type: failedTask[0].taskType,
-                                status: "failed",
-                                error: error instanceof Error ? error.message : String(error),
-                            },
-                            "task",
-                            taskUuid,
-                            failedTask[0].userId ?? undefined
-                        );
+                    if (taskForCron[0]) {
+                        const interval = CronExpressionParser.parse(taskForCron[0].cronExpression, {
+                            tz: taskForCron[0].timezone || "UTC",
+                            currentDate: new Date(),
+                        });
+                        nextExecutionAt = interval.next().toDate();
                     }
+                } catch (cronError) {
+                    log.error(`[SCHEDULER] Failed to calculate next execution for failed task ${taskUuid}: ${cronError}`);
                 }
-            } catch (e) {
-                log.warning(`[SCHEDULER] Failed to trigger webhook for task failure: ${e}`);
-            }
 
-            // Update failure statistics and next execution time
-            // Always update nextExecutionAt regardless of success/failure
-            let nextExecutionAt: Date | null = null;
-            try {
-                const taskForCron = await db
+                await db
+                    .update(schemas.scheduledTasks)
+                    .set({
+                        lastExecutionAt: new Date(),
+                        nextExecutionAt: nextExecutionAt,
+                    })
+                    .where(eq(schemas.scheduledTasks.uuid, taskUuid));
+
+                // Auto-pause if too many consecutive failures
+                const updatedTask = await db
                     .select()
                     .from(schemas.scheduledTasks)
                     .where(eq(schemas.scheduledTasks.uuid, taskUuid))
                     .limit(1);
 
-                if (taskForCron[0]) {
-                    const interval = CronExpressionParser.parse(taskForCron[0].cronExpression, {
-                        tz: taskForCron[0].timezone || "UTC",
-                        currentDate: new Date(),
-                    });
-                    nextExecutionAt = interval.next().toDate();
+                if (updatedTask[0]?.consecutiveFailures >= 5) {
+                    await db
+                        .update(schemas.scheduledTasks)
+                        .set({
+                            isPaused: true,
+                            pauseReason: `Auto-paused after ${updatedTask[0].consecutiveFailures} consecutive failures`,
+                        })
+                        .where(eq(schemas.scheduledTasks.uuid, taskUuid));
+
+                    log.warning(
+                        `[SCHEDULER] Task auto-paused after ${updatedTask[0].consecutiveFailures} consecutive failures`
+                    );
+
+                    // Remove from repeatable jobs
+                    await this.removeScheduledTask(taskUuid);
                 }
-            } catch (cronError) {
-                log.error(`[SCHEDULER] Failed to calculate next execution for failed task ${taskUuid}: ${cronError}`);
             }
 
-            await db
-                .update(schemas.scheduledTasks)
-                .set({
-                    lastExecutionAt: new Date(),
-                    nextExecutionAt: nextExecutionAt,
-                    failedExecutions: sql`${schemas.scheduledTasks.failedExecutions} + 1`,
-                    consecutiveFailures: sql`${schemas.scheduledTasks.consecutiveFailures} + 1`,
-                })
-                .where(eq(schemas.scheduledTasks.uuid, taskUuid));
-
-            // Auto-pause if too many consecutive failures
-            const updatedTask = await db
-                .select()
-                .from(schemas.scheduledTasks)
-                .where(eq(schemas.scheduledTasks.uuid, taskUuid))
-                .limit(1);
-
-            if (updatedTask[0]?.consecutiveFailures >= 5) {
-                await db
-                    .update(schemas.scheduledTasks)
-                    .set({
-                        isPaused: true,
-                        pauseReason: `Auto-paused after ${updatedTask[0].consecutiveFailures} consecutive failures`,
-                    })
-                    .where(eq(schemas.scheduledTasks.uuid, taskUuid));
-
+            if (executionDispatched) {
                 log.warning(
-                    `[SCHEDULER] Task auto-paused after ${updatedTask[0].consecutiveFailures} consecutive failures`
+                    `[SCHEDULER] Task ${taskUuid} encountered post-dispatch error; preserving execution lifecycle state ` +
+                    `(executionUuid=${executionUuid || "N/A"}, jobUuid=${jobUuid || "N/A"}): ${executionErrorMessage}`
                 );
-
-                // Remove from repeatable jobs
-                await this.removeScheduledTask(taskUuid);
+                return;
             }
 
             throw error;
@@ -673,13 +760,14 @@ export class SchedulerManager {
         }
     }
 
-    private async triggerJob(task: any, executionUuid: string, dbOrTx?: any): Promise<string> {
+    private async triggerJob(task: any, executionUuid: string, dbOrTx?: any): Promise<TriggerJobResult> {
         const queueManager = QueueManager.getInstance();
         const payload = task.taskPayload;
         const db = dbOrTx || await getDB();
 
         let actualTaskType = task.taskType;
         let engine = payload.engine || "cheerio";
+        let templatePerCallCredits = 0;
 
         // Handle template task type
         if (task.taskType === "template") {
@@ -714,6 +802,10 @@ export class SchedulerManager {
 
                 // Use the template's type as the actual task type
                 actualTaskType = template.templateType;
+                const rawTemplatePrice = Number(template.pricing?.perCall || 0);
+                templatePerCallCredits = Number.isFinite(rawTemplatePrice) && rawTemplatePrice > 0
+                    ? rawTemplatePrice
+                    : 0;
 
                 // If engine is not specified in payload, use template's engine if available
                 if (!payload.engine && template.reqOptions?.engine) {
@@ -751,15 +843,20 @@ export class SchedulerManager {
 
         // Handle search and map tasks synchronously (they don't have dedicated workers)
         if (actualTaskType === "search" || actualTaskType === "map") {
-            return await this.executeSearchOrMapTask(
+            const syncJobUuid = await this.executeSearchOrMapTask(
                 actualTaskType,
                 task,
                 payload,
                 jobId,
                 url,
                 executionUuid,
-                db
+                db,
+                templatePerCallCredits
             );
+            return {
+                jobUuid: syncJobUuid,
+                dispatchCommitted: true,
+            };
         }
 
         // For scrape/crawl tasks, add to queue for async processing
@@ -774,6 +871,7 @@ export class SchedulerManager {
             queueName: queueName,  // Add queueName field
             scheduled_task_id: task.uuid,
             scheduled_execution_id: executionUuid,
+            scheduled_template_credits: templatePerCallCredits,
             parentId: jobId,
         };
 
@@ -785,44 +883,115 @@ export class SchedulerManager {
         log.info(`[SCHEDULER]   Engine: ${jobData.engine}`);
         log.info(`[SCHEDULER]   QueueName: ${jobData.queueName}`);
 
-        await queueManager.getQueue(queueName).add(
-            queueName,  // Use queueName as job name
-            jobData,
-            {
+        let dispatchCommitted = false;
+        let persistedJobUuid: string | undefined;
+
+        try {
+            // Create job record before queue dispatch so post-dispatch failures
+            // never leave an execution without an associated persisted job row.
+            const insertedJob = await db.insert(schemas.jobs).values({
                 jobId: jobId,
-                attempts: 3,
-                backoff: {
-                    type: "exponential",
-                    delay: 1000,
-                },
+                jobType: actualTaskType,
+                jobQueueName: queueName,
+                jobExpireAt: new Date(Date.now() + 3 * 60 * 60 * 1000), // 3 hours default
+                url: url,
+                payload: payload,
+                status: "pending",
+                apiKey: task.apiKey,
+                userId: task.userId,
+                origin: "scheduled-task", // Origin is "scheduled-task" not "scheduler"
+                isSuccess: false,
+                createdAt: new Date(),
+                updatedAt: new Date(),
+            }).returning({ uuid: schemas.jobs.uuid });
+
+            persistedJobUuid = insertedJob[0]?.uuid;
+            if (!persistedJobUuid) {
+                throw new Error(`Failed to persist scheduled job record for task ${task.uuid}`);
             }
-        );
 
-        log.info(`[SCHEDULER] Job added to BullMQ queue successfully`);
+            await queueManager.getQueue(queueName).add(
+                queueName,  // Use queueName as job name
+                jobData,
+                {
+                    jobId: jobId,
+                    attempts: 3,
+                    backoff: {
+                        type: "exponential",
+                        delay: 1000,
+                    },
+                }
+            );
+            dispatchCommitted = true;
 
-        // Then create job record in database
-        // This ensures the foreign key constraint is satisfied when task_executions references this job
-        const insertedJob = await db.insert(schemas.jobs).values({
-            jobId: jobId,
-            jobType: actualTaskType,
-            jobQueueName: queueName,
-            jobExpireAt: new Date(Date.now() + 3 * 60 * 60 * 1000), // 3 hours default
-            url: url,
-            payload: payload,
-            status: "pending",
-            apiKey: task.apiKey,
-            userId: task.userId,
-            origin: "scheduled-task", // Origin is "scheduled-task" not "scheduler"
-            isSuccess: false,
-            createdAt: new Date(),
-            updatedAt: new Date(),
-        }).returning({ uuid: schemas.jobs.uuid });
+            log.info(`[SCHEDULER] Job added to BullMQ queue successfully`);
 
-        // Get the UUID of the inserted job (this is what task_executions.jobUuid references)
-        const jobUuid = insertedJob[0].uuid;
+            // Align scheduled crawl billing with API-triggered crawl semantics:
+            // charge initial crawl credits at dispatch time.
+            if (
+                actualTaskType === "crawl"
+                && process.env.ANYCRAWL_API_CREDITS_ENABLED === "true"
+                && task.apiKey
+            ) {
+                try {
+                    const scrapeOptions = payload?.options?.scrape_options
+                        || payload?.scrape_options
+                        || {};
+                    const initialChargeDetails = CreditCalculator.buildCrawlInitialChargeDetails({
+                        scrape_options: scrapeOptions,
+                    }, {
+                        templateCredits: templatePerCallCredits,
+                    });
+                    const initialCredits = initialChargeDetails.total;
 
-        // Return the job UUID (not jobId) - this is what task_executions.jobUuid references
-        return jobUuid;
+                    if (initialCredits > 0) {
+                        await Billing.chargeDeltaByJobId({
+                            jobId,
+                            delta: initialCredits,
+                            reason: "scheduled_crawl_initial",
+                            idempotencyKey: `scheduled:crawl-initial:${executionUuid}`,
+                            chargeDetails: initialChargeDetails,
+                        });
+
+                        log.info(`[SCHEDULER] Deducted initial ${initialCredits} credits for crawl task`);
+                    }
+                } catch (creditError) {
+                    log.error(`[SCHEDULER] Failed to deduct initial crawl credits: ${creditError}`);
+                }
+            }
+
+            // Return the job UUID (not jobId) - this is what task_executions.jobUuid references
+            return {
+                jobUuid: persistedJobUuid,
+                dispatchCommitted: true,
+            };
+        } catch (error) {
+            if (dispatchCommitted) {
+                const wrapped = error instanceof Error ? error : new Error(String(error));
+                (wrapped as any).dispatchCommitted = true;
+                if (persistedJobUuid) {
+                    (wrapped as any).jobUuid = persistedJobUuid;
+                }
+                throw wrapped;
+            }
+            if (persistedJobUuid) {
+                try {
+                    const errorMessage = error instanceof Error ? error.message : String(error);
+                    await db
+                        .update(schemas.jobs)
+                        .set({
+                            status: "failed",
+                            errorMessage: `[SCHEDULER] Queue dispatch failed: ${errorMessage}`,
+                            isSuccess: false,
+                            updatedAt: new Date(),
+                        })
+                        .where(eq(schemas.jobs.uuid, persistedJobUuid));
+                } catch (jobUpdateError) {
+                    log.warning(`[SCHEDULER] Failed to mark queued job ${persistedJobUuid} as failed: ${jobUpdateError}`);
+                }
+            }
+            throw error;
+        }
     }
 
     /**
@@ -836,10 +1005,12 @@ export class SchedulerManager {
         jobId: string,
         url: string,
         executionUuid: string,
-        db: any
+        db: any,
+        templatePerCallCredits: number = 0
     ): Promise<string> {
         const startedAt = new Date();
         let creditsUsed = 0;
+        let chargeDetails: ReturnType<typeof CreditCalculator.buildMapChargeDetails> | undefined;
         let isSuccess = false;
         let errorMessage: string | undefined;
         let errorCode: string | undefined;
@@ -893,9 +1064,12 @@ export class SchedulerManager {
                 });
 
                 resultData = results;
-                creditsUsed = CreditCalculator.calculateSearchCredits({
+                chargeDetails = CreditCalculator.buildSearchChargeDetails({
                     pages: payload.pages,
+                }, {
+                    templateCredits: templatePerCallCredits,
                 });
+                creditsUsed = chargeDetails.total;
                 isSuccess = true;
 
                 log.info(`[SCHEDULER] Search completed: ${results.length} results`);
@@ -926,7 +1100,10 @@ export class SchedulerManager {
                 });
 
                 resultData = result.links;
-                creditsUsed = CreditCalculator.calculateMapCredits({});
+                chargeDetails = CreditCalculator.buildMapChargeDetails({
+                    templateCredits: templatePerCallCredits,
+                });
+                creditsUsed = chargeDetails.total;
                 isSuccess = true;
 
                 log.info(`[SCHEDULER] Map completed: ${result.links.length} links`);
@@ -959,22 +1136,14 @@ export class SchedulerManager {
         // Deduct credits if successful and credits are enabled
         if (isSuccess && creditsUsed > 0 && process.env.ANYCRAWL_API_CREDITS_ENABLED === 'true' && task.apiKey) {
             try {
-                await db.transaction(async (tx: any) => {
-                    // Update job creditsUsed
-                    await tx.update(schemas.jobs).set({
-                        creditsUsed: creditsUsed,
-                        deductedAt: new Date(),
-                        updatedAt: new Date(),
-                    }).where(eq(schemas.jobs.jobId, jobId));
-
-                    // Deduct from apiKey
-                    await tx.update(schemas.apiKey).set({
-                        credits: sql`${schemas.apiKey.credits} - ${creditsUsed}`,
-                        lastUsedAt: new Date(),
-                    }).where(eq(schemas.apiKey.uuid, task.apiKey));
-
-                    log.info(`[SCHEDULER] Deducted ${creditsUsed} credits for ${taskType} task`);
+                await Billing.chargeToUsedByJobId({
+                    jobId,
+                    targetUsed: creditsUsed,
+                    reason: `scheduled_${taskType}_finalize`,
+                    idempotencyKey: `scheduled:${taskType}:finalize:${executionUuid}`,
+                    chargeDetails,
                 });
+                log.info(`[SCHEDULER] Deducted ${creditsUsed} credits for ${taskType} task`);
             } catch (creditError) {
                 log.error(`[SCHEDULER] Failed to deduct credits: ${creditError}`);
             }
@@ -982,14 +1151,24 @@ export class SchedulerManager {
 
         // Update execution record with startedAt and completedAt
         const completedAt = new Date();
-        await db.update(schemas.taskExecutions).set({
+        const finalized = await finalizeExecution({
+            db,
+            executionUuid,
+            status: isSuccess ? "completed" : "failed",
+            jobUuid: jobUuid,
             startedAt: startedAt,
             completedAt: completedAt,
-            status: isSuccess ? "completed" : "failed",
             errorMessage: errorMessage,
             errorCode: errorCode,
             errorDetails: errorDetails,
-        }).where(eq(schemas.taskExecutions.uuid, executionUuid));
+            source: "scheduler",
+        });
+
+        if (!finalized.transitioned) {
+            log.warning(
+                `[SCHEDULER] Execution ${executionUuid} was already finalized, skipping duplicate ${isSuccess ? "completed" : "failed"} update`
+            );
+        }
 
         return jobUuid;
     }
@@ -1204,56 +1383,79 @@ export class SchedulerManager {
     private async cleanupStaleExecutions(db: Awaited<ReturnType<typeof getDB>>): Promise<void> {
         try {
             const staleThreshold = new Date(Date.now() - 5 * 60 * 1000); // 5 minutes ago
+            const now = new Date();
 
             // Case 1: Pending executions that never started (startedAt IS NULL)
-            const result = await db
-                .update(schemas.taskExecutions)
-                .set({
+            const stalePendingNeverStarted = await db
+                .select({ uuid: schemas.taskExecutions.uuid })
+                .from(schemas.taskExecutions)
+                .where(
+                    sql`${schemas.taskExecutions.status} = 'pending'
+                        AND ${schemas.taskExecutions.startedAt} IS NULL
+                        AND ${schemas.taskExecutions.createdAt} < ${staleThreshold}`
+                );
+
+            let cleanedNeverStarted = 0;
+            for (const execution of stalePendingNeverStarted) {
+                const finalized = await finalizeExecution({
+                    db,
+                    executionUuid: execution.uuid,
                     status: "failed",
-                    completedAt: new Date(),
+                    completedAt: now,
                     errorMessage: "Auto-failed: Execution stuck in pending state (possible process crash or timeout)",
                     errorCode: "STALE_PENDING_TIMEOUT",
                     errorDetails: {
                         reason: "pending_timeout",
                         threshold_minutes: 5,
-                        timestamp: new Date().toISOString(),
+                        timestamp: now.toISOString(),
                     },
-                })
-                .where(
-                    sql`${schemas.taskExecutions.status} = 'pending'
-                        AND ${schemas.taskExecutions.startedAt} IS NULL
-                        AND ${schemas.taskExecutions.createdAt} < ${staleThreshold}`
-                )
-                .returning({ uuid: schemas.taskExecutions.uuid });
+                    source: "cleanup",
+                });
 
-            if (result.length > 0) {
-                log.warning(`[SCHEDULER] 🧹 Cleaned up ${result.length} stale pending execution(s) (never started)`);
+                if (finalized.transitioned) {
+                    cleanedNeverStarted++;
+                }
+            }
+
+            if (cleanedNeverStarted > 0) {
+                log.warning(`[SCHEDULER] 🧹 Cleaned up ${cleanedNeverStarted} stale pending execution(s) (never started)`);
             }
 
             // Case 2: Pending executions that have startedAt but status never changed to running
             // This can happen if worker crashed after markExecutionStarted but before status update
             const stalePendingWithStart = await db
-                .update(schemas.taskExecutions)
-                .set({
+                .select({ uuid: schemas.taskExecutions.uuid })
+                .from(schemas.taskExecutions)
+                .where(
+                    sql`${schemas.taskExecutions.status} = 'pending'
+                        AND ${schemas.taskExecutions.startedAt} IS NOT NULL
+                        AND ${schemas.taskExecutions.startedAt} < ${staleThreshold}`
+                );
+
+            let cleanedStartedButPending = 0;
+            for (const execution of stalePendingWithStart) {
+                const finalized = await finalizeExecution({
+                    db,
+                    executionUuid: execution.uuid,
                     status: "failed",
-                    completedAt: new Date(),
+                    completedAt: now,
                     errorMessage: "Auto-failed: Execution stuck in pending state with startedAt set (worker crash)",
                     errorCode: "STALE_PENDING_STARTED",
                     errorDetails: {
                         reason: "pending_started_timeout",
                         threshold_minutes: 5,
-                        timestamp: new Date().toISOString(),
+                        timestamp: now.toISOString(),
                     },
-                })
-                .where(
-                    sql`${schemas.taskExecutions.status} = 'pending'
-                        AND ${schemas.taskExecutions.startedAt} IS NOT NULL
-                        AND ${schemas.taskExecutions.startedAt} < ${staleThreshold}`
-                )
-                .returning({ uuid: schemas.taskExecutions.uuid });
+                    source: "cleanup",
+                });
 
-            if (stalePendingWithStart.length > 0) {
-                log.warning(`[SCHEDULER] 🧹 Cleaned up ${stalePendingWithStart.length} stale pending execution(s) (started but stuck)`);
+                if (finalized.transitioned) {
+                    cleanedStartedButPending++;
+                }
+            }
+
+            if (cleanedStartedButPending > 0) {
+                log.warning(`[SCHEDULER] 🧹 Cleaned up ${cleanedStartedButPending} stale pending execution(s) (started but stuck)`);
             }
 
             // Also cleanup stale running executions based on task type
@@ -1287,8 +1489,19 @@ export class SchedulerManager {
             // This can happen if Worker crashed, queue mismatch, or job was never processed
             const runningNoStartThreshold = new Date(now.getTime() - RUNNING_NO_START_TIMEOUT_MS);
             const staleRunningNoStart = await db
-                .update(schemas.taskExecutions)
-                .set({
+                .select({ uuid: schemas.taskExecutions.uuid })
+                .from(schemas.taskExecutions)
+                .where(
+                    sql`${schemas.taskExecutions.status} = 'running'
+                        AND ${schemas.taskExecutions.startedAt} IS NULL
+                        AND ${schemas.taskExecutions.createdAt} < ${runningNoStartThreshold}`
+                );
+
+            let cleanedNeverStarted = 0;
+            for (const execution of staleRunningNoStart) {
+                const finalized = await finalizeExecution({
+                    db,
+                    executionUuid: execution.uuid,
                     status: "failed",
                     completedAt: now,
                     errorMessage: "Auto-failed: Execution stuck in running state without startedAt (Worker never started processing)",
@@ -1298,30 +1511,16 @@ export class SchedulerManager {
                         threshold_minutes: Math.round(RUNNING_NO_START_TIMEOUT_MS / 60000),
                         timestamp: now.toISOString(),
                     },
-                })
-                .where(
-                    sql`${schemas.taskExecutions.status} = 'running'
-                        AND ${schemas.taskExecutions.startedAt} IS NULL
-                        AND ${schemas.taskExecutions.createdAt} < ${runningNoStartThreshold}`
-                )
-                .returning({ uuid: schemas.taskExecutions.uuid, scheduledTaskUuid: schemas.taskExecutions.scheduledTaskUuid });
+                    source: "cleanup",
+                });
 
-            if (staleRunningNoStart.length > 0) {
-                log.warning(`[SCHEDULER] 🧹 Cleaned up ${staleRunningNoStart.length} stale running execution(s) (never started)`);
-
-                // Update failedExecutions counter for affected tasks
-                for (const exec of staleRunningNoStart) {
-                    if (exec.scheduledTaskUuid) {
-                        await db
-                            .update(schemas.scheduledTasks)
-                            .set({
-                                failedExecutions: sql`${schemas.scheduledTasks.failedExecutions} + 1`,
-                                consecutiveFailures: sql`${schemas.scheduledTasks.consecutiveFailures} + 1`,
-                                updatedAt: now,
-                            })
-                            .where(eq(schemas.scheduledTasks.uuid, exec.scheduledTaskUuid));
-                    }
+                if (finalized.transitioned) {
+                    cleanedNeverStarted++;
                 }
+            }
+
+            if (cleanedNeverStarted > 0) {
+                log.warning(`[SCHEDULER] 🧹 Cleaned up ${cleanedNeverStarted} stale running execution(s) (never started)`);
             }
 
             // Get all running executions with their task info and job type
@@ -1405,56 +1604,49 @@ export class SchedulerManager {
                 }
 
                 if (shouldTimeout) {
-                    // Update execution to failed
-                    await db
-                        .update(schemas.taskExecutions)
-                        .set({
-                            status: "failed",
-                            completedAt: now,
-                            errorMessage: `Auto-failed: Execution timed out after ${thresholdMinutes} minutes (${timeoutReason})`,
-                            errorCode: "EXECUTION_TIMEOUT",
-                            errorDetails: {
-                                reason: timeoutReason,
-                                threshold_minutes: thresholdMinutes,
-                                running_time_ms: runningTime,
-                                scheduled_task_type: scheduledTaskType,
-                                actual_task_type: actualTaskType,
-                                timestamp: now.toISOString(),
-                            },
-                        })
-                        .where(eq(schemas.taskExecutions.uuid, execution.executionUuid));
+                    const finalized = await finalizeExecution({
+                        db,
+                        executionUuid: execution.executionUuid,
+                        status: "failed",
+                        completedAt: now,
+                        errorMessage: `Auto-failed: Execution timed out after ${thresholdMinutes} minutes (${timeoutReason})`,
+                        errorCode: "EXECUTION_TIMEOUT",
+                        errorDetails: {
+                            reason: timeoutReason,
+                            threshold_minutes: thresholdMinutes,
+                            running_time_ms: runningTime,
+                            scheduled_task_type: scheduledTaskType,
+                            actual_task_type: actualTaskType,
+                            timestamp: now.toISOString(),
+                        },
+                        source: "cleanup",
+                    });
 
-                    // Update scheduled_tasks failedExecutions counter
-                    if (execution.scheduledTaskUuid) {
-                        await db
-                            .update(schemas.scheduledTasks)
-                            .set({
-                                failedExecutions: sql`${schemas.scheduledTasks.failedExecutions} + 1`,
-                                consecutiveFailures: sql`${schemas.scheduledTasks.consecutiveFailures} + 1`,
-                                updatedAt: now,
-                            })
-                            .where(eq(schemas.scheduledTasks.uuid, execution.scheduledTaskUuid));
+                    if (finalized.transitioned) {
+                        // Also update the associated job if exists
+                        if (execution.jobUuid) {
+                            await db
+                                .update(schemas.jobs)
+                                .set({
+                                    status: "failed",
+                                    errorMessage: `Execution timed out after ${thresholdMinutes} minutes`,
+                                    isSuccess: false,
+                                    updatedAt: now,
+                                })
+                                .where(eq(schemas.jobs.uuid, execution.jobUuid));
+                        }
+
+                        cleanedCount++;
+                        log.warning(
+                            `[SCHEDULER] 🧹 Timed out execution ${execution.executionUuid} ` +
+                            `(type: ${actualTaskType}${scheduledTaskType === "template" ? " (template)" : ""}, ` +
+                            `reason: ${timeoutReason}, running: ${Math.round(runningTime / 60000)}min)`
+                        );
+                    } else {
+                        log.debug(
+                            `[SCHEDULER] Skip timeout side-effects for execution ${execution.executionUuid}: already finalized`
+                        );
                     }
-
-                    // Also update the associated job if exists
-                    if (execution.jobUuid) {
-                        await db
-                            .update(schemas.jobs)
-                            .set({
-                                status: "failed",
-                                errorMessage: `Execution timed out after ${thresholdMinutes} minutes`,
-                                isSuccess: false,
-                                updatedAt: now,
-                            })
-                            .where(eq(schemas.jobs.uuid, execution.jobUuid));
-                    }
-
-                    cleanedCount++;
-                    log.warning(
-                        `[SCHEDULER] 🧹 Timed out execution ${execution.executionUuid} ` +
-                        `(type: ${actualTaskType}${scheduledTaskType === "template" ? " (template)" : ""}, ` +
-                        `reason: ${timeoutReason}, running: ${Math.round(runningTime / 60000)}min)`
-                    );
                 }
             }
 

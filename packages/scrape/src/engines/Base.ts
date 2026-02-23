@@ -13,7 +13,7 @@ import {
     ResponseStatus,
     CrawlerResponse
 } from "../types/crawler.js";
-import { insertJobResult, failedJob, completedJob, getDB, schemas, eq, sql } from "@anycrawl/db";
+import { insertJobResult, failedJob, completedJob, Billing } from "@anycrawl/db";
 import { JOB_RESULT_STATUS } from "../../../db/dist/map.js";
 import { ProgressManager } from "../managers/Progress.js";
 import { CacheManager } from "../managers/Cache.js";
@@ -23,7 +23,7 @@ import { CrawlLimitReachedError } from "../errors/index.js";
 import type { CrawlingContext, EngineOptions } from "../types/engine.js";
 import { minimatch } from "minimatch";
 import { BandwidthManager } from "../managers/Bandwidth.js";
-import { getResolvedProxyModeName } from "../managers/Proxy.js";
+import { getResolvedProxyModeName, getProxyTierCount } from "../managers/Proxy.js";
 
 // Template system imports - directly use @anycrawl/template-client
 
@@ -595,6 +595,33 @@ export abstract class BaseEngine {
                 // Ignore errors when accessing proxyInfo or session
             }
 
+            // If we get a 403, switch proxy tier (auto: base → stealth) when possible and retry.
+            // This is only applied for proxy mode "auto" (proxy="base" must not upgrade).
+            if (context.response) {
+                const status = this.extractResponseStatus(context.response as CrawlerResponse);
+                if (status.statusCode === 403) {
+                    const proxyValue = context.request.userData?.options?.proxy as string | undefined;
+                    const currentTierRaw = (context.request.userData as any)?._proxyTier;
+                    const currentTier = typeof currentTierRaw === "number" && Number.isFinite(currentTierRaw) ? currentTierRaw : 0;
+                    const tierCount = getProxyTierCount(proxyValue);
+                    const nextTier = currentTier + 1;
+
+                    // Only upgrade for mode "auto" (custom proxy URLs cannot switch; "base" must not upgrade).
+                    if (proxyValue === "auto" && tierCount > nextTier) {
+                        (context.request.userData as any)._proxyTier = nextTier;
+
+                        const jobId = context.request.userData?.jobId || "unknown";
+                        const queueName = context.request.userData?.queueName || "unknown";
+                        log.warning(
+                            `[PROXY] [${queueName}] [${jobId}] 403 Forbidden → switching proxy tier ${currentTier}→${nextTier} for mode="${proxyValue}" and retrying: ${context.request.url}`
+                        );
+
+                        // Throw to let Crawlee retry with a new proxy (and session rotation if enabled).
+                        throw new Error("403_PROXY_TIER_FALLBACK");
+                    }
+                }
+            }
+
             // Check for 403 error early and try refreshing before other processing
             // This happens before Crawlee's retry mechanism, giving us a chance to recover
             if (context.response && (context as any).page) {
@@ -1121,40 +1148,29 @@ export abstract class BaseEngine {
                         // (API-triggered scrape jobs are handled by DeductCreditsMiddleware)
                         const isScheduledTask = !!context.request.userData.scheduled_task_id;
                         if (isScheduledTask && process.env.ANYCRAWL_API_CREDITS_ENABLED === 'true') {
-                            const scrapeOptions = context.request.userData.options || {};
-                            const creditsUsed = CreditCalculator.calculateScrapeCredits({
+                            const scheduledUserData: any = context.request.userData || {};
+                            const scrapeOptions = scheduledUserData.options || scheduledUserData || {};
+                            const templateCredits = Number(scheduledUserData.scheduled_template_credits ?? 0);
+                            const chargeDetails = CreditCalculator.buildScrapeChargeDetails({
                                 proxy: scrapeOptions.proxy,
                                 json_options: scrapeOptions.json_options,
                                 formats: scrapeOptions.formats,
                                 extract_source: scrapeOptions.extract_source,
+                            }, {
+                                templateCredits,
                             });
+                            const creditsUsed = chargeDetails.total;
 
                             // Update job creditsUsed and deduct from apiKey
                             try {
-                                const db = await getDB();
-                                await db.transaction(async (tx: any) => {
-                                    // Update job creditsUsed
-                                    await tx.update(schemas.jobs).set({
-                                        creditsUsed: creditsUsed,
-                                        deductedAt: new Date(),
-                                        updatedAt: new Date(),
-                                    }).where(eq(schemas.jobs.jobId, jobId));
-
-                                    // Get apiKey from job and deduct credits
-                                    const [jobRow] = await tx
-                                        .select({ apiKey: schemas.jobs.apiKey })
-                                        .from(schemas.jobs)
-                                        .where(eq(schemas.jobs.jobId, jobId));
-
-                                    if (jobRow?.apiKey) {
-                                        await tx.update(schemas.apiKey).set({
-                                            credits: sql`${schemas.apiKey.credits} - ${creditsUsed}`,
-                                            lastUsedAt: new Date(),
-                                        }).where(eq(schemas.apiKey.uuid, jobRow.apiKey));
-
-                                        log.info(`[${queueName}] [${jobId}] Scheduled task scrape: deducted ${creditsUsed} credits`);
-                                    }
+                                await Billing.chargeToUsedByJobId({
+                                    jobId,
+                                    targetUsed: creditsUsed,
+                                    reason: "scheduled_scrape_finalize",
+                                    idempotencyKey: `scheduled:scrape:finalize:${String(scheduledUserData.scheduled_execution_id ?? jobId)}:${creditsUsed}`,
+                                    chargeDetails,
                                 });
+                                log.info(`[${queueName}] [${jobId}] Scheduled task scrape: deducted ${creditsUsed} credits`);
                             } catch (creditError) {
                                 log.error(`[${queueName}] [${jobId}] Failed to update credits for scheduled task scrape: ${creditError}`);
                             }

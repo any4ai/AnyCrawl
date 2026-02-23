@@ -1,8 +1,8 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "c9fa63f0-c6a6-4f96-baad-c396b7f3ea9d",
-  "prevId": "2b97c5c9-0060-4e46-baee-7fcd193b71f3",
+  "id": "6c2cf57a-2360-4bb8-8619-cc2fd54af77e",
+  "prevId": "c9fa63f0-c6a6-4f96-baad-c396b7f3ea9d",
   "tables": {
     "api_key": {
       "name": "api_key",
@@ -288,6 +288,14 @@
           "primaryKey": false,
           "notNull": false,
           "autoincrement": false
+        },
+        "cache_hits": {
+          "name": "cache_hits",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": 0
         },
         "traffic_bytes": {
           "name": "traffic_bytes",

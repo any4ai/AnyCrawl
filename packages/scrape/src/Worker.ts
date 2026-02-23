@@ -8,7 +8,8 @@ import { ProgressManager } from "./managers/Progress.js";
 import { ALLOWED_ENGINES, JOB_TYPE_CRAWL, JOB_TYPE_SCRAPE } from "@anycrawl/libs";
 import { ensureAIConfigLoaded } from "@anycrawl/ai/utils/config.js";
 import { refreshAIConfig, getDefaultLLModelId, getEnabledProviderModels } from "@anycrawl/ai/utils/helper.js";
-import { getDB, schemas, eq, sql } from "@anycrawl/db";
+import { getDB, schemas, eq } from "@anycrawl/db";
+import { finalizeExecution } from "./managers/ExecutionLifecycle.js";
 
 // Helper function to update execution status
 // Note: Metrics (credits_used, items_processed, etc.) are stored in jobs table
@@ -20,54 +21,31 @@ async function updateExecutionStatus(
     error?: Error
 ): Promise<void> {
     try {
-        const db = await getDB();
-
         log.info(`[EXECUTION] Updating execution ${executionUuid} to ${status}`);
 
-        const updateData: any = {
-            status,
-            completedAt: new Date(),
-        };
-
-        if (status === 'failed' && error) {
-            updateData.errorMessage = error.message;
-            // Extract error code from error name or use a default
-            updateData.errorCode = error.name || 'EXECUTION_ERROR';
-            // Store detailed error information
-            updateData.errorDetails = {
-                name: error.name,
-                message: error.message,
-                stack: error.stack,
+        const errorMessage = status === "failed" ? (error?.message || "Execution failed") : undefined;
+        const errorCode = status === "failed" ? (error?.name || "EXECUTION_ERROR") : undefined;
+        const errorDetails = status === "failed"
+            ? {
+                name: error?.name || "Error",
+                message: errorMessage,
+                stack: error?.stack,
                 timestamp: new Date().toISOString(),
-            };
-        }
-
-        await db
-            .update(schemas.taskExecutions)
-            .set(updateData)
-            .where(eq(schemas.taskExecutions.uuid, executionUuid));
-
-        // Update scheduled_tasks statistics based on execution result
-        // First get the execution to find the parent task
-        const execution = await db
-            .select({ scheduledTaskUuid: schemas.taskExecutions.scheduledTaskUuid })
-            .from(schemas.taskExecutions)
-            .where(eq(schemas.taskExecutions.uuid, executionUuid))
-            .limit(1);
-
-        if (execution.length > 0 && execution[0].scheduledTaskUuid) {
-            if (status === 'completed') {
-                // Increment successfulExecutions on success
-                await db
-                    .update(schemas.scheduledTasks)
-                    .set({
-                        successfulExecutions: sql`${schemas.scheduledTasks.successfulExecutions} + 1`,
-                        updatedAt: new Date(),
-                    })
-                    .where(eq(schemas.scheduledTasks.uuid, execution[0].scheduledTaskUuid));
-                log.info(`[EXECUTION] Incremented successfulExecutions for task ${execution[0].scheduledTaskUuid}`);
+                source: "worker",
             }
-            // Note: failedExecutions is already incremented in SchedulerManager when trigger fails
+            : undefined;
+
+        const result = await finalizeExecution({
+            executionUuid,
+            status,
+            errorMessage,
+            errorCode,
+            errorDetails,
+            source: "worker",
+        });
+
+        if (!result.transitioned) {
+            log.warning(`[EXECUTION] Execution ${executionUuid} was already finalized, skipping duplicate ${status}`);
         }
 
         log.info(`[EXECUTION] Updated execution ${executionUuid} successfully`);
@@ -232,6 +210,10 @@ async function runJob(job: Job) {
             // Set original_url to initial URL for proxy rule matching
             // This ensures proxy rules can match correctly for both initial and subsequent requests
             original_url: job.data.url,
+            // Pass scheduled task info for credit deduction
+            scheduled_task_id: job.data.scheduled_task_id,
+            scheduled_execution_id: job.data.scheduled_execution_id,
+            scheduled_template_credits: job.data.scheduled_template_credits,
         }
     );
     // Seed enqueued counter for crawl jobs (the initial URL itself)

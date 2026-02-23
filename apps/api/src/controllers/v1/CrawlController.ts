@@ -73,11 +73,15 @@ export class CrawlController {
 
             // Add job to queue
             jobId = await QueueManager.getInstance().addJob(`crawl-${jobPayload.engine}`, jobPayload);
+            req.jobId = jobId;
 
             // Calculate initial credits using CreditCalculator
-            req.creditsUsed = defaultPrice + CreditCalculator.calculateCrawlInitialCredits({
+            req.billingChargeDetails = CreditCalculator.buildCrawlInitialChargeDetails({
                 scrape_options: jobPayload.options?.scrape_options,
+            }, {
+                templateCredits: defaultPrice,
             });
+            req.creditsUsed = req.billingChargeDetails.total;
 
             await createJob({
                 job_id: jobId,
@@ -128,6 +132,8 @@ export class CrawlController {
                     code: err.code,
                 }));
                 const message = error.errors.map((err) => err.message).join(", ");
+                req.creditsUsed = 0;
+                req.billingChargeDetails = undefined;
                 res.status(400).json({
                     success: false,
                     error: "Validation error",
@@ -144,6 +150,8 @@ export class CrawlController {
                 if (jobId) {
                     await failedJob(jobId, message);
                 }
+                req.creditsUsed = 0;
+                req.billingChargeDetails = undefined;
                 res.status(500).json({
                     success: false,
                     error: "Internal server error",

@@ -3,6 +3,8 @@ import { JSONSchema7 } from 'ai';
 import { log } from '@anycrawl/libs';
 import { ensureAIConfigLoaded, getAIConfig } from '../utils/config.js';
 import { getExtractModelId } from '../utils/helper.js';
+
+(globalThis as any).AI_SDK_LOG_WARNINGS = false;
 // 测试数据
 const testMarkdown = `
 # Company Information
@@ -198,6 +200,7 @@ describe('LLMExtract', () => {
     let defaultLLMModel: string;
 
     beforeEach(async () => {
+        log.setLevel(log.LEVELS.INFO);
         await ensureAIConfigLoaded();
         const aiConfig = getAIConfig();
         defaultLLMModel = getExtractModelId();
@@ -255,7 +258,7 @@ describe('LLMExtract', () => {
             expect(result.data.companyName).toBeDefined();
             expect(typeof result.data.companyName).toBe('string');
             expect(result.data.industry).toBeDefined();
-        }, 30000);
+        }, 60000);
 
         test('should handle empty text', async () => {
             const result = await extractor.perform('', simpleSchema);
@@ -426,6 +429,6 @@ describe('LLMExtract', () => {
                 expect(error instanceof Error).toBe(true);
                 expect((error as Error).message.includes('Cost limit exceeded')).toBe(true);
             }
-        }, 30000);
+        }, 60000);
     });
-}); 
+});

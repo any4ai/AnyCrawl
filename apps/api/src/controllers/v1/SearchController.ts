@@ -296,11 +296,14 @@ export class SearchController {
                 }
             }
             // Calculate credits using CreditCalculator
-            req.creditsUsed = defaultPrice + CreditCalculator.calculateSearchCredits({
+            req.billingChargeDetails = CreditCalculator.buildSearchChargeDetails({
                 pages: validatedData.pages,
                 scrape_options: validatedData.scrape_options,
                 completedScrapeCount,
+            }, {
+                templateCredits: defaultPrice,
             });
+            req.creditsUsed = req.billingChargeDetails.total;
 
             // Mark job status based on page results and scrape tasks
             try {
@@ -361,6 +364,8 @@ export class SearchController {
                     code: err.code,
                 }));
 
+                req.creditsUsed = 0;
+                req.billingChargeDetails = undefined;
                 res.status(400).json({
                     success: false,
                     error: "Validation error",
@@ -377,6 +382,8 @@ export class SearchController {
                         log.error(`Failed to mark job failed for job_id=${searchJobId}: ${e instanceof Error ? e.message : String(e)}`);
                     }
                 }
+                req.creditsUsed = 0;
+                req.billingChargeDetails = undefined;
                 res.status(500).json({
                     success: false,
                     error: "Internal server error",

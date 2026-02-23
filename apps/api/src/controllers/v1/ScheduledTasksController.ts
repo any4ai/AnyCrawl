@@ -1,43 +1,32 @@
 import { Response } from "express";
 import { z } from "zod";
 import { CronExpressionParser } from "cron-parser";
-import crypto from "crypto";
-import { RequestWithAuth, estimateTaskCredits, WebhookEventType, isScheduledTasksLimitEnabled, getScheduledTasksLimit, buildLimitExceededResponse } from "@anycrawl/libs";
-import { getDB, schemas, eq, sql } from "@anycrawl/db";
-import { log } from "@anycrawl/libs";
+import {
+    RequestWithAuth,
+    type OwnerContext,
+    createTaskSchema,
+    updateTaskSchema,
+    estimateTaskCredits,
+    WebhookEventType,
+    isScheduledTasksLimitEnabled,
+    getScheduledTasksLimit,
+    buildLimitExceededResponse,
+    normalizePagination,
+    log,
+} from "@anycrawl/libs";
+import {
+    getDB,
+    schemas,
+    eq,
+    sql,
+    buildTaskWhereClause,
+    getOwnedTask,
+    listTasksByOwner,
+} from "@anycrawl/db";
 import { randomUUID } from "crypto";
 import { serializeRecord, serializeRecords } from "../../utils/serializer.js";
+import { handleWebhookAssociations, removeWebhookAssociations } from "./scheduled-tasks/webhookAssociations.js";
 
-// Validation schemas
-const createTaskSchema = z.object({
-    name: z.string().min(1).max(255),
-    description: z.string().nullable().optional(),
-    cron_expression: z.string().refine(
-        (val) => {
-            try {
-                CronExpressionParser.parse(val);
-                return true;
-            } catch {
-                return false;
-            }
-        },
-        "Invalid cron expression"
-    ),
-    timezone: z.string().default("UTC"),
-    task_type: z.enum(["scrape", "crawl", "search", "template"]),
-    task_payload: z.object({}).passthrough(),
-    concurrency_mode: z.enum(["skip", "queue"]).default("skip"),
-    max_executions_per_day: z.number().int().positive().nullable().optional(),
-    tags: z.array(z.string()).optional(),
-    metadata: z.record(z.any()).optional(),
-    // Webhook integration options
-    webhook_ids: z.array(z.string().uuid()).optional(),
-    webhook_url: z.string().url().optional(),
-});
-
-const updateTaskSchema = createTaskSchema.partial();
-
-// Icon mappings
 const TASK_TYPE_ICONS: Record<string, string> = {
     scrape: "FileText",
     crawl: "Network",
@@ -60,14 +49,12 @@ export class ScheduledTasksController {
     public create = async (req: RequestWithAuth, res: Response): Promise<void> => {
         try {
             const validatedData = createTaskSchema.parse(req.body);
-            const apiKeyId = req.auth?.uuid;
-            const userId = req.auth?.user;
+            const owner = this.getOwnerContext(req);
+            const { apiKeyId, userId } = owner;
 
-            // Check scheduled tasks limit
             if (isScheduledTasksLimitEnabled() && apiKeyId) {
                 const db = await getDB();
 
-                // Single query: get tier and task count together
                 const result = await db
                     .select({
                         subscriptionTier: schemas.apiKey.subscriptionTier,
@@ -91,10 +78,7 @@ export class ScheduledTasksController {
                 }
             }
 
-            // Calculate min_credits_required automatically
             let template = null;
-
-            // Fetch template if template_id is provided
             if (validatedData.task_payload.template_id) {
                 try {
                     const { getTemplate } = await import("@anycrawl/db");
@@ -104,14 +88,12 @@ export class ScheduledTasksController {
                 }
             }
 
-            // Calculate credits (with or without template)
             const minCreditsRequired = estimateTaskCredits(
                 validatedData.task_type,
                 validatedData.task_payload,
                 template ? { template } : undefined
             );
 
-            // Calculate next execution time
             const nextExecution = this.calculateNextExecution(
                 validatedData.cron_expression,
                 validatedData.timezone
@@ -120,11 +102,10 @@ export class ScheduledTasksController {
             const db = await getDB();
             const taskUuid = randomUUID();
 
-            // Store both apiKey and userId (dual field storage)
             await db.insert(schemas.scheduledTasks).values({
                 uuid: taskUuid,
-                apiKey: apiKeyId,                    // Track which API key created this task
-                userId: userId || null,              // Track which user owns this task (can be null)
+                apiKey: apiKeyId,
+                userId: userId || null,
                 name: validatedData.name,
                 description: validatedData.description,
                 cronExpression: validatedData.cron_expression,
@@ -143,16 +124,13 @@ export class ScheduledTasksController {
                 updatedAt: new Date(),
             });
 
-            // Handle webhook associations
-            await this.handleWebhookAssociations(
+            await handleWebhookAssociations(
                 taskUuid,
+                owner,
                 validatedData.webhook_ids,
-                validatedData.webhook_url,
-                apiKeyId,
-                userId
+                validatedData.webhook_url
             );
 
-            // Add to BullMQ scheduler (only if scheduler is running)
             try {
                 const { SchedulerManager } = await import("@anycrawl/scrape");
                 const scheduler = SchedulerManager.getInstance();
@@ -168,8 +146,7 @@ export class ScheduledTasksController {
                         await scheduler.addScheduledTask(createdTask[0]);
                     }
                 } else {
-                    // Scheduler runs in a separate worker process - it will pick up the task via polling
-                    log.debug(`Task created in database. Scheduler worker will sync via polling.`);
+                    log.debug("Task created in database. Scheduler worker will sync via polling.");
                 }
             } catch (error) {
                 log.warning(`Failed to add task to scheduler: ${error}`);
@@ -192,30 +169,9 @@ export class ScheduledTasksController {
      */
     public list = async (req: RequestWithAuth, res: Response): Promise<void> => {
         try {
-            const apiKeyId = req.auth?.uuid;
-            const userId = req.auth?.user;
-
+            const owner = this.getOwnerContext(req);
             const db = await getDB();
-
-            // Query by userId if exists, otherwise by apiKey, otherwise all tasks
-            const tasks = userId
-                ? await db
-                    .select()
-                    .from(schemas.scheduledTasks)
-                    .where(eq(schemas.scheduledTasks.userId, userId))
-                    .orderBy(sql`${schemas.scheduledTasks.createdAt} DESC`)
-                : apiKeyId
-                ? await db
-                    .select()
-                    .from(schemas.scheduledTasks)
-                    .where(eq(schemas.scheduledTasks.apiKey, apiKeyId))
-                    .orderBy(sql`${schemas.scheduledTasks.createdAt} DESC`)
-                : await db
-                    .select()
-                    .from(schemas.scheduledTasks)
-                    .orderBy(sql`${schemas.scheduledTasks.createdAt} DESC`);
-
-            // Convert to snake_case
+            const tasks = await listTasksByOwner(db, owner);
             const serialized = serializeRecords(tasks);
 
             res.json({
@@ -233,25 +189,11 @@ export class ScheduledTasksController {
     public get = async (req: RequestWithAuth, res: Response): Promise<void> => {
         try {
             const { taskId } = req.params;
-            const apiKeyId = req.auth?.uuid;
-            const userId = req.auth?.user;
-
+            const owner = this.getOwnerContext(req);
             const db = await getDB();
+            const task = await getOwnedTask(db, taskId!, owner);
 
-            // Check ownership by userId if exists, otherwise by apiKey, otherwise just by taskId
-            const whereClause = userId
-                ? sql`${schemas.scheduledTasks.uuid} = ${taskId} AND ${schemas.scheduledTasks.userId} = ${userId}`
-                : apiKeyId
-                ? sql`${schemas.scheduledTasks.uuid} = ${taskId} AND ${schemas.scheduledTasks.apiKey} = ${apiKeyId}`
-                : sql`${schemas.scheduledTasks.uuid} = ${taskId}`;
-
-            const task = await db
-                .select()
-                .from(schemas.scheduledTasks)
-                .where(whereClause)
-                .limit(1);
-
-            if (!task.length) {
+            if (!task) {
                 res.status(404).json({
                     success: false,
                     error: "Task not found",
@@ -259,11 +201,8 @@ export class ScheduledTasksController {
                 return;
             }
 
-            // Convert to snake_case
-            const serialized = serializeRecord(task[0]);
-
-            // Add icon based on task type
-            const icon = TASK_TYPE_ICONS[task[0].taskType] || "Calendar";
+            const serialized = serializeRecord(task);
+            const icon = TASK_TYPE_ICONS[task.taskType] || "Calendar";
 
             res.json({
                 success: true,
@@ -283,26 +222,12 @@ export class ScheduledTasksController {
     public update = async (req: RequestWithAuth, res: Response): Promise<void> => {
         try {
             const { taskId } = req.params;
-            const apiKeyId = req.auth?.uuid;
-            const userId = req.auth?.user;
-
+            const owner = this.getOwnerContext(req);
             const validatedData = updateTaskSchema.parse(req.body);
             const db = await getDB();
 
-            // Check task exists and belongs to user/apiKey, or just check existence if no auth
-            const whereClause = userId
-                ? sql`${schemas.scheduledTasks.uuid} = ${taskId} AND ${schemas.scheduledTasks.userId} = ${userId}`
-                : apiKeyId
-                ? sql`${schemas.scheduledTasks.uuid} = ${taskId} AND ${schemas.scheduledTasks.apiKey} = ${apiKeyId}`
-                : sql`${schemas.scheduledTasks.uuid} = ${taskId}`;
-
-            const existing = await db
-                .select()
-                .from(schemas.scheduledTasks)
-                .where(whereClause)
-                .limit(1);
-
-            if (!existing.length) {
+            const existing = await getOwnedTask(db, taskId!, owner);
+            if (!existing) {
                 res.status(404).json({
                     success: false,
                     error: "Task not found",
@@ -315,23 +240,20 @@ export class ScheduledTasksController {
                 updatedAt: new Date(),
             };
 
-            // Recalculate next execution if cron expression changed
             if (validatedData.cron_expression) {
                 updateData.cronExpression = validatedData.cron_expression;
                 updateData.nextExecutionAt = this.calculateNextExecution(
                     validatedData.cron_expression,
-                    validatedData.timezone || existing[0].timezone
+                    validatedData.timezone || existing.timezone
                 );
                 delete updateData.cron_expression;
             }
 
-            // Map snake_case to camelCase
             if (validatedData.task_type) updateData.taskType = validatedData.task_type;
             if (validatedData.task_payload) updateData.taskPayload = validatedData.task_payload;
             if (validatedData.concurrency_mode) updateData.concurrencyMode = validatedData.concurrency_mode;
             if (validatedData.max_executions_per_day) updateData.maxExecutionsPerDay = validatedData.max_executions_per_day;
 
-            // Remove snake_case fields
             delete updateData.task_type;
             delete updateData.task_payload;
             delete updateData.concurrency_mode;
@@ -342,25 +264,21 @@ export class ScheduledTasksController {
                 .set(updateData)
                 .where(eq(schemas.scheduledTasks.uuid, taskId));
 
-            // Handle webhook associations if provided
             if (validatedData.webhook_ids || validatedData.webhook_url) {
-                await this.handleWebhookAssociations(
+                await handleWebhookAssociations(
                     taskId!,
+                    owner,
                     validatedData.webhook_ids,
-                    validatedData.webhook_url,
-                    apiKeyId || undefined,
-                    userId || undefined
+                    validatedData.webhook_url
                 );
             }
 
-            // Fetch the updated task
             const updatedTask = await db
                 .select()
                 .from(schemas.scheduledTasks)
                 .where(eq(schemas.scheduledTasks.uuid, taskId))
                 .limit(1);
 
-            // Update in BullMQ scheduler (only if scheduler is running)
             try {
                 const { SchedulerManager } = await import("@anycrawl/scrape");
                 const scheduler = SchedulerManager.getInstance();
@@ -370,14 +288,12 @@ export class ScheduledTasksController {
                         await scheduler.addScheduledTask(updatedTask[0]);
                     }
                 } else {
-                    // Scheduler runs in a separate worker process - it will pick up the task via polling
-                    log.debug(`Task updated in database. Scheduler worker will sync via polling.`);
+                    log.debug("Task updated in database. Scheduler worker will sync via polling.");
                 }
             } catch (error) {
                 log.warning(`Failed to update task in scheduler: ${error}`);
             }
 
-            // Convert to snake_case and return the updated task
             const serialized = serializeRecord(updatedTask[0]);
             const icon = TASK_TYPE_ICONS[updatedTask[0].taskType] || "Calendar";
 
@@ -399,17 +315,11 @@ export class ScheduledTasksController {
     public pause = async (req: RequestWithAuth, res: Response): Promise<void> => {
         try {
             const { taskId } = req.params;
-            const apiKeyId = req.auth?.uuid;
-            const userId = req.auth?.user;
+            const owner = this.getOwnerContext(req);
             const { reason } = req.body;
-
             const db = await getDB();
 
-            const whereClause = userId
-                ? sql`${schemas.scheduledTasks.uuid} = ${taskId} AND ${schemas.scheduledTasks.userId} = ${userId}`
-                : apiKeyId
-                ? sql`${schemas.scheduledTasks.uuid} = ${taskId} AND ${schemas.scheduledTasks.apiKey} = ${apiKeyId}`
-                : sql`${schemas.scheduledTasks.uuid} = ${taskId}`;
+            const whereClause = buildTaskWhereClause(taskId!, owner);
 
             await db
                 .update(schemas.scheduledTasks)
@@ -420,7 +330,6 @@ export class ScheduledTasksController {
                 })
                 .where(whereClause);
 
-            // Remove from BullMQ scheduler
             try {
                 const { SchedulerManager } = await import("@anycrawl/scrape");
                 await SchedulerManager.getInstance().removeScheduledTask(taskId!);
@@ -428,7 +337,6 @@ export class ScheduledTasksController {
                 log.warning(`Failed to remove task from scheduler: ${error}`);
             }
 
-            // Trigger webhook for task pause
             try {
                 if (process.env.ANYCRAWL_WEBHOOKS_ENABLED === "true") {
                     const pausedTask = await db
@@ -473,16 +381,10 @@ export class ScheduledTasksController {
     public resume = async (req: RequestWithAuth, res: Response): Promise<void> => {
         try {
             const { taskId } = req.params;
-            const apiKeyId = req.auth?.uuid;
-            const userId = req.auth?.user;
-
+            const owner = this.getOwnerContext(req);
             const db = await getDB();
 
-            const whereClause = userId
-                ? sql`${schemas.scheduledTasks.uuid} = ${taskId} AND ${schemas.scheduledTasks.userId} = ${userId}`
-                : apiKeyId
-                ? sql`${schemas.scheduledTasks.uuid} = ${taskId} AND ${schemas.scheduledTasks.apiKey} = ${apiKeyId}`
-                : sql`${schemas.scheduledTasks.uuid} = ${taskId}`;
+            const whereClause = buildTaskWhereClause(taskId!, owner);
 
             await db
                 .update(schemas.scheduledTasks)
@@ -494,7 +396,6 @@ export class ScheduledTasksController {
                 })
                 .where(whereClause);
 
-            // Add back to BullMQ scheduler (only if scheduler is running)
             try {
                 const { SchedulerManager } = await import("@anycrawl/scrape");
                 const scheduler = SchedulerManager.getInstance();
@@ -510,14 +411,12 @@ export class ScheduledTasksController {
                         await scheduler.addScheduledTask(resumedTask[0]);
                     }
                 } else {
-                    // Scheduler runs in a separate worker process - it will pick up the task via polling
-                    log.debug(`Task resumed in database. Scheduler worker will sync via polling.`);
+                    log.debug("Task resumed in database. Scheduler worker will sync via polling.");
                 }
             } catch (error) {
                 log.warning(`Failed to add task to scheduler: ${error}`);
             }
 
-            // Trigger webhook for task resume
             try {
                 if (process.env.ANYCRAWL_WEBHOOKS_ENABLED === "true") {
                     const resumedTask = await db
@@ -570,30 +469,24 @@ export class ScheduledTasksController {
                 return;
             }
 
-            const apiKeyId = req.auth?.uuid;
-            const userId = req.auth?.user;
-
+            const owner = this.getOwnerContext(req);
             const db = await getDB();
+            const whereClause = buildTaskWhereClause(taskId, owner);
 
-            const whereClause = userId
-                ? sql`${schemas.scheduledTasks.uuid} = ${taskId} AND ${schemas.scheduledTasks.userId} = ${userId}`
-                : apiKeyId
-                ? sql`${schemas.scheduledTasks.uuid} = ${taskId} AND ${schemas.scheduledTasks.apiKey} = ${apiKeyId}`
-                : sql`${schemas.scheduledTasks.uuid} = ${taskId}`;
-
-            await db
+            const deletedTasks = await db
                 .delete(schemas.scheduledTasks)
-                .where(whereClause);
+                .where(whereClause)
+                .returning({ uuid: schemas.scheduledTasks.uuid });
 
-            // Remove webhook associations
-            await this.removeWebhookAssociations(taskId);
+            if (deletedTasks.length > 0) {
+                await removeWebhookAssociations(taskId, owner);
 
-            // Remove from BullMQ scheduler
-            try {
-                const { SchedulerManager } = await import("@anycrawl/scrape");
-                await SchedulerManager.getInstance().removeScheduledTask(taskId!);
-            } catch (error) {
-                log.warning(`Failed to remove task from scheduler: ${error}`);
+                try {
+                    const { SchedulerManager } = await import("@anycrawl/scrape");
+                    await SchedulerManager.getInstance().removeScheduledTask(taskId);
+                } catch (error) {
+                    log.warning(`Failed to remove task from scheduler: ${error}`);
+                }
             }
 
             res.json({
@@ -613,25 +506,11 @@ export class ScheduledTasksController {
     public cancelExecution = async (req: RequestWithAuth, res: Response): Promise<void> => {
         try {
             const { taskId, executionId } = req.params;
-            const apiKeyId = req.auth?.uuid;
-            const userId = req.auth?.user;
-
+            const owner = this.getOwnerContext(req);
             const db = await getDB();
 
-            // Verify task belongs to user/apiKey
-            const whereClause = userId
-                ? sql`${schemas.scheduledTasks.uuid} = ${taskId} AND ${schemas.scheduledTasks.userId} = ${userId}`
-                : apiKeyId
-                ? sql`${schemas.scheduledTasks.uuid} = ${taskId} AND ${schemas.scheduledTasks.apiKey} = ${apiKeyId}`
-                : sql`${schemas.scheduledTasks.uuid} = ${taskId}`;
-
-            const task = await db
-                .select()
-                .from(schemas.scheduledTasks)
-                .where(whereClause)
-                .limit(1);
-
-            if (!task.length) {
+            const task = await getOwnedTask(db, taskId!, owner);
+            if (!task) {
                 res.status(404).json({
                     success: false,
                     error: "Task not found",
@@ -639,7 +518,6 @@ export class ScheduledTasksController {
                 return;
             }
 
-            // Verify execution belongs to this task
             const execution = await db
                 .select()
                 .from(schemas.taskExecutions)
@@ -657,7 +535,6 @@ export class ScheduledTasksController {
                 return;
             }
 
-            // Cancel the execution
             try {
                 const { SchedulerManager } = await import("@anycrawl/scrape");
                 const result = await SchedulerManager.getInstance().cancelExecution(executionId!);
@@ -692,27 +569,15 @@ export class ScheduledTasksController {
     public executions = async (req: RequestWithAuth, res: Response): Promise<void> => {
         try {
             const { taskId } = req.params;
-            const apiKeyId = req.auth?.uuid;
-            const userId = req.auth?.user;
-            const limit = parseInt(req.query.limit as string) || 100;
-            const offset = parseInt(req.query.offset as string) || 0;
-
+            const owner = this.getOwnerContext(req);
+            const { limit, offset } = normalizePagination(
+                req.query.limit as string | undefined,
+                req.query.offset as string | undefined
+            );
             const db = await getDB();
 
-            // Verify task belongs to user/apiKey, or just check existence if no auth
-            const whereClause = userId
-                ? sql`${schemas.scheduledTasks.uuid} = ${taskId} AND ${schemas.scheduledTasks.userId} = ${userId}`
-                : apiKeyId
-                ? sql`${schemas.scheduledTasks.uuid} = ${taskId} AND ${schemas.scheduledTasks.apiKey} = ${apiKeyId}`
-                : sql`${schemas.scheduledTasks.uuid} = ${taskId}`;
-
-            const task = await db
-                .select()
-                .from(schemas.scheduledTasks)
-                .where(whereClause)
-                .limit(1);
-
-            if (!task.length) {
+            const task = await getOwnedTask(db, taskId!, owner);
+            if (!task) {
                 res.status(404).json({
                     success: false,
                     error: "Task not found",
@@ -720,10 +585,8 @@ export class ScheduledTasksController {
                 return;
             }
 
-            // Query executions with job metrics via LEFT JOIN
             const executions = await db
                 .select({
-                    // Execution fields
                     uuid: schemas.taskExecutions.uuid,
                     scheduledTaskUuid: schemas.taskExecutions.scheduledTaskUuid,
                     executionNumber: schemas.taskExecutions.executionNumber,
@@ -739,7 +602,6 @@ export class ScheduledTasksController {
                     scheduledFor: schemas.taskExecutions.scheduledFor,
                     metadata: schemas.taskExecutions.metadata,
                     createdAt: schemas.taskExecutions.createdAt,
-                    // Job metrics (from jobs table)
                     creditsUsed: schemas.jobs.creditsUsed,
                     itemsProcessed: schemas.jobs.total,
                     itemsSucceeded: schemas.jobs.completed,
@@ -754,18 +616,14 @@ export class ScheduledTasksController {
                 .limit(limit)
                 .offset(offset);
 
-            // Calculate duration_ms for each execution
-            const executionsWithDuration = executions.map((exec: any) => ({
-                ...exec,
-                durationMs: exec.startedAt && exec.completedAt
-                    ? exec.completedAt.getTime() - exec.startedAt.getTime()
+            const executionsWithDuration = executions.map((execution: any) => ({
+                ...execution,
+                durationMs: execution.startedAt && execution.completedAt
+                    ? execution.completedAt.getTime() - execution.startedAt.getTime()
                     : null,
             }));
 
-            // Convert to snake_case
             const serialized = serializeRecords(executionsWithDuration);
-
-            // Add icon to each execution based on status
             const serializedWithIcons = serialized.map((execution: any) => ({
                 ...execution,
                 icon: EXECUTION_STATUS_ICONS[execution.status] || "Clock",
@@ -793,125 +651,11 @@ export class ScheduledTasksController {
         }
     }
 
-    /**
-     * Handle webhook associations when creating/updating a task
-     */
-    private async handleWebhookAssociations(
-        taskId: string,
-        webhookIds?: string[],
-        webhookUrl?: string,
-        apiKeyId?: string,
-        userId?: string
-    ): Promise<void> {
-        const db = await getDB();
-
-        // Option 1: Create a new webhook for this task
-        if (webhookUrl) {
-            try {
-                const webhookUuid = randomUUID();
-                const secret = crypto.randomBytes(32).toString("hex");
-
-                await db.insert(schemas.webhookSubscriptions).values({
-                    uuid: webhookUuid,
-                    apiKey: apiKeyId,
-                    userId: userId || null,
-                    name: `Webhook for task: ${taskId}`,
-                    description: `Auto-created webhook for scheduled task`,
-                    webhookUrl: webhookUrl,
-                    webhookSecret: secret,
-                    scope: "specific",
-                    specificTaskIds: [taskId],
-                    eventTypes: ["task.executed", "task.failed", "task.paused", "task.resumed"],
-                    isActive: true,
-                    customHeaders: {},
-                    timeoutSeconds: 10,
-                    maxRetries: 3,
-                    retryBackoffMultiplier: 2,
-                    createdAt: new Date(),
-                    updatedAt: new Date(),
-                });
-
-                log.info(`Auto-created webhook ${webhookUuid} for task ${taskId}`);
-            } catch (error) {
-                log.error(`Failed to create webhook for task ${taskId}: ${error}`);
-            }
-        }
-
-        // Option 2: Associate with existing webhooks
-        if (webhookIds && webhookIds.length > 0) {
-            for (const webhookId of webhookIds) {
-                try {
-                    // Verify webhook exists and belongs to user
-                    const whereClause = userId
-                        ? sql`${schemas.webhookSubscriptions.uuid} = ${webhookId} AND ${schemas.webhookSubscriptions.userId} = ${userId}`
-                        : apiKeyId
-                        ? sql`${schemas.webhookSubscriptions.uuid} = ${webhookId} AND ${schemas.webhookSubscriptions.apiKey} = ${apiKeyId}`
-                        : sql`${schemas.webhookSubscriptions.uuid} = ${webhookId}`;
-
-                    const webhook = await db
-                        .select()
-                        .from(schemas.webhookSubscriptions)
-                        .where(whereClause)
-                        .limit(1);
-
-                    if (!webhook.length) {
-                        log.warning(`Webhook ${webhookId} not found or not owned by user`);
-                        continue;
-                    }
-
-                    // Update webhook to include this task
-                    const currentTaskIds = (webhook[0].specificTaskIds as string[]) || [];
-                    if (!currentTaskIds.includes(taskId)) {
-                        const updatedTaskIds = [...currentTaskIds, taskId];
-                        await db
-                            .update(schemas.webhookSubscriptions)
-                            .set({
-                                specificTaskIds: updatedTaskIds,
-                                scope: "specific",
-                                updatedAt: new Date(),
-                            })
-                            .where(eq(schemas.webhookSubscriptions.uuid, webhookId));
-
-                        log.info(`Associated webhook ${webhookId} with task ${taskId}`);
-                    }
-                } catch (error) {
-                    log.error(`Failed to associate webhook ${webhookId} with task ${taskId}: ${error}`);
-                }
-            }
-        }
-    }
-
-    /**
-     * Remove task from all webhook associations
-     */
-    private async removeWebhookAssociations(taskId: string): Promise<void> {
-        const db = await getDB();
-
-        try {
-            // Find all webhooks that reference this task
-            const webhooks = await db
-                .select()
-                .from(schemas.webhookSubscriptions)
-                .where(sql`${schemas.webhookSubscriptions.specificTaskIds}::jsonb @> ${JSON.stringify([taskId])}`);
-
-            for (const webhook of webhooks) {
-                const currentTaskIds = (webhook.specificTaskIds as string[]) || [];
-                const updatedTaskIds = currentTaskIds.filter((id) => id !== taskId);
-
-                // Update with remaining tasks (keep as empty array if no tasks left)
-                await db
-                    .update(schemas.webhookSubscriptions)
-                    .set({
-                        specificTaskIds: updatedTaskIds.length > 0 ? updatedTaskIds : [],
-                        updatedAt: new Date(),
-                    })
-                    .where(eq(schemas.webhookSubscriptions.uuid, webhook.uuid));
-
-                log.info(`Removed task ${taskId} from webhook ${webhook.uuid}`);
-            }
-        } catch (error) {
-            log.error(`Failed to remove webhook associations for task ${taskId}: ${error}`);
-        }
+    private getOwnerContext(req: RequestWithAuth): OwnerContext {
+        return {
+            apiKeyId: req.auth?.uuid,
+            userId: req.auth?.user,
+        };
     }
 
     private handleError(error: any, res: Response): void {

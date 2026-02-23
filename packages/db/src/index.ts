@@ -3,6 +3,15 @@ import { getDB, schemas } from "./db/index.js";
 import { STATUS, JOB_RESULT_STATUS } from "./map.js";
 import { Job, CreateJobParams } from "./model/Job.js";
 import { Template, CreateTemplateParams } from "./model/Template.js";
+import { Billing } from "./model/Billing.js";
+import {
+    buildTaskWhereClause as buildTaskWhereClauseByOwner,
+    buildWebhookWhereClause as buildWebhookWhereClauseByOwner,
+    getOwnedTask as getOwnedTaskByOwner,
+    listTasksByOwner as listTasksByOwnerOwner,
+    getOwnedWebhook as getOwnedWebhookByOwner,
+    listWebhooksByOwner as listWebhooksByOwnerOwner,
+} from "./model/OwnerAccess.js";
 
 // Backward compatibility functions
 export const createJob = Job.create;
@@ -27,8 +36,17 @@ export const deleteTemplate = Template.delete;
 export const deleteTemplateIfExists = Template.deleteIfExists;
 export const existsTemplate = Template.exists;
 
+export const chargeDeltaByJobId = Billing.chargeDeltaByJobId;
+export const chargeToUsedByJobId = Billing.chargeToUsedByJobId;
+export const buildTaskWhereClause = buildTaskWhereClauseByOwner;
+export const buildWebhookWhereClause = buildWebhookWhereClauseByOwner;
+export const getOwnedTask = getOwnedTaskByOwner;
+export const listTasksByOwner = listTasksByOwnerOwner;
+export const getOwnedWebhook = getOwnedWebhookByOwner;
+export const listWebhooksByOwner = listWebhooksByOwnerOwner;
+
 // Template system exports
-export { templates, templateExecutions } from "./db/schemas/PostgreSQL.js";
+export { templates, templateExecutions, billingLedger } from "./db/schemas/PostgreSQL.js";
 
 // Scheduled tasks and webhooks exports
 export {
@@ -40,5 +58,5 @@ export {
     mapCache
 } from "./db/schemas/PostgreSQL.js";
 
-export { eq, and, gt, gte, sql, desc, getDB, schemas, STATUS, JOB_RESULT_STATUS, Job };
+export { eq, and, gt, gte, sql, desc, getDB, schemas, STATUS, JOB_RESULT_STATUS, Job, Billing };
 export type { CreateJobParams, CreateTemplateParams };

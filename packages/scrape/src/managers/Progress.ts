@@ -1,6 +1,6 @@
 import IORedis from "ioredis";
 import { Utils } from "../Utils.js";
-import { completedJob, failedJob, getDB, getJob, schemas, eq, sql } from "@anycrawl/db";
+import { completedJob, failedJob, getDB, getJob, schemas, eq, sql, Billing } from "@anycrawl/db";
 import { log, CreditCalculator, WebhookEventType } from "@anycrawl/libs";
 import type { QueueName } from "./Queue.js";
 import { BandwidthManager } from "./Bandwidth.js";
@@ -182,9 +182,9 @@ export class ProgressManager {
         // Increment DB counters per page and deduct credits inside a single DB transaction
         try {
             const db = await getDB();
-            let perPageCost = 1;
+            let perPageChargeDetails = CreditCalculator.buildCrawlPageChargeDetails({});
+            let perPageCost = perPageChargeDetails.total;
             let queueNameForFinalize: string | undefined;
-            let apiKeyForDeduction: string | undefined;
             let jobLimit: number | undefined;
             let shouldDeductCredits = wasSuccess;
             let remainingAfterDeduction: number | undefined;
@@ -193,17 +193,37 @@ export class ProgressManager {
                 // Fetch job row ONCE for cost calculation, limit checking, deduction and potential finalize
                 try {
                     const [jobRow] = await tx
-                        .select({ apiKey: schemas.jobs.apiKey, queueName: schemas.jobs.jobQueueName, payload: schemas.jobs.payload })
+                        .select({
+                            queueName: schemas.jobs.jobQueueName,
+                            payload: schemas.jobs.payload,
+                            origin: schemas.jobs.origin,
+                        })
                         .from(schemas.jobs)
                         .where(eq(schemas.jobs.jobId, jobId));
-                    apiKeyForDeduction = jobRow?.apiKey as string | undefined;
                     queueNameForFinalize = jobRow?.queueName as string | undefined;
                     const payload: any = jobRow?.payload ?? {};
-                    jobLimit = payload?.limit;
+                    const isScheduledJob = jobRow?.origin === "scheduled-task";
+                    const rawLimit = isScheduledJob
+                        ? (payload?.limit ?? payload?.options?.limit)
+                        : payload?.limit;
+                    if (typeof rawLimit === 'number') {
+                        jobLimit = rawLimit;
+                    } else if (typeof rawLimit === 'string') {
+                        const parsedLimit = Number(rawLimit);
+                        jobLimit = Number.isFinite(parsedLimit) ? parsedLimit : undefined;
+                    } else {
+                        jobLimit = undefined;
+                    }
                     // Check if this page exceeds the limit - don't deduct credits if over limit
                     if (jobLimit && done > jobLimit) {
                         shouldDeductCredits = false;
                         log.info(`[${queueNameForFinalize}] [${jobId}] Page ${done} exceeds limit ${jobLimit}, not deducting credits`);
+                    }
+
+                    // Crawl initial fee already covers the first page.
+                    if (shouldDeductCredits && done <= 1) {
+                        shouldDeductCredits = false;
+                        log.info(`[${queueNameForFinalize}] [${jobId}] Page ${done} covered by initial crawl credits, skipping per-page deduction`);
                     }
 
                     // Add to finalize set when approaching limit (90% done)
@@ -215,13 +235,23 @@ export class ProgressManager {
                     }
 
                     // Calculate per-page cost using CreditCalculator
-                    const scrapeOptions = payload?.options?.scrape_options || payload?.options || {};
-                    perPageCost = CreditCalculator.calculateCrawlPageCredits({
+                    const scrapeOptions = isScheduledJob
+                        ? (payload?.options?.scrape_options || payload?.scrape_options || payload?.options || {})
+                        : (payload?.options?.scrape_options || payload?.options || {});
+                    const costOptions = {
                         proxy: scrapeOptions.proxy,
-                        json_options: scrapeOptions.json_options || payload?.json_options,
-                        formats: scrapeOptions.formats || payload?.options?.formats,
-                        extract_source: scrapeOptions.extract_source || payload?.extract_source,
-                    });
+                        json_options: isScheduledJob
+                            ? (scrapeOptions.json_options || payload?.json_options || payload?.options?.json_options)
+                            : (scrapeOptions.json_options || payload?.json_options),
+                        formats: isScheduledJob
+                            ? (scrapeOptions.formats || payload?.formats || payload?.options?.formats)
+                            : (scrapeOptions.formats || payload?.options?.formats),
+                        extract_source: isScheduledJob
+                            ? (scrapeOptions.extract_source || payload?.extract_source || payload?.options?.extract_source)
+                            : (scrapeOptions.extract_source || payload?.extract_source),
+                    };
+                    perPageChargeDetails = CreditCalculator.buildCrawlPageChargeDetails(costOptions);
+                    perPageCost = perPageChargeDetails.total;
                 } catch { /* ignore: default perPageCost remains 1 */ }
 
                 const updates: any = {
@@ -232,10 +262,6 @@ export class ProgressManager {
                 updates.total = sql`${schemas.jobs.total} + 1`;
                 if (wasSuccess) {
                     updates.completed = sql`${schemas.jobs.completed} + 1`;
-                    // Only increment creditsUsed if within limit
-                    if (shouldDeductCredits) {
-                        updates.creditsUsed = sql`${schemas.jobs.creditsUsed} + ${perPageCost}`;
-                    }
                 } else {
                     updates.failed = sql`${schemas.jobs.failed} + 1`;
                 }
@@ -243,27 +269,25 @@ export class ProgressManager {
                 await tx.update(schemas.jobs).set(updates).where(eq(schemas.jobs.jobId, jobId));
 
                 // Deduct credits from the API key balance per processed URL when credits are enabled and within limit
-                if (shouldDeductCredits && process.env.ANYCRAWL_API_CREDITS_ENABLED === 'true' && apiKeyForDeduction) {
-                    log.info(`[${queueNameForFinalize}] [${jobId}] Deducting ${perPageCost} credits for page ${done}, apiKey: ${apiKeyForDeduction}`);
+                if (shouldDeductCredits && process.env.ANYCRAWL_API_CREDITS_ENABLED === 'true') {
+                    log.info(`[${queueNameForFinalize}] [${jobId}] Deducting ${perPageCost} credits for page ${done}`);
                     try {
-                        // Update credits and get remaining balance in a single query
-                        const [updatedUser] = await tx
-                            .update(schemas.apiKey)
-                            .set({
-                                credits: sql`${schemas.apiKey.credits} - ${perPageCost}`,
-                                lastUsedAt: new Date(),
-                            })
-                            .where(eq(schemas.apiKey.uuid, apiKeyForDeduction))
-                            .returning({ credits: schemas.apiKey.credits });
-                        if (updatedUser && typeof updatedUser.credits === 'number') {
-                            remainingAfterDeduction = updatedUser.credits;
-                            log.info(`[${queueNameForFinalize}] [${jobId}] Credits deducted: ${perPageCost}, remaining: ${remainingAfterDeduction}, apiKey: ${apiKeyForDeduction}`);
+                        const result = await Billing.chargeDeltaByJobId({
+                            jobId,
+                            delta: perPageCost,
+                            reason: "crawl_page_success",
+                            idempotencyKey: `crawl:page-success:${jobId}:${done}`,
+                            chargeDetails: perPageChargeDetails,
+                            dbOrTx: tx,
+                        });
+                        remainingAfterDeduction = result.remainingCredits;
+                        if (typeof remainingAfterDeduction === "number") {
+                            log.info(`[${queueNameForFinalize}] [${jobId}] Credits deducted: ${result.charged}, remaining: ${remainingAfterDeduction}`);
                         } else {
-                            remainingAfterDeduction = undefined;
-                            log.warning(`[${queueNameForFinalize}] [${jobId}] Credits deduction returned no row or invalid data; skipping credits-based finalize`);
+                            log.warning(`[${queueNameForFinalize}] [${jobId}] Credits deducted but remaining balance unavailable`);
                         }
                     } catch {
-                        log.error(`[PROGRESS] Error deducting credits for job ${jobId}, apiKey: ${apiKeyForDeduction}, perPageCost: ${perPageCost}`);
+                        log.error(`[PROGRESS] Error deducting credits for job ${jobId}, perPageCost: ${perPageCost}`);
                         remainingAfterDeduction = undefined;
                     }
                 }
@@ -359,17 +383,12 @@ export class ProgressManager {
 
             // Mark in DB: if no pages succeeded (completed = 0), mark as failed
             try {
-                const db = await getDB();
                 if (succeeded === 0) {
                     // If no pages succeeded, mark job as failed
                     await failedJob(jobId, "No pages were successfully processed", false, { total, completed: succeeded, failed });
                 } else {
-                    // Mark as completed with success status and set deductedAt
+                    // Mark as completed with success status.
                     await completedJob(jobId, true, { total, completed: succeeded, failed });
-                    // Set deductedAt to mark crawl deduction as complete
-                    await db.update(schemas.jobs).set({
-                        deductedAt: new Date(),
-                    }).where(eq(schemas.jobs.jobId, jobId));
                 }
             } catch (error) {
                 log.warning(`[PROGRESS] Failed to update job status in DB for job ${jobId}: ${error}`);
@@ -515,4 +534,3 @@ export class ProgressManager {
         }
     }
 }
-

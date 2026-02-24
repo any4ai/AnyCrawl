@@ -60,10 +60,12 @@ export class DataExtractor {
     private llmExtractMap: Map<string, LLMExtract> = new Map();
     private llmSummaryMap: Map<string, LLMSummary> = new Map();
     private llmOcrAgent: LLMOCR | null | undefined = undefined;
+    private readonly ocrConcurrency: number;
 
     constructor() {
         this.htmlTransformer = new HTMLTransformer();
         this.screenshotTransformer = new ScreenshotTransformer();
+        this.ocrConcurrency = Math.max(1, Number.parseInt(process.env.ANYCRAWL_OCR_CONCURRENCY || "5", 10) || 5);
     }
 
     private getLLMExtractAgentKey(modelId: string): string {
@@ -181,8 +183,7 @@ export class DataExtractor {
             )
         );
 
-        const OCR_CONCURRENCY = 3;
-        await this.forEachWithConcurrency(uniqueImageUrls, OCR_CONCURRENCY, async (imageUrl) => {
+        await this.forEachWithConcurrency(uniqueImageUrls, this.ocrConcurrency, async (imageUrl) => {
             const resolvedImageUrl = this.resolveOCRImageUrl(imageUrl, context);
             if (!resolvedImageUrl) {
                 ocrTextByImageUrl.set(imageUrl, "");

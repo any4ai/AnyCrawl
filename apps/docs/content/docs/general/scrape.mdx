@@ -186,6 +186,7 @@ print(result['data']['markdown'])
 | `proxy`             | string (URI)             | No       | -              | Proxy server address, format: `http://proxy:port` or `https://proxy:port`                                                                   |
 | `json_options`      | json                     | No       | -              | JSON options, like: `{"schema": {}, "prompt": true}`                                                                                        |
 | `extract_source`    | enum                     | No       | `markdown`     | Source to extract JSON from: `markdown` (default) or `html`                                                                                 |
+| `ocr_options`       | boolean                  | No       | `false`        | Enable OCR enhancement for markdown images only. Adds OCR text blocks to markdown output; does not change `html`/`rawHtml`.                |
 
 ### Cache behavior
 

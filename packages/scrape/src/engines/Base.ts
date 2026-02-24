@@ -1061,6 +1061,7 @@ export abstract class BaseEngine {
                                     proxy: options.proxy,
                                     only_main_content: options.only_main_content,
                                     extract_source: options.extract_source,
+                                    ocr_options: options.ocr_options,
                                     wait_for: options.wait_for,
                                     wait_until: options.wait_until,
                                     wait_for_selector: options.wait_for_selector,

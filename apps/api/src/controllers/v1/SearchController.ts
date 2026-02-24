@@ -174,6 +174,7 @@ export class SearchController {
                                 proxy: scrapeOptions.proxy,
                                 only_main_content: (scrapeOptions as any).only_main_content,
                                 extract_source: scrapeOptions.extract_source,
+                                ocr_options: scrapeOptions.ocr_options,
                                 wait_for: scrapeOptions.wait_for,
                                 wait_until: scrapeOptions.wait_until,
                                 wait_for_selector: scrapeOptions.wait_for_selector,

@@ -33,6 +33,7 @@ export interface CacheKeyParams {
     proxy?: string | boolean;
     only_main_content?: boolean;
     extract_source?: string;
+    ocr_options?: boolean;
     wait_for?: number;
     wait_until?: string;
     wait_for_selector?: unknown;
@@ -120,6 +121,7 @@ export function computeCacheKey(params: CacheKeyParams): { urlHash: string; opti
         exclude_tags: params.exclude_tags ? [...params.exclude_tags].sort() : undefined,
         only_main_content: params.only_main_content ?? true,
         extract_source: params.extract_source ?? 'markdown',
+        ocr_options: params.ocr_options ?? false,
         wait_for: params.wait_for ?? null,
         wait_until: params.wait_until ?? null,
         wait_for_selector: params.wait_for_selector ? JSON.stringify(sortKeys(params.wait_for_selector)) : null,

@@ -169,6 +169,12 @@ export const baseSchema = z.object({
     extract_source: z.enum(EXTRACT_SOURCES).default("markdown"),
 
     /**
+     * Enable OCR enhancement for markdown images.
+     * When enabled, OCR text blocks are appended after each markdown image.
+     */
+    ocr_options: z.boolean().default(false),
+
+    /**
      * Cache control: Maximum age of cached content in milliseconds.
      * - undefined: Use default (2 days)
      * - 0: Force refresh, skip cache

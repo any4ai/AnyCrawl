@@ -59,6 +59,7 @@ const selectedSchema = baseSchema
         only_main_content: true,
         json_options: true,
         extract_source: true,
+        ocr_options: true,
         max_age: true,
         store_in_cache: true,
     });

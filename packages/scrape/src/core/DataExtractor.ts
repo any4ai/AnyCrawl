@@ -6,7 +6,11 @@ import type { CrawlingContext } from "../types/engine.js";
 import { ScreenshotTransformer } from "./transformers/ScreenshotTransformer.js";
 import { convert } from "html-to-text"
 import * as cheerio from "cheerio";
-import { LLMExtract, LLMSummary, getExtractModelId } from "@anycrawl/ai";
+import { LLMExtract, LLMSummary, LLMOCR, getExtractModelId } from "@anycrawl/ai";
+import {
+    collectMarkdownImageOccurrences,
+    injectOCRBlocksAfterImages,
+} from "./MarkdownOCR.js";
 
 export interface MetadataEntry {
     name: string;
@@ -55,6 +59,7 @@ export class DataExtractor {
     private screenshotTransformer: ScreenshotTransformer;
     private llmExtractMap: Map<string, LLMExtract> = new Map();
     private llmSummaryMap: Map<string, LLMSummary> = new Map();
+    private llmOcrAgent: LLMOCR | null | undefined = undefined;
 
     constructor() {
         this.htmlTransformer = new HTMLTransformer();
@@ -89,6 +94,117 @@ export class DataExtractor {
             this.llmSummaryMap.set(key, new LLMSummary(modelId));
         }
         return this.llmSummaryMap.get(key)!;
+    }
+
+    getLLMOCRAgent(): LLMOCR | null {
+        if (this.llmOcrAgent !== undefined) {
+            return this.llmOcrAgent;
+        }
+
+        if (!LLMOCR.isConfigured()) {
+            this.llmOcrAgent = null;
+            log.warning("[ocr] VL OCR provider is not configured. Set ANYCRAWL_VL_REC_SERVER_URL and ANYCRAWL_VL_REC_API_KEY to enable OCR.");
+            return this.llmOcrAgent;
+        }
+
+        try {
+            this.llmOcrAgent = new LLMOCR();
+        } catch (error) {
+            this.llmOcrAgent = null;
+            log.warning(`[ocr] Failed to initialize OCR agent: ${error instanceof Error ? error.message : String(error)}`);
+        }
+
+        return this.llmOcrAgent;
+    }
+
+    private resolveOCRImageUrl(imageUrl: string, context: CrawlingContext): string | null {
+        const trimmed = imageUrl.trim();
+        if (!trimmed) return null;
+
+        if (/^data:image\//i.test(trimmed)) {
+            return trimmed;
+        }
+
+        try {
+            const baseUrl = context.request.loadedUrl || context.request.url;
+            if (!baseUrl) return null;
+            const resolved = new URL(trimmed, baseUrl).toString();
+            if (/^https?:\/\//i.test(resolved)) {
+                return resolved;
+            }
+            return null;
+        } catch {
+            return null;
+        }
+    }
+
+    private async forEachWithConcurrency<T>(
+        items: T[],
+        concurrency: number,
+        worker: (item: T) => Promise<void>
+    ): Promise<void> {
+        if (items.length === 0) return;
+
+        const limit = Math.max(1, Math.min(concurrency, items.length));
+        let index = 0;
+
+        await Promise.all(
+            Array.from({ length: limit }, async () => {
+                while (true) {
+                    const currentIndex = index++;
+                    if (currentIndex >= items.length) {
+                        return;
+                    }
+                    await worker(items[currentIndex]!);
+                }
+            })
+        );
+    }
+
+    private async appendOCRBlocksAfterMarkdownImages(markdown: string, context: CrawlingContext): Promise<string> {
+        const occurrences = collectMarkdownImageOccurrences(markdown);
+        if (occurrences.length === 0) {
+            return markdown;
+        }
+
+        const ocrAgent = this.getLLMOCRAgent();
+        if (!ocrAgent) {
+            return markdown;
+        }
+
+        const ocrTextByImageUrl = new Map<string, string>();
+        const uniqueImageUrls = Array.from(
+            new Set(
+                occurrences
+                    .map((occurrence) => occurrence.imageUrl)
+                    .filter((imageUrl) => Boolean(imageUrl))
+            )
+        );
+
+        const OCR_CONCURRENCY = 3;
+        await this.forEachWithConcurrency(uniqueImageUrls, OCR_CONCURRENCY, async (imageUrl) => {
+            const resolvedImageUrl = this.resolveOCRImageUrl(imageUrl, context);
+            if (!resolvedImageUrl) {
+                ocrTextByImageUrl.set(imageUrl, "");
+                return;
+            }
+
+            try {
+                const result = await ocrAgent.recognizeImage(resolvedImageUrl);
+                ocrTextByImageUrl.set(imageUrl, result.text || "");
+            } catch (error) {
+                const jobId = context.request.userData?.jobId ?? "unknown";
+                const queueName = context.request.userData?.queueName ?? "unknown";
+                log.warning(`[${queueName}] [${jobId}] [ocr] Failed to OCR image ${imageUrl}: ${error instanceof Error ? error.message : String(error)}`);
+                ocrTextByImageUrl.set(imageUrl, "");
+            }
+        });
+
+        const jobId = context.request.userData?.jobId ?? "unknown";
+        const queueName = context.request.userData?.queueName ?? "unknown";
+        log.info(`[${queueName}] [${jobId}] [ocr] Processed markdown images: total=${occurrences.length}, unique=${uniqueImageUrls.length}`);
+
+        return injectOCRBlocksAfterImages(markdown, occurrences, ocrTextByImageUrl);
     }
 
     /**
@@ -353,9 +469,12 @@ export class DataExtractor {
             }
             // json and summary need markdown
             if (formats.includes("markdown") || formats.includes("json") || formats.includes("summary")) {
-                formatTasks.markdown = htmlPromise!.then(html => {
+                formatTasks.markdown = htmlPromise!.then(async html => {
                     log.debug("[extractData] Start processMarkdown (after html)");
-                    const md = this.processMarkdown(html);
+                    let md = this.processMarkdown(html);
+                    if (options.ocr_options === true) {
+                        md = await this.appendOCRBlocksAfterMarkdownImages(md, context);
+                    }
                     log.debug("[extractData] Finished processMarkdown");
                     return md;
                 });

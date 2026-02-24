@@ -93,6 +93,7 @@ export class ScrapeController {
                             proxy: jobPayload.options.proxy,
                             only_main_content: jobPayload.options.only_main_content,
                             extract_source: jobPayload.options.extract_source,
+                            ocr_options: jobPayload.options.ocr_options,
                             wait_for: jobPayload.options.wait_for,
                             wait_until: jobPayload.options.wait_until,
                             wait_for_selector: jobPayload.options.wait_for_selector,

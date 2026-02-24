@@ -22,6 +22,7 @@ export interface RequestTaskOptions {
     include_tags?: string[];
     exclude_tags?: string[];
     extract_source?: "html" | "markdown";
+    ocr_options?: boolean;
 }
 
 export interface CrawlOptions {

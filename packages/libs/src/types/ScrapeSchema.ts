@@ -15,8 +15,12 @@ const pickedSchema = baseSchema.pick({
     wait_for_selector: true,
     include_tags: true,
     exclude_tags: true,
+    only_main_content: true,
     json_options: true,
     extract_source: true,
+    ocr_options: true,
+    max_age: true,
+    store_in_cache: true,
 });
 
 export const scrapeSchema = pickedSchema.transform((data: z.infer<typeof pickedSchema>) => ({
@@ -34,8 +38,12 @@ export const scrapeSchema = pickedSchema.transform((data: z.infer<typeof pickedS
         wait_for_selector: data.wait_for_selector,
         include_tags: data.include_tags,
         exclude_tags: data.exclude_tags,
+        only_main_content: data.only_main_content,
         json_options: data.json_options,
         extract_source: data.extract_source,
+        ocr_options: data.ocr_options,
+        max_age: data.max_age,
+        store_in_cache: data.store_in_cache,
     }
 }));
 
@@ -52,8 +60,10 @@ const templateScrapeInputSchema = baseSchema
         wait_for_selector: true,
         include_tags: true,
         exclude_tags: true,
+        only_main_content: true,
         json_options: true,
         extract_source: true,
+        ocr_options: true,
     })
     .partial(); // to make all attributes optional
 

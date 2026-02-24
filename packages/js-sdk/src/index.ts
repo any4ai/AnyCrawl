@@ -12,10 +12,13 @@ import {
     CrawlRequest,
     SearchRequest,
     CrawlAndWaitResult,
+    MapRequest,
+    MapResult,
 } from './types.js';
 import { scrape as scrapeMethod } from './methods/scrape.js';
 import { createCrawl as createCrawlMethod } from './methods/crawl.js';
 import { search as searchMethod } from './methods/search.js';
+import { map as mapMethod } from './methods/map.js';
 
 /**
  * AnyCrawl JavaScript/TypeScript client.
@@ -198,6 +201,20 @@ export class AnyCrawlClient {
     async search(input: SearchRequest): Promise<SearchResult[]> {
         try {
             return await searchMethod(this.client, input);
+        } catch (error: any) {
+            return this.normalizeAxiosError(error);
+        }
+    }
+
+    /**
+     * Map a website to discover all URLs.
+     *
+     * @param input Map parameters (url, limit, include_subdomains, ignore_sitemap)
+     * @returns Map result with list of discovered URLs
+     */
+    async map(input: MapRequest): Promise<MapResult> {
+        try {
+            return await mapMethod(this.client, input);
         } catch (error: any) {
             return this.normalizeAxiosError(error);
         }

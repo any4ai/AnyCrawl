@@ -108,8 +108,12 @@ curl -X POST https://api.anycrawl.dev/v1/scrape \
 | url       | string (required) | The URL to be scraped. Must be a valid URL starting with http:// or https://                                                                                                      | -        |
 | engine    | string            | Scraping engine to use. Options: `cheerio` (static HTML parsing, fastest), `playwright` (JavaScript rendering with modern engine), `puppeteer` (JavaScript rendering with Chrome) | cheerio  |
 | proxy     | string            | Proxy URL for the request. Supports HTTP and SOCKS proxies. Format: `http://[username]:[password]@proxy:port`                                                                     | _(none)_ |
+| max_age   | number            | Cache control (ms). `0` = force refresh (skip cache read); `> 0` = accept cached content within this age; omit to use default.                                                    | _(none)_ |
+| store_in_cache | boolean       | Cache control. Whether to store the result in cache. To bypass cache reads, use `max_age=0`.                                                                                      | true     |
 
 More parameters: see [Request Parameters](https://docs.anycrawl.dev/en/general/scrape#request-parameters).
+
+Cache details (self-host / S3 / map index): see `docs/cache.md`.
 
 #### LLM Extraction
 

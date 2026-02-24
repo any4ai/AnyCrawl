@@ -68,6 +68,7 @@ export interface SearchOptions {
     sources?: SearchResultType; // For SearXNG: web (default), images, news
     safe_search?: number | null; // 0: off, 1: medium, 2: high, null: default (Google only)
     timeRange?: "day" | "week" | "month" | "year"; // Uniform time range support
+    concurrent?: boolean; // Whether to fetch pages concurrently (default: false)
     [key: string]: any;
 }
 

@@ -2,6 +2,7 @@ import express, { Router, ErrorRequestHandler } from "express";
 import { ScrapeController } from "../../controllers/v1/ScrapeController.js";
 import { SearchController } from "../../controllers/v1/SearchController.js";
 import { CrawlController } from "../../controllers/v1/CrawlController.js";
+import { MapController } from "../../controllers/v1/MapController.js";
 import { ScheduledTasksController } from "../../controllers/v1/ScheduledTasksController.js";
 import { WebhooksController } from "../../controllers/v1/WebhooksController.js";
 import { controllerWrapper } from "../../utils/AsyncHandler.js";
@@ -10,11 +11,13 @@ const router: express.Router = Router();
 const scrapeController = new ScrapeController();
 const searchController = new SearchController();
 const crawlController = new CrawlController();
+const mapController = new MapController();
 const scheduledTasksController = new ScheduledTasksController();
 const webhooksController = new WebhooksController();
 
 router.post("/scrape", controllerWrapper(scrapeController.handle));
 router.post("/search", controllerWrapper(searchController.handle));
+router.post("/map", controllerWrapper(mapController.map));
 
 // Crawl routes
 router.post("/crawl", controllerWrapper(crawlController.start));
@@ -31,6 +34,7 @@ router.patch("/scheduled-tasks/:taskId/pause", controllerWrapper(scheduledTasksC
 router.patch("/scheduled-tasks/:taskId/resume", controllerWrapper(scheduledTasksController.resume));
 router.delete("/scheduled-tasks/:taskId", controllerWrapper(scheduledTasksController.delete));
 router.get("/scheduled-tasks/:taskId/executions", controllerWrapper(scheduledTasksController.executions));
+router.delete("/scheduled-tasks/:taskId/executions/:executionId", controllerWrapper(scheduledTasksController.cancelExecution));
 
 // Webhooks routes
 router.post("/webhooks", controllerWrapper(webhooksController.create));

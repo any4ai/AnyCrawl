@@ -1,12 +1,13 @@
 import { Response } from "express";
 import { z } from "zod";
-import { crawlSchema, RequestWithAuth, CrawlSchemaInput, CreditCalculator } from "@anycrawl/libs";
+import { crawlSchema, RequestWithAuth, CrawlSchemaInput, CreditCalculator, estimateTaskCredits, WebhookEventType } from "@anycrawl/libs";
 import { QueueManager, CrawlerErrorType, RequestTask, ProgressManager, AVAILABLE_ENGINES } from "@anycrawl/scrape";
 import { cancelJob, createJob, failedJob, getJob, getJobResultsPaginated, getJobResultsCount, STATUS, getTemplate } from "@anycrawl/db";
 import { log } from "@anycrawl/libs";
 import { TemplateHandler } from "../../utils/templateHandler.js";
 import { validateTemplateOnlyFields } from "../../utils/templateValidator.js";
 import { renderUrlTemplate } from "../../utils/urlTemplate.js";
+import { triggerWebhookEvent } from "../../utils/webhookHelper.js";
 
 export class CrawlController {
     /**
@@ -49,16 +50,22 @@ export class CrawlController {
 
             // Check if user has enough credits for the requested limit
             if (req.auth && process.env.ANYCRAWL_API_AUTH_ENABLED === "true" && process.env.ANYCRAWL_API_CREDITS_ENABLED === "true") {
-                const requestedLimit = jobPayload.options.limit;
                 const userCredits = req.auth.credits;
 
-                if (requestedLimit > userCredits) {
-                    const message = `Desired requested limit (${requestedLimit}) exceeds available credits (${userCredits}).`;
+                // Use estimateTaskCredits for accurate credit estimation
+                const estimatedCredits = defaultPrice + estimateTaskCredits('crawl', jobPayload);
+
+                if (estimatedCredits > userCredits) {
                     res.status(402).json({
                         success: false,
                         error: "Insufficient credits",
-                        message: message,
-                        current_credits: userCredits,
+                        message: `Estimated credits required (${estimatedCredits}) exceeds available credits (${userCredits}).`,
+                        details: {
+                            requested_limit: jobPayload.options.limit,
+                            template_credits: defaultPrice,
+                            estimated_total: estimatedCredits,
+                            available_credits: userCredits,
+                        }
                     });
                     return;
                 }
@@ -66,11 +73,15 @@ export class CrawlController {
 
             // Add job to queue
             jobId = await QueueManager.getInstance().addJob(`crawl-${jobPayload.engine}`, jobPayload);
+            req.jobId = jobId;
 
             // Calculate initial credits using CreditCalculator
-            req.creditsUsed = defaultPrice + CreditCalculator.calculateCrawlInitialCredits({
+            req.billingChargeDetails = CreditCalculator.buildCrawlInitialChargeDetails({
                 scrape_options: jobPayload.options?.scrape_options,
+            }, {
+                templateCredits: defaultPrice,
             });
+            req.creditsUsed = req.billingChargeDetails.total;
 
             await createJob({
                 job_id: jobId,
@@ -79,6 +90,30 @@ export class CrawlController {
                 url: jobPayload.url,
                 req,
             });
+
+            // Trigger crawl.created webhook
+            await triggerWebhookEvent(
+                WebhookEventType.CRAWL_CREATED,
+                jobId,
+                {
+                    url: jobPayload.url,
+                    status: "created",
+                    engine: jobPayload.engine,
+                    limit: jobPayload.options.limit,
+                },
+                "crawl"
+            );
+
+            // Trigger crawl.started webhook
+            await triggerWebhookEvent(
+                WebhookEventType.CRAWL_STARTED,
+                jobId,
+                {
+                    url: jobPayload.url,
+                    status: "started",
+                },
+                "crawl"
+            );
 
             // Return immediately with job ID (async processing)
             res.json({
@@ -97,6 +132,8 @@ export class CrawlController {
                     code: err.code,
                 }));
                 const message = error.errors.map((err) => err.message).join(", ");
+                req.creditsUsed = 0;
+                req.billingChargeDetails = undefined;
                 res.status(400).json({
                     success: false,
                     error: "Validation error",
@@ -113,6 +150,8 @@ export class CrawlController {
                 if (jobId) {
                     await failedJob(jobId, message);
                 }
+                req.creditsUsed = 0;
+                req.billingChargeDetails = undefined;
                 res.status(500).json({
                     success: false,
                     error: "Internal server error",
@@ -335,6 +374,17 @@ export class CrawlController {
                 // swallow queue cancellation error; DB status already set to cancelled and
                 // engines will stop on cancel flag
             }
+
+            // Trigger crawl.cancelled webhook
+            await triggerWebhookEvent(
+                WebhookEventType.CRAWL_CANCELLED,
+                jobId,
+                {
+                    url: job.url,
+                    status: "cancelled",
+                },
+                "crawl"
+            );
 
             res.status(200).json({
                 success: true,

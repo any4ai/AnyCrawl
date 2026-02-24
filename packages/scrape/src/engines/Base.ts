@@ -13,16 +13,17 @@ import {
     ResponseStatus,
     CrawlerResponse
 } from "../types/crawler.js";
-import { insertJobResult, failedJob, completedJob } from "@anycrawl/db";
+import { insertJobResult, failedJob, completedJob, Billing } from "@anycrawl/db";
 import { JOB_RESULT_STATUS } from "../../../db/dist/map.js";
 import { ProgressManager } from "../managers/Progress.js";
-import { JOB_TYPE_CRAWL, JOB_TYPE_SCRAPE } from "@anycrawl/libs";
+import { CacheManager } from "../managers/Cache.js";
+import { JOB_TYPE_CRAWL, JOB_TYPE_SCRAPE, CreditCalculator } from "@anycrawl/libs";
 import type { RequestTrafficMetric } from "@anycrawl/libs";
 import { CrawlLimitReachedError } from "../errors/index.js";
 import type { CrawlingContext, EngineOptions } from "../types/engine.js";
 import { minimatch } from "minimatch";
 import { BandwidthManager } from "../managers/Bandwidth.js";
-import { getResolvedProxyModeName } from "../managers/Proxy.js";
+import { getResolvedProxyModeName, getProxyTierCount } from "../managers/Proxy.js";
 
 // Template system imports - directly use @anycrawl/template-client
 
@@ -594,6 +595,33 @@ export abstract class BaseEngine {
                 // Ignore errors when accessing proxyInfo or session
             }
 
+            // If we get a 403, switch proxy tier (auto: base → stealth) when possible and retry.
+            // This is only applied for proxy mode "auto" (proxy="base" must not upgrade).
+            if (context.response) {
+                const status = this.extractResponseStatus(context.response as CrawlerResponse);
+                if (status.statusCode === 403) {
+                    const proxyValue = context.request.userData?.options?.proxy as string | undefined;
+                    const currentTierRaw = (context.request.userData as any)?._proxyTier;
+                    const currentTier = typeof currentTierRaw === "number" && Number.isFinite(currentTierRaw) ? currentTierRaw : 0;
+                    const tierCount = getProxyTierCount(proxyValue);
+                    const nextTier = currentTier + 1;
+
+                    // Only upgrade for mode "auto" (custom proxy URLs cannot switch; "base" must not upgrade).
+                    if (proxyValue === "auto" && tierCount > nextTier) {
+                        (context.request.userData as any)._proxyTier = nextTier;
+
+                        const jobId = context.request.userData?.jobId || "unknown";
+                        const queueName = context.request.userData?.queueName || "unknown";
+                        log.warning(
+                            `[PROXY] [${queueName}] [${jobId}] 403 Forbidden → switching proxy tier ${currentTier}→${nextTier} for mode="${proxyValue}" and retrying: ${context.request.url}`
+                        );
+
+                        // Throw to let Crawlee retry with a new proxy (and session rotation if enabled).
+                        throw new Error("403_PROXY_TIER_FALLBACK");
+                    }
+                }
+            }
+
             // Check for 403 error early and try refreshing before other processing
             // This happens before Crawlee's retry mechanism, giving us a chance to recover
             if (context.response && (context as any).page) {
@@ -1001,6 +1029,57 @@ export abstract class BaseEngine {
                 // Only save result if shouldScrape is true
                 if (shouldScrape) {
                     await insertJobResult(resultJobId, context.request.url, data, JOB_RESULT_STATUS.SUCCESS);
+
+                    // Save to cache if enabled and conditions are met
+                    try {
+                        const options = context.request.userData.options || {};
+                        if (!isHttpError && options.store_in_cache !== false) {
+                            const status = this.extractResponseStatus(context.response as CrawlerResponse);
+                            const rawHeaders: any =
+                                typeof (context.response as any)?.headers === "function"
+                                    ? (context.response as any).headers()
+                                    : ((context.response as any)?.headers ?? {});
+                            const contentTypeHeader = rawHeaders["content-type"] ?? rawHeaders["Content-Type"];
+                            const contentLengthHeader = rawHeaders["content-length"] ?? rawHeaders["Content-Length"];
+                            const contentType = typeof contentTypeHeader === "string" ? contentTypeHeader : undefined;
+                            let contentLength: number | undefined = undefined;
+                            if (contentLengthHeader !== undefined) {
+                                const parsed = Number.parseInt(String(contentLengthHeader), 10);
+                                if (Number.isFinite(parsed) && parsed > 0) {
+                                    contentLength = parsed;
+                                }
+                            }
+
+                            await CacheManager.getInstance().saveToCache(
+                                context.request.url,
+                                {
+                                    url: context.request.url,
+                                    formats: options.formats,
+                                    json_options: options.json_options,
+                                    include_tags: options.include_tags,
+                                    exclude_tags: options.exclude_tags,
+                                    proxy: options.proxy,
+                                    only_main_content: options.only_main_content,
+                                    extract_source: options.extract_source,
+                                    ocr_options: options.ocr_options,
+                                    wait_for: options.wait_for,
+                                    wait_until: options.wait_until,
+                                    wait_for_selector: options.wait_for_selector,
+                                    template_id: options.template_id,
+                                    store_in_cache: options.store_in_cache,
+                                    engine: (context.request.userData as any).engine,
+                                },
+                                { url: context.request.url, ...data },
+                                {
+                                    statusCode: status.statusCode,
+                                    contentType,
+                                    contentLength,
+                                }
+                            );
+                        }
+                    } catch (cacheError) {
+                        log.warning(`[CACHE] Failed to save cache for ${context.request.url}: ${cacheError}`);
+                    }
                 } else {
                     log.info(`[${context.request.userData.queueName}] [${context.request.userData.jobId}] Skipping scrape for ${context.request.url} (not in scrape_paths)`);
                 }
@@ -1065,6 +1144,39 @@ export abstract class BaseEngine {
                     // Update counters + completed in one call
                     try {
                         await this.jobManager.markCompleted(jobId, queueName, data);
+
+                        // For scheduled task scrape jobs, calculate and update creditsUsed
+                        // (API-triggered scrape jobs are handled by DeductCreditsMiddleware)
+                        const isScheduledTask = !!context.request.userData.scheduled_task_id;
+                        if (isScheduledTask && process.env.ANYCRAWL_API_CREDITS_ENABLED === 'true') {
+                            const scheduledUserData: any = context.request.userData || {};
+                            const scrapeOptions = scheduledUserData.options || scheduledUserData || {};
+                            const templateCredits = Number(scheduledUserData.scheduled_template_credits ?? 0);
+                            const chargeDetails = CreditCalculator.buildScrapeChargeDetails({
+                                proxy: scrapeOptions.proxy,
+                                json_options: scrapeOptions.json_options,
+                                formats: scrapeOptions.formats,
+                                extract_source: scrapeOptions.extract_source,
+                            }, {
+                                templateCredits,
+                            });
+                            const creditsUsed = chargeDetails.total;
+
+                            // Update job creditsUsed and deduct from apiKey
+                            try {
+                                await Billing.chargeToUsedByJobId({
+                                    jobId,
+                                    targetUsed: creditsUsed,
+                                    reason: "scheduled_scrape_finalize",
+                                    idempotencyKey: `scheduled:scrape:finalize:${String(scheduledUserData.scheduled_execution_id ?? jobId)}:${creditsUsed}`,
+                                    chargeDetails,
+                                });
+                                log.info(`[${queueName}] [${jobId}] Scheduled task scrape: deducted ${creditsUsed} credits`);
+                            } catch (creditError) {
+                                log.error(`[${queueName}] [${jobId}] Failed to update credits for scheduled task scrape: ${creditError}`);
+                            }
+                        }
+
                         await completedJob(jobId, true, { total: 1, completed: 1, failed: 0 });
                         await BandwidthManager.getInstance().flushJob(jobId);
                     } catch { }

@@ -1,6 +1,7 @@
 export interface ExtractionOptions {
     include_tags?: string[];
     exclude_tags?: string[];
+    only_main_content?: boolean;
 }
 
 export interface TransformOptions extends ExtractionOptions {
@@ -15,54 +16,151 @@ interface ImageSource {
 }
 
 /**
- * Non-main content tags and selectors to exclude from main content extraction
- * Based on common webpage structure patterns
+ * Technical tags that should always be removed regardless of only_main_content setting
+ */
+const ALWAYS_REMOVE_TAGS: string[] = [
+    "script",
+    "style",
+    "noscript"
+];
+
+/**
+ * Non-main content tags and selectors to exclude when only_main_content is true
+ * Based on Firecrawl's implementation with additional common patterns
  */
 const EXCLUDE_NON_MAIN_TAGS: string[] = [
+    // Semantic HTML5 tags
     "header",
     "footer",
     "nav",
     "aside",
+
+    // Header patterns
     ".header",
     ".top",
     ".navbar",
     "#header",
+    ".site-header",
+    ".page-header",
+
+    // Footer patterns
     ".footer",
     ".bottom",
     "#footer",
+    ".site-footer",
+    ".page-footer",
+
+    // Sidebar patterns
     ".sidebar",
     ".side",
     ".aside",
     "#sidebar",
+    ".left-sidebar",
+    ".right-sidebar",
+
+    // Modal/Popup/Overlay
     ".modal",
     ".popup",
     "#modal",
     ".overlay",
+    ".dialog",
+    ".lightbox",
+
+    // Advertisement
     ".ad",
     ".ads",
     ".advert",
     "#ad",
+    ".advertisement",
+    ".banner-ad",
+
+    // Language/Locale selector
     ".lang-selector",
     ".language",
     "#language-selector",
+    ".locale-selector",
+
+    // Social media
     ".social",
     ".social-media",
     ".social-links",
     "#social",
+    ".social-share",
+    ".share-buttons",
+
+    // Navigation/Menu
     ".menu",
     ".navigation",
     "#nav",
+    ".nav-menu",
+    ".site-nav",
+
+    // Breadcrumbs
     ".breadcrumbs",
     "#breadcrumbs",
+    ".breadcrumb",
+
+    // Share buttons
     ".share",
     "#share",
+
+    // Widgets
     ".widget",
     "#widget",
+    ".widgets",
+
+    // Cookie notices
     ".cookie",
     "#cookie",
-    "script",
-    "style",
-    "noscript"
+    ".cookie-banner",
+    ".cookie-notice",
+    ".cookie-consent",
+
+    // Comments (often not main content)
+    ".comments",
+    "#comments",
+    ".comment-section",
+
+    // Related content (often sidebar)
+    ".related",
+    ".related-posts",
+    ".related-articles",
+
+    // Firecrawl decoration
+    ".fc-decoration"
+];
+
+/**
+ * Force include main content tags even if they match EXCLUDE_NON_MAIN_TAGS
+ * These selectors identify important main content that should never be removed
+ */
+const FORCE_INCLUDE_MAIN_TAGS: string[] = [
+    // Main content identifiers
+    "#main",
+    "main",
+    "[role='main']",
+    ".main-content",
+    ".content-main",
+
+    // Article content
+    "article",
+    ".article",
+    ".post-content",
+    ".entry-content",
+
+    // Swoogo event platform (from Firecrawl)
+    ".swoogo-cols",
+    ".swoogo-text",
+    ".swoogo-table-div",
+    ".swoogo-space",
+    ".swoogo-alert",
+    ".swoogo-sponsors",
+    ".swoogo-title",
+    ".swoogo-tabs",
+    ".swoogo-logo",
+    ".swoogo-image",
+    ".swoogo-button",
+    ".swoogo-agenda"
 ];
 
 /**
@@ -103,6 +201,9 @@ export class HTMLTransformer {
      * Works on an already cloned cheerio instance to avoid redundant cloning
      */
     private doExtractCleanHtml($: any, options?: ExtractionOptions): string {
+        // Always remove technical tags first (script, style, noscript)
+        $(ALWAYS_REMOVE_TAGS.join(', ')).remove();
+
         // If include_tags is specified, only extract those elements
         if (options?.include_tags && options.include_tags.length > 0) {
             // Create new document to collect matching elements
@@ -123,8 +224,32 @@ export class HTMLTransformer {
         } else {
             // Standard extraction: preserve original structure, only remove unwanted elements
 
-            // Remove non-main content elements using the constant
-            $(EXCLUDE_NON_MAIN_TAGS.join(', ')).remove();
+            // Apply only_main_content filtering (default: true)
+            const shouldFilterMainContent = options?.only_main_content !== false;
+
+            if (shouldFilterMainContent) {
+                // Remove non-main content elements, but preserve elements containing FORCE_INCLUDE_MAIN_TAGS
+                for (const excludeSelector of EXCLUDE_NON_MAIN_TAGS) {
+                    const matchingElements = $(excludeSelector);
+                    matchingElements.each((_: number, element: any) => {
+                        const $element = $(element);
+
+                        // Check if this element contains any force-include main content tags
+                        let shouldKeep = false;
+                        for (const includeSelector of FORCE_INCLUDE_MAIN_TAGS) {
+                            if ($element.find(includeSelector).length > 0) {
+                                shouldKeep = true;
+                                break;
+                            }
+                        }
+
+                        // Remove element if it doesn't contain force-include tags
+                        if (!shouldKeep) {
+                            $element.remove();
+                        }
+                    });
+                }
+            }
 
             // Apply exclude_tags if specified
             if (options?.exclude_tags && options.exclude_tags.length > 0) {
@@ -183,8 +308,30 @@ export class HTMLTransformer {
     cleanHtml($: any): any {
         const $clone = $.load($.html());
 
+        // Always remove technical tags first
+        $clone(ALWAYS_REMOVE_TAGS.join(', ')).remove();
+
         // Remove unwanted elements using the constant
-        $clone(EXCLUDE_NON_MAIN_TAGS.join(', ')).remove();
+        for (const excludeSelector of EXCLUDE_NON_MAIN_TAGS) {
+            const matchingElements = $clone(excludeSelector);
+            matchingElements.each((_: number, element: any) => {
+                const $element = $clone(element);
+
+                // Check if this element contains any force-include main content tags
+                let shouldKeep = false;
+                for (const includeSelector of FORCE_INCLUDE_MAIN_TAGS) {
+                    if ($element.find(includeSelector).length > 0) {
+                        shouldKeep = true;
+                        break;
+                    }
+                }
+
+                // Remove element if it doesn't contain force-include tags
+                if (!shouldKeep) {
+                    $element.remove();
+                }
+            });
+        }
 
         // Remove comments
         $clone('*').contents().filter(function (this: any) {

@@ -1,11 +1,16 @@
 import { log } from "@anycrawl/libs"
+import { extractUrlsFromCheerio } from "crawlee"
 import { htmlToMarkdown } from "@anycrawl/libs/html-to-markdown";
 import { HTMLTransformer, ExtractionOptions, TransformOptions } from "./transformers/HTMLTransformer.js";
 import type { CrawlingContext } from "../types/engine.js";
 import { ScreenshotTransformer } from "./transformers/ScreenshotTransformer.js";
 import { convert } from "html-to-text"
 import * as cheerio from "cheerio";
-import { LLMExtract, getExtractModelId } from "@anycrawl/ai";
+import { LLMExtract, LLMSummary, LLMOCR, getExtractModelId } from "@anycrawl/ai";
+import {
+    collectMarkdownImageOccurrences,
+    injectOCRBlocksAfterImages,
+} from "./MarkdownOCR.js";
 
 export interface MetadataEntry {
     name: string;
@@ -53,6 +58,8 @@ export class DataExtractor {
     private htmlTransformer: HTMLTransformer;
     private screenshotTransformer: ScreenshotTransformer;
     private llmExtractMap: Map<string, LLMExtract> = new Map();
+    private llmSummaryMap: Map<string, LLMSummary> = new Map();
+    private llmOcrAgent: LLMOCR | null | undefined = undefined;
 
     constructor() {
         this.htmlTransformer = new HTMLTransformer();
@@ -74,6 +81,130 @@ export class DataExtractor {
             this.llmExtractMap.set(key, new LLMExtract(modelId));
         }
         return this.llmExtractMap.get(key)!;
+    }
+
+    /**
+     * Get LLM summary agent
+     * @param modelId - The model id, like "gpt-4o-mini"
+     * @returns LLM summary agent instance
+     */
+    getLLMSummaryAgent(modelId: string): LLMSummary {
+        const key = `summary_${modelId}`;
+        if (!this.llmSummaryMap.has(key)) {
+            this.llmSummaryMap.set(key, new LLMSummary(modelId));
+        }
+        return this.llmSummaryMap.get(key)!;
+    }
+
+    getLLMOCRAgent(): LLMOCR | null {
+        if (this.llmOcrAgent !== undefined) {
+            return this.llmOcrAgent;
+        }
+
+        if (!LLMOCR.isConfigured()) {
+            this.llmOcrAgent = null;
+            log.warning("[ocr] VL OCR provider is not configured. Set ANYCRAWL_VL_REC_SERVER_URL and ANYCRAWL_VL_REC_API_KEY to enable OCR.");
+            return this.llmOcrAgent;
+        }
+
+        try {
+            this.llmOcrAgent = new LLMOCR();
+        } catch (error) {
+            this.llmOcrAgent = null;
+            log.warning(`[ocr] Failed to initialize OCR agent: ${error instanceof Error ? error.message : String(error)}`);
+        }
+
+        return this.llmOcrAgent;
+    }
+
+    private resolveOCRImageUrl(imageUrl: string, context: CrawlingContext): string | null {
+        const trimmed = imageUrl.trim();
+        if (!trimmed) return null;
+
+        if (/^data:image\//i.test(trimmed)) {
+            return trimmed;
+        }
+
+        try {
+            const baseUrl = context.request.loadedUrl || context.request.url;
+            if (!baseUrl) return null;
+            const resolved = new URL(trimmed, baseUrl).toString();
+            if (/^https?:\/\//i.test(resolved)) {
+                return resolved;
+            }
+            return null;
+        } catch {
+            return null;
+        }
+    }
+
+    private async forEachWithConcurrency<T>(
+        items: T[],
+        concurrency: number,
+        worker: (item: T) => Promise<void>
+    ): Promise<void> {
+        if (items.length === 0) return;
+
+        const limit = Math.max(1, Math.min(concurrency, items.length));
+        let index = 0;
+
+        await Promise.all(
+            Array.from({ length: limit }, async () => {
+                while (true) {
+                    const currentIndex = index++;
+                    if (currentIndex >= items.length) {
+                        return;
+                    }
+                    await worker(items[currentIndex]!);
+                }
+            })
+        );
+    }
+
+    private async appendOCRBlocksAfterMarkdownImages(markdown: string, context: CrawlingContext): Promise<string> {
+        const occurrences = collectMarkdownImageOccurrences(markdown);
+        if (occurrences.length === 0) {
+            return markdown;
+        }
+
+        const ocrAgent = this.getLLMOCRAgent();
+        if (!ocrAgent) {
+            return markdown;
+        }
+
+        const ocrTextByImageUrl = new Map<string, string>();
+        const uniqueImageUrls = Array.from(
+            new Set(
+                occurrences
+                    .map((occurrence) => occurrence.imageUrl)
+                    .filter((imageUrl) => Boolean(imageUrl))
+            )
+        );
+
+        const OCR_CONCURRENCY = 3;
+        await this.forEachWithConcurrency(uniqueImageUrls, OCR_CONCURRENCY, async (imageUrl) => {
+            const resolvedImageUrl = this.resolveOCRImageUrl(imageUrl, context);
+            if (!resolvedImageUrl) {
+                ocrTextByImageUrl.set(imageUrl, "");
+                return;
+            }
+
+            try {
+                const result = await ocrAgent.recognizeImage(resolvedImageUrl);
+                ocrTextByImageUrl.set(imageUrl, result.text || "");
+            } catch (error) {
+                const jobId = context.request.userData?.jobId ?? "unknown";
+                const queueName = context.request.userData?.queueName ?? "unknown";
+                log.warning(`[${queueName}] [${jobId}] [ocr] Failed to OCR image ${imageUrl}: ${error instanceof Error ? error.message : String(error)}`);
+                ocrTextByImageUrl.set(imageUrl, "");
+            }
+        });
+
+        const jobId = context.request.userData?.jobId ?? "unknown";
+        const queueName = context.request.userData?.queueName ?? "unknown";
+        log.info(`[${queueName}] [${jobId}] [ocr] Processed markdown images: total=${occurrences.length}, unique=${uniqueImageUrls.length}`);
+
+        return injectOCRBlocksAfterImages(markdown, occurrences, ocrTextByImageUrl);
     }
 
     /**
@@ -198,10 +329,85 @@ export class DataExtractor {
     }
 
     /**
-     * Process HTML content to markdown
+     * Process HTML content to markdown with smart fallback and performance monitoring
      */
     processMarkdown(html: string): string {
-        return htmlToMarkdown(html);
+        const startTime = Date.now();
+        const inputSize = Buffer.byteLength(html, 'utf8');
+
+        // First attempt: convert HTML to markdown
+        let markdown = htmlToMarkdown(html);
+        let usedFallback = false;
+
+        // Smart fallback: if result is too short or empty, try with minimal filtering
+        const trimmedLength = markdown.trim().length;
+        const wordCount = markdown.trim().split(/\s+/).length;
+
+        if (trimmedLength < 100 || wordCount < 20) {
+            log.warning(`[processMarkdown] Main content extraction resulted in minimal content (${trimmedLength} chars, ${wordCount} words), attempting fallback`);
+
+            const fallbackStartTime = Date.now();
+
+            // Create a minimal HTML version (only remove scripts, styles, and comments)
+            const fallbackHtml = this.getFallbackHtml(html);
+            markdown = htmlToMarkdown(fallbackHtml);
+            usedFallback = true;
+
+            const fallbackDuration = Date.now() - fallbackStartTime;
+            const fallbackLength = markdown.trim().length;
+            const fallbackWordCount = markdown.trim().split(/\s+/).length;
+
+            if (fallbackLength === 0) {
+                log.error('[processMarkdown] Fallback extraction also resulted in empty content');
+            } else {
+                log.info(`[processMarkdown] Fallback extraction succeeded (${fallbackLength} chars, ${fallbackWordCount} words, ${fallbackDuration}ms)`);
+            }
+        }
+
+        // Performance metrics
+        const duration = Date.now() - startTime;
+        const outputSize = Buffer.byteLength(markdown, 'utf8');
+        const compressionRatio = inputSize > 0 ? (outputSize / inputSize * 100).toFixed(1) : '0.0';
+
+        // Structured performance log
+        log.debug(
+            `[markdown-extraction] duration=${duration}ms ` +
+            `inputSize=${inputSize}B outputSize=${outputSize}B ` +
+            `compressionRatio=${compressionRatio}% ` +
+            `wordCount=${wordCount} fallback=${usedFallback}`
+        );
+
+        // Performance threshold warning
+        const SLOW_CONVERSION_THRESHOLD = 1000; // 1 second
+        const LARGE_INPUT_THRESHOLD = 1024 * 1024; // 1MB
+
+        if (duration > SLOW_CONVERSION_THRESHOLD) {
+            log.warning(`[processMarkdown] Slow conversion detected: ${duration}ms for ${inputSize}B input`);
+        }
+
+        if (inputSize > LARGE_INPUT_THRESHOLD) {
+            log.info(`[processMarkdown] Large input detected: ${(inputSize / 1024 / 1024).toFixed(2)}MB`);
+        }
+
+        return markdown;
+    }
+
+    /**
+     * Get fallback HTML with minimal filtering (only remove definite non-content elements)
+     */
+    private getFallbackHtml(html: string): string {
+        // Use cheerio to parse and clean minimally
+        const $ = cheerio.load(html);
+
+        // Only remove these definite non-content elements
+        $('script, style, noscript, iframe').remove();
+
+        // Remove HTML comments
+        $('*').contents().filter(function (this: any) {
+            return this.type === 'comment';
+        }).remove();
+
+        return $.html();
     }
 
     /**
@@ -241,6 +447,7 @@ export class DataExtractor {
             const transformOptions: TransformOptions = {
                 include_tags: options.include_tags,
                 exclude_tags: options.exclude_tags,
+                only_main_content: options.only_main_content,
                 baseUrl: context.request.url,
                 transformRelativeUrls: true
             };
@@ -248,7 +455,7 @@ export class DataExtractor {
 
             // Only generate transformHtml once if needed
             let htmlPromise: Promise<string> | undefined = undefined;
-            if (formats.includes("html") || formats.includes("markdown") || formats.includes("json")) {
+            if (formats.includes("html") || formats.includes("markdown") || formats.includes("json") || formats.includes("summary")) {
                 log.debug("[extractData] Start transformHtml (concurrent)");
                 htmlPromise = this.htmlTransformer.transformHtml($, context.request.url, transformOptions)
                     .then(result => {
@@ -260,11 +467,14 @@ export class DataExtractor {
             if (formats.includes("html")) {
                 formatTasks.html = htmlPromise!;
             }
-            // json need markdown
-            if (formats.includes("markdown") || formats.includes("json")) {
-                formatTasks.markdown = htmlPromise!.then(html => {
+            // json and summary need markdown
+            if (formats.includes("markdown") || formats.includes("json") || formats.includes("summary")) {
+                formatTasks.markdown = htmlPromise!.then(async html => {
                     log.debug("[extractData] Start processMarkdown (after html)");
-                    const md = this.processMarkdown(html);
+                    let md = this.processMarkdown(html);
+                    if (options.ocr_options === true) {
+                        md = await this.appendOCRBlocksAfterMarkdownImages(md, context);
+                    }
                     log.debug("[extractData] Finished processMarkdown");
                     return md;
                 });
@@ -274,6 +484,12 @@ export class DataExtractor {
             }
             if (formats.includes("text")) {
                 formatTasks.text = Promise.resolve(convert(baseContent.rawHtml));
+            }
+            // links format - extract all links from the page using crawlee
+            if (formats.includes("links")) {
+                formatTasks.links = Promise.resolve(
+                    extractUrlsFromCheerio($, 'a[href]', context.request.url)
+                );
             }
             // Screenshot task is also concurrent
             if (page && (formats.includes("screenshot") || formats.includes("screenshot@fullPage"))) {
@@ -324,6 +540,34 @@ export class DataExtractor {
                         } catch { }
                     }
                     return result.data;
+                })();
+            }
+            // summary format - generate summary using LLM
+            if (formats.includes("summary")) {
+                const modelId = getExtractModelId();
+                const extract_source = options.extract_source || "markdown";
+                log.info(`[summary] Resolved model: ${modelId}, extract source: ${extract_source}`);
+                formatTasks.summary = (async () => {
+                    let summaryContent: string;
+                    if (extract_source === "html") {
+                        summaryContent = await (htmlPromise ?? Promise.resolve(baseContent.rawHtml));
+                    } else {
+                        // Use markdown by default for better summary quality
+                        summaryContent = await (formatTasks.markdown ?? htmlPromise!.then(html => this.processMarkdown(html)));
+                    }
+                    const llmSummaryAgent = this.getLLMSummaryAgent(modelId);
+                    const summaryStart = Date.now();
+                    const result = await llmSummaryAgent.perform(summaryContent);
+                    const summaryDuration = Date.now() - summaryStart;
+
+                    const jobId = context.request.userData?.jobId ?? 'unknown';
+                    const queueName = context.request.userData?.queueName ?? 'unknown';
+                    const reqKey = (context.request as any).id || context.request.uniqueKey || 'unknown';
+                    const tokens = result.tokens || { input: 0, output: 0, total: 0 };
+                    const cost = typeof result.cost === 'number' ? result.cost : 0;
+
+                    log.info(`[${queueName}] [${jobId}] [summary] model=${modelId} url=${context.request.url} reqKey=${reqKey} tokens(input=${tokens.input}, output=${tokens.output}, total=${tokens.total}) cost=$${cost.toFixed(6)} duration=${summaryDuration}ms`);
+                    return result.summary;
                 })();
             }
             // All format tasks are executed concurrently, dependencies are handled by Promise chains

@@ -2,13 +2,14 @@ import { Response } from "express";
 import { z } from "zod";
 import { SearchService } from "@anycrawl/search/SearchService";
 import { log } from "@anycrawl/libs/log";
-import { searchSchema, RequestWithAuth, CreditCalculator } from "@anycrawl/libs";
+import { searchSchema, RequestWithAuth, CreditCalculator, WebhookEventType, estimateTaskCredits, getCacheConfig } from "@anycrawl/libs";
 import { randomUUID } from "crypto";
-import { STATUS, createJob, insertJobResult, completedJob, failedJob, updateJobCounts, JOB_RESULT_STATUS } from "@anycrawl/db";
-import { QueueManager } from "@anycrawl/scrape";
+import { STATUS, createJob, insertJobResult, completedJob, failedJob, updateJobCounts, updateJobCacheHits, JOB_RESULT_STATUS } from "@anycrawl/db";
+import { QueueManager, CacheManager } from "@anycrawl/scrape";
 import { TemplateHandler, TemplateVariableMapper } from "../../utils/templateHandler.js";
 import { validateTemplateOnlyFields } from "../../utils/templateValidator.js";
 import { renderTextTemplate } from "../../utils/urlTemplate.js";
+import { triggerWebhookEvent } from "../../utils/webhookHelper.js";
 export class SearchController {
     private searchService: SearchService;
 
@@ -58,6 +59,28 @@ export class SearchController {
             // Validate and parse the merged data
             const validatedData = searchSchema.parse(requestData);
 
+            // Pre-check if user has enough credits
+            if (req.auth && process.env.ANYCRAWL_API_AUTH_ENABLED === "true" && process.env.ANYCRAWL_API_CREDITS_ENABLED === "true") {
+                const userCredits = req.auth.credits;
+
+                // Use estimateTaskCredits for accurate credit estimation
+                const estimatedCredits = defaultPrice + estimateTaskCredits('search', validatedData);
+
+                if (estimatedCredits > userCredits) {
+                    res.status(402).json({
+                        success: false,
+                        error: "Insufficient credits",
+                        message: `Estimated credits required (${estimatedCredits}) exceeds available credits (${userCredits}).`,
+                        details: {
+                            template_credits: defaultPrice,
+                            estimated_total: estimatedCredits,
+                            available_credits: userCredits,
+                        }
+                    });
+                    return;
+                }
+            }
+
             // Get actual engine name that will be used (resolved by SearchService)
             engineName = this.searchService.resolveEngine(validatedData.engine);
 
@@ -73,6 +96,29 @@ export class SearchController {
             });
             req.jobId = searchJobId;
 
+            // Trigger search.created webhook
+            await triggerWebhookEvent(
+                WebhookEventType.SEARCH_CREATED,
+                searchJobId,
+                {
+                    query: validatedData.query,
+                    status: "created",
+                    engine: engineName,
+                },
+                "search"
+            );
+
+            // Trigger search.started webhook
+            await triggerWebhookEvent(
+                WebhookEventType.SEARCH_STARTED,
+                searchJobId,
+                {
+                    query: validatedData.query,
+                    status: "started",
+                },
+                "search"
+            );
+
             const expectedPages = validatedData.pages || 1;
             let pagesProcessed = 0;
             let failedPages = 0;
@@ -86,6 +132,9 @@ export class SearchController {
             // Global scrape limit control (if limit provided)
             const shouldLimitScrape = typeof validatedData.limit === 'number' && validatedData.limit > 0;
             let remainingScrape = shouldLimitScrape ? (validatedData.limit as number) : Number.POSITIVE_INFINITY;
+            const cachedScrapes: { url: string; data: any }[] = [];
+            const cacheConfig = getCacheConfig();
+            const cacheManager = CacheManager.getInstance();
 
             const results = await this.searchService.search(validatedData.engine, {
                 query: validatedData.query,
@@ -113,12 +162,48 @@ export class SearchController {
                         if (validatedData.scrape_options) {
                             const scrapeOptions = validatedData.scrape_options;
                             const engineForScrape = scrapeOptions.engine!;
+                            const maxAge = scrapeOptions.max_age;
+                            const effectiveMaxAge = maxAge ?? cacheConfig.defaultMaxAge;
+                            const shouldCheckCache = cacheConfig.pageCacheEnabled && (maxAge === undefined || maxAge > 0);
+                            const cacheOptions = {
+                                engine: engineForScrape,
+                                formats: scrapeOptions.formats,
+                                json_options: scrapeOptions.json_options,
+                                include_tags: scrapeOptions.include_tags,
+                                exclude_tags: scrapeOptions.exclude_tags,
+                                proxy: scrapeOptions.proxy,
+                                only_main_content: (scrapeOptions as any).only_main_content,
+                                extract_source: scrapeOptions.extract_source,
+                                ocr_options: scrapeOptions.ocr_options,
+                                wait_for: scrapeOptions.wait_for,
+                                wait_until: scrapeOptions.wait_until,
+                                wait_for_selector: scrapeOptions.wait_for_selector,
+                                template_id: (scrapeOptions as any).template_id,
+                                store_in_cache: scrapeOptions.store_in_cache,
+                            };
                             // Respect global limit across pages
                             const allowedCount = Math.max(0, Math.min(pageResults.length, remainingScrape));
                             const toProcess = shouldLimitScrape ? pageResults.slice(0, allowedCount) : pageResults;
                             for (const result of toProcess) {
                                 if (!result.url) continue; // Ensure url is a string for RequestTask
                                 const resultUrl = result.url as string;
+                                if (shouldCheckCache) {
+                                    const cached = await cacheManager.getFromCache(
+                                        resultUrl,
+                                        { ...cacheOptions, url: resultUrl },
+                                        maxAge
+                                    );
+                                    if (cached) {
+                                        const cachedData: any = { ...cached, maxAge: effectiveMaxAge };
+                                        if ("fromCache" in cachedData) delete cachedData.fromCache;
+                                        cachedScrapes.push({ url: resultUrl, data: cachedData });
+                                        totalScrapeCount++; // Count cached result as completed scrape
+                                        completedScrapeCount++;
+                                        if (shouldLimitScrape) remainingScrape -= 1;
+                                        if (remainingScrape <= 0) break;
+                                        continue;
+                                    }
+                                }
                                 // Extract engine from scrapeOptions and pass remaining options
                                 const { engine: _engine, ...options } = scrapeOptions;
                                 const jobPayload = {
@@ -176,12 +261,23 @@ export class SearchController {
             });
             // Ensure all scrape jobs have been enqueued before waiting for completion, then enrich results with scrape data
             await Promise.all(scrapeJobCreationPromises);
-            if (scrapeCompletionPromises.length > 0) {
-                log.info(`Waiting for ${scrapeCompletionPromises.length} scrape jobs to complete, ${scrapeJobIds.join(", ")}`);
-                const completedScrapes = await Promise.all(scrapeCompletionPromises);
-                const successfulScrapes = completedScrapes.filter(({ data }) => Boolean(data));
-                completedScrapeCount = successfulScrapes.length;
-                const urlToScrapeData = new Map<string, any>(successfulScrapes
+            if (scrapeCompletionPromises.length > 0 || cachedScrapes.length > 0) {
+                let successfulScrapes: { url: string; data: any }[] = [];
+                if (scrapeCompletionPromises.length > 0) {
+                    log.info(`Waiting for ${scrapeCompletionPromises.length} scrape jobs to complete, ${scrapeJobIds.join(", ")}`);
+                    const completedScrapes = await Promise.all(scrapeCompletionPromises);
+                    successfulScrapes = completedScrapes.filter(({ data }) => Boolean(data));
+                }
+                const allScrapes = [...cachedScrapes, ...successfulScrapes];
+                completedScrapeCount = allScrapes.length;
+                if (cachedScrapes.length > 0) {
+                    try {
+                        await updateJobCacheHits(searchJobId!, cachedScrapes.length);
+                    } catch (cacheUpdateError) {
+                        log.warning(`[SEARCH] Failed to update cache hits for job_id=${searchJobId}: ${cacheUpdateError}`);
+                    }
+                }
+                const urlToScrapeData = new Map<string, any>(allScrapes
                     .map(({ url, data }) => [url, data])
                 );
                 for (const r of results as any[]) {
@@ -201,11 +297,14 @@ export class SearchController {
                 }
             }
             // Calculate credits using CreditCalculator
-            req.creditsUsed = defaultPrice + CreditCalculator.calculateSearchCredits({
+            req.billingChargeDetails = CreditCalculator.buildSearchChargeDetails({
                 pages: validatedData.pages,
                 scrape_options: validatedData.scrape_options,
                 completedScrapeCount,
+            }, {
+                templateCredits: defaultPrice,
             });
+            req.creditsUsed = req.billingChargeDetails.total;
 
             // Mark job status based on page results and scrape tasks
             try {
@@ -220,8 +319,36 @@ export class SearchController {
                         false,
                         { total: finalTotalTasks, completed: finalCompletedTasks, failed: finalFailedTasks }
                     );
+                    // Trigger webhook for search failure
+                    await triggerWebhookEvent(
+                        WebhookEventType.SEARCH_FAILED,
+                        searchJobId,
+                        {
+                            query: validatedData.query,
+                            status: "failed",
+                            error: `All tasks failed (${finalFailedTasks}/${finalTotalTasks})`,
+                            total: finalTotalTasks,
+                            completed: finalCompletedTasks,
+                            failed: finalFailedTasks,
+                        },
+                        "search"
+                    );
                 } else {
                     await completedJob(searchJobId, true, { total: finalTotalTasks, completed: finalCompletedTasks, failed: finalFailedTasks });
+                    // Trigger webhook for search completion
+                    await triggerWebhookEvent(
+                        WebhookEventType.SEARCH_COMPLETED,
+                        searchJobId,
+                        {
+                            query: validatedData.query,
+                            status: "completed",
+                            total: finalTotalTasks,
+                            completed: finalCompletedTasks,
+                            failed: finalFailedTasks,
+                            results_count: (results as any[]).length,
+                        },
+                        "search"
+                    );
                 }
             } catch (e) {
                 log.error(`Failed to mark job final status for job_id=${searchJobId}: ${e instanceof Error ? e.message : String(e)}`);
@@ -238,6 +365,8 @@ export class SearchController {
                     code: err.code,
                 }));
 
+                req.creditsUsed = 0;
+                req.billingChargeDetails = undefined;
                 res.status(400).json({
                     success: false,
                     error: "Validation error",
@@ -254,6 +383,8 @@ export class SearchController {
                         log.error(`Failed to mark job failed for job_id=${searchJobId}: ${e instanceof Error ? e.message : String(e)}`);
                     }
                 }
+                req.creditsUsed = 0;
+                req.billingChargeDetails = undefined;
                 res.status(500).json({
                     success: false,
                     error: "Internal server error",

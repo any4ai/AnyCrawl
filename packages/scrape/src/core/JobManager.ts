@@ -1,6 +1,8 @@
 import { log } from "crawlee";
 import { QueueManager, QueueName } from "../managers/Queue.js";
 import { Utils } from "../Utils.js";
+import { WebhookEventType } from "@anycrawl/libs";
+import { getJob } from "@anycrawl/db";
 
 /**
  * Job manager for handling job status updates
@@ -27,6 +29,28 @@ export class JobManager {
 
         // Store data in key-value store
         await (await Utils.getInstance().getKeyValueStore()).setValue(jobId, data);
+
+        // Trigger webhook event for scrape completion
+        try {
+            const dbJob = await getJob(jobId);
+            if (dbJob && process.env.ANYCRAWL_WEBHOOKS_ENABLED === "true") {
+                const { WebhookManager } = await import("../managers/Webhook.js");
+                await WebhookManager.getInstance().triggerEvent(
+                    WebhookEventType.SCRAPE_COMPLETED,
+                    {
+                        job_id: jobId,
+                        url: job.data.url,
+                        status: "completed",
+                        ...data,
+                    },
+                    "scrape",
+                    jobId,
+                    dbJob.userId ?? undefined
+                );
+            }
+        } catch (e) {
+            log.warning(`[${queueName}] [${jobId}] Failed to trigger webhook: ${e}`);
+        }
     }
 
     /**
@@ -46,5 +70,28 @@ export class JobManager {
             status: "failed",
             ...data,
         });
+
+        // Trigger webhook event for scrape failure
+        try {
+            const dbJob = await getJob(jobId);
+            if (dbJob && process.env.ANYCRAWL_WEBHOOKS_ENABLED === "true") {
+                const { WebhookManager } = await import("../managers/Webhook.js");
+                await WebhookManager.getInstance().triggerEvent(
+                    WebhookEventType.SCRAPE_FAILED,
+                    {
+                        job_id: jobId,
+                        url: job.data.url,
+                        status: "failed",
+                        error,
+                        ...data,
+                    },
+                    "scrape",
+                    jobId,
+                    dbJob.userId ?? undefined
+                );
+            }
+        } catch (e) {
+            log.warning(`[${queueName}] [${jobId}] Failed to trigger webhook: ${e}`);
+        }
     }
 } 

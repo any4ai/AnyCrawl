@@ -31,3 +31,9 @@ export * from "./managers/Progress.js";
 export * from "./managers/Webhook.js";
 export * from "./managers/Scheduler.js";
 export * from "./HttpClient.js";
+
+// Services
+export * from "./services/MapService.js";
+
+// Cache Manager
+export * from "./managers/Cache.js";

@@ -342,6 +342,21 @@ export class Job {
     }
 
     /**
+     * Update cache hit count for a job
+     */
+    public static async updateCacheHits(jobId: string, cacheHits: number) {
+        const db = await getDB();
+        await db.update(schemas.jobs).set({
+            cacheHits: cacheHits,
+            updatedAt: new Date(),
+        }).where(eq(schemas.jobs.jobId, jobId));
+
+        try {
+            log.info(`[DB][Job] Updated cache hits job_id=${jobId} cache_hits=${cacheHits}`);
+        } catch { }
+    }
+
+    /**
      * Add network traffic usage to a job (atomic increment).
      */
     public static async addTraffic(

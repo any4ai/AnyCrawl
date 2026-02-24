@@ -41,6 +41,10 @@
     {
       "name": "Search",
       "description": "SERP, search engine results page"
+    },
+    {
+      "name": "Map",
+      "description": "Discover URLs for a site (sitemap, search, and page links)"
     }
   ],
   "paths": {
@@ -1142,6 +1146,17 @@
                               "description": "Additional metadata extracted from the page",
                               "example": []
                             },
+                            "cachedAt": {
+                              "type": "string",
+                              "format": "date-time",
+                              "description": "When the cached content was stored (cache hit only)",
+                              "example": "2026-02-08T12:34:56.000Z"
+                            },
+                            "maxAge": {
+                              "type": "number",
+                              "description": "Cache max age used for the read (ms, cache hit only)",
+                              "example": 172800000
+                            },
                             "timestamp": {
                               "type": "string",
                               "format": "date-time",
@@ -1509,6 +1524,312 @@
                     "data"
                   ],
                   "description": "Successful search response format containing an array of search results and suggestions (may be empty)"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request - validation error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": {
+                      "type": "boolean",
+                      "const": false,
+                      "description": "Indicates the request failed"
+                    },
+                    "error": {
+                      "type": "string",
+                      "description": "Error message",
+                      "example": "Validation error"
+                    },
+                    "details": {
+                      "type": "object",
+                      "properties": {
+                        "issues": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "field": {
+                                "type": "string",
+                                "description": "The field that caused the error",
+                                "example": "engine"
+                              },
+                              "message": {
+                                "type": "string",
+                                "description": "Error message for the field",
+                                "example": "Invalid enum value. Expected 'playwright' | 'cheerio' | 'puppeteer', received 'cheeri1o'"
+                              },
+                              "code": {
+                                "type": "string",
+                                "description": "Error code",
+                                "example": "invalid_enum_value"
+                              }
+                            },
+                            "required": [
+                              "field",
+                              "message",
+                              "code"
+                            ]
+                          },
+                          "description": "Array of validation issues"
+                        },
+                        "messages": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          },
+                          "description": "Array of validation error messages",
+                          "example": [
+                            "Invalid enum value. Expected 'playwright' | 'cheerio' | 'puppeteer', received 'cheeri1o'"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "issues",
+                        "messages"
+                      ],
+                      "description": "Validation error details"
+                    }
+                  },
+                  "required": [
+                    "success",
+                    "error",
+                    "details"
+                  ],
+                  "description": "Standard error response format for validation errors"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized - missing or invalid authentication",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": {
+                      "type": "boolean",
+                      "const": false,
+                      "description": "Indicates the request failed due to authentication issues"
+                    },
+                    "error": {
+                      "type": "string",
+                      "description": "Authentication error message",
+                      "example": "Invalid API key",
+                      "examples": [
+                        "Invalid API key",
+                        "No authorization header provided"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "success",
+                    "error"
+                  ],
+                  "description": "Unauthorized response format for authentication errors"
+                }
+              }
+            }
+          },
+          "402": {
+            "description": "Payment required - subscription or credits needed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": {
+                      "type": "boolean",
+                      "const": false,
+                      "description": "Indicates the request failed due to insufficient credits"
+                    },
+                    "error": {
+                      "type": "string",
+                      "description": "Error message",
+                      "example": "Insufficient credits"
+                    },
+                    "current_credits": {
+                      "type": "number",
+                      "description": "Current credit balance of the user",
+                      "example": -2
+                    }
+                  },
+                  "required": [
+                    "success",
+                    "error",
+                    "current_credits"
+                  ],
+                  "description": "Payment required response format with credit information"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": {
+                      "type": "boolean",
+                      "const": false,
+                      "description": "Indicates the request failed due to server error"
+                    },
+                    "error": {
+                      "type": "string",
+                      "description": "Server error message",
+                      "example": "Internal server error"
+                    },
+                    "message": {
+                      "type": "string",
+                      "description": "Detailed error message describing what went wrong",
+                      "example": "Job 0ae56ed9-d9a9-4998-aea9-2ff5b51b2e4e timed out after 30000 seconds"
+                    }
+                  },
+                  "required": [
+                    "success",
+                    "error",
+                    "message"
+                  ],
+                  "description": "Internal server error response format"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/map": {
+      "post": {
+        "summary": "Map",
+        "description": "Discover URLs for a site using sitemap, search, and page links",
+        "tags": [
+          "Map"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "url": {
+                    "type": "string",
+                    "format": "uri",
+                    "description": "The URL to map",
+                    "example": "https://example.com"
+                  },
+                  "limit": {
+                    "type": "number",
+                    "minimum": 1,
+                    "maximum": 50000,
+                    "default": 5000,
+                    "description": "Maximum number of URLs to return",
+                    "example": 5000
+                  },
+                  "include_subdomains": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Include subdomain URLs",
+                    "example": false
+                  },
+                  "ignore_sitemap": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Skip sitemap parsing",
+                    "example": false
+                  },
+                  "max_age": {
+                    "type": "number",
+                    "minimum": 0,
+                    "description": "Cache max age (ms). Use 0 to skip cache reads; omit to use server default.",
+                    "example": 172800000
+                  },
+                  "use_index": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Whether to use Page Cache index for URL discovery",
+                    "example": true
+                  }
+                },
+                "required": [
+                  "url"
+                ],
+                "additionalProperties": false,
+                "description": "Request schema for mapping site URLs",
+                "example": {
+                  "url": "https://example.com",
+                  "limit": 5000
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Map successful",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": {
+                      "type": "boolean",
+                      "const": true,
+                      "description": "Indicates the map request was successful"
+                    },
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "url": {
+                            "type": "string",
+                            "format": "uri",
+                            "description": "Discovered URL",
+                            "example": "https://example.com/about"
+                          },
+                          "title": {
+                            "type": "string",
+                            "description": "Optional title for the URL",
+                            "example": "About Us"
+                          },
+                          "description": {
+                            "type": "string",
+                            "description": "Optional description for the URL",
+                            "example": "Company overview and mission"
+                          }
+                        },
+                        "required": [
+                          "url"
+                        ]
+                      },
+                      "description": "Array of discovered URLs",
+                      "example": [
+                        {
+                          "url": "https://example.com/",
+                          "title": "Home",
+                          "description": "Example homepage"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "success",
+                    "data"
+                  ],
+                  "description": "Successful map response format containing discovered URLs"
                 }
               }
             }

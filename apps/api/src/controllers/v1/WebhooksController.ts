@@ -1,32 +1,26 @@
 import { Response } from "express";
 import { z } from "zod";
 import crypto from "crypto";
-import { RequestWithAuth, WEBHOOK_EVENT_TYPES } from "@anycrawl/libs";
-import { getDB, schemas, eq, sql } from "@anycrawl/db";
+import {
+    RequestWithAuth,
+    type OwnerContext,
+    WEBHOOK_EVENT_TYPES,
+    normalizePagination,
+    createWebhookSchema,
+    updateWebhookSchema,
+} from "@anycrawl/libs";
+import {
+    getDB,
+    schemas,
+    eq,
+    sql,
+    buildWebhookWhereClause,
+    getOwnedWebhook,
+    listWebhooksByOwner,
+} from "@anycrawl/db";
 import { log } from "@anycrawl/libs";
 import { randomUUID } from "crypto";
 import { serializeRecord, serializeRecords } from "../../utils/serializer.js";
-
-// Validation schemas
-const createWebhookSchema = z.object({
-    name: z.string().min(1).max(255),
-    description: z.string().optional(),
-    webhook_url: z.string().url(),
-    event_types: z.array(z.string()).min(1).refine(
-        (types) => types.every((type) => (WEBHOOK_EVENT_TYPES as readonly string[]).includes(type)),
-        "Invalid event type"
-    ),
-    scope: z.enum(["all", "specific"]).default("all"),
-    specific_task_ids: z.array(z.string().uuid()).optional(),
-    custom_headers: z.record(z.string()).optional(),
-    timeout_seconds: z.number().int().min(1).max(60).default(10),
-    max_retries: z.number().int().min(0).max(10).default(3),
-    retry_backoff_multiplier: z.number().min(1).max(10).default(2),
-    tags: z.array(z.string()).optional(),
-    metadata: z.record(z.any()).optional(),
-});
-
-const updateWebhookSchema = createWebhookSchema.partial();
 
 export class WebhooksController {
     /**
@@ -91,27 +85,9 @@ export class WebhooksController {
      */
     public list = async (req: RequestWithAuth, res: Response): Promise<void> => {
         try {
-            const apiKeyId = req.auth?.uuid;
-            const userId = req.auth?.user;
+            const owner = this.getOwnerContext(req);
             const db = await getDB();
-
-            // Query by userId if exists, otherwise by apiKey, otherwise all webhooks
-            const webhooks = userId
-                ? await db
-                    .select()
-                    .from(schemas.webhookSubscriptions)
-                    .where(eq(schemas.webhookSubscriptions.userId, userId))
-                    .orderBy(sql`${schemas.webhookSubscriptions.createdAt} DESC`)
-                : apiKeyId
-                ? await db
-                    .select()
-                    .from(schemas.webhookSubscriptions)
-                    .where(eq(schemas.webhookSubscriptions.apiKey, apiKeyId))
-                    .orderBy(sql`${schemas.webhookSubscriptions.createdAt} DESC`)
-                : await db
-                    .select()
-                    .from(schemas.webhookSubscriptions)
-                    .orderBy(sql`${schemas.webhookSubscriptions.createdAt} DESC`);
+            const webhooks = await listWebhooksByOwner(db, owner);
 
             // Hide the secret in list view and convert to snake_case
             const sanitized = webhooks.map((w: any) => ({
@@ -135,24 +111,11 @@ export class WebhooksController {
     public get = async (req: RequestWithAuth, res: Response): Promise<void> => {
         try {
             const { webhookId } = req.params;
-            const apiKeyId = req.auth?.uuid;
-            const userId = req.auth?.user;
+            const owner = this.getOwnerContext(req);
             const db = await getDB();
+            const webhook = await getOwnedWebhook(db, webhookId!, owner);
 
-            // Check ownership by userId if exists, otherwise by apiKey, or just by webhookId if no auth
-            const whereClause = userId
-                ? sql`${schemas.webhookSubscriptions.uuid} = ${webhookId} AND ${schemas.webhookSubscriptions.userId} = ${userId}`
-                : apiKeyId
-                ? sql`${schemas.webhookSubscriptions.uuid} = ${webhookId} AND ${schemas.webhookSubscriptions.apiKey} = ${apiKeyId}`
-                : sql`${schemas.webhookSubscriptions.uuid} = ${webhookId}`;
-
-            const webhook = await db
-                .select()
-                .from(schemas.webhookSubscriptions)
-                .where(whereClause)
-                .limit(1);
-
-            if (!webhook.length) {
+            if (!webhook) {
                 res.status(404).json({
                     success: false,
                     error: "Webhook not found",
@@ -162,7 +125,7 @@ export class WebhooksController {
 
             // Hide the secret and convert to snake_case
             const sanitized = {
-                ...webhook[0],
+                ...webhook,
                 webhookSecret: "***hidden***",
             };
             const serialized = serializeRecord(sanitized);
@@ -182,25 +145,13 @@ export class WebhooksController {
     public update = async (req: RequestWithAuth, res: Response): Promise<void> => {
         try {
             const { webhookId } = req.params;
-            const apiKeyId = req.auth?.uuid;
-            const userId = req.auth?.user;
+            const owner = this.getOwnerContext(req);
             const validatedData = updateWebhookSchema.parse(req.body);
             const db = await getDB();
 
-            // Check webhook exists and belongs to user/apiKey, or just check existence if no auth
-            const whereClause = userId
-                ? sql`${schemas.webhookSubscriptions.uuid} = ${webhookId} AND ${schemas.webhookSubscriptions.userId} = ${userId}`
-                : apiKeyId
-                ? sql`${schemas.webhookSubscriptions.uuid} = ${webhookId} AND ${schemas.webhookSubscriptions.apiKey} = ${apiKeyId}`
-                : sql`${schemas.webhookSubscriptions.uuid} = ${webhookId}`;
+            const existing = await getOwnedWebhook(db, webhookId!, owner);
 
-            const existing = await db
-                .select()
-                .from(schemas.webhookSubscriptions)
-                .where(whereClause)
-                .limit(1);
-
-            if (!existing.length) {
+            if (!existing) {
                 res.status(404).json({
                     success: false,
                     error: "Webhook not found",
@@ -214,11 +165,11 @@ export class WebhooksController {
             };
 
             // Map snake_case to camelCase
-            if (validatedData.webhook_url) updateData.webhookUrl = validatedData.webhook_url;
-            if (validatedData.event_types) updateData.eventTypes = validatedData.event_types;
-            if (validatedData.specific_task_ids) updateData.specificTaskIds = validatedData.specific_task_ids;
-            if (validatedData.custom_headers) updateData.customHeaders = validatedData.custom_headers;
-            if (validatedData.timeout_seconds) updateData.timeoutSeconds = validatedData.timeout_seconds;
+            if (validatedData.webhook_url !== undefined) updateData.webhookUrl = validatedData.webhook_url;
+            if (validatedData.event_types !== undefined) updateData.eventTypes = validatedData.event_types;
+            if (validatedData.specific_task_ids !== undefined) updateData.specificTaskIds = validatedData.specific_task_ids;
+            if (validatedData.custom_headers !== undefined) updateData.customHeaders = validatedData.custom_headers;
+            if (validatedData.timeout_seconds !== undefined) updateData.timeoutSeconds = validatedData.timeout_seconds;
             if (validatedData.max_retries !== undefined) updateData.maxRetries = validatedData.max_retries;
             if (validatedData.retry_backoff_multiplier !== undefined) updateData.retryBackoffMultiplier = validatedData.retry_backoff_multiplier;
 
@@ -231,10 +182,11 @@ export class WebhooksController {
             delete updateData.max_retries;
             delete updateData.retry_backoff_multiplier;
 
+            const whereClause = buildWebhookWhereClause(webhookId!, owner);
             await db
                 .update(schemas.webhookSubscriptions)
                 .set(updateData)
-                .where(eq(schemas.webhookSubscriptions.uuid, webhookId));
+                .where(whereClause);
 
             res.json({
                 success: true,
@@ -251,15 +203,10 @@ export class WebhooksController {
     public delete = async (req: RequestWithAuth, res: Response): Promise<void> => {
         try {
             const { webhookId } = req.params;
-            const apiKeyId = req.auth?.uuid;
-            const userId = req.auth?.user;
+            const owner = this.getOwnerContext(req);
             const db = await getDB();
 
-            const whereClause = userId
-                ? sql`${schemas.webhookSubscriptions.uuid} = ${webhookId} AND ${schemas.webhookSubscriptions.userId} = ${userId}`
-                : apiKeyId
-                ? sql`${schemas.webhookSubscriptions.uuid} = ${webhookId} AND ${schemas.webhookSubscriptions.apiKey} = ${apiKeyId}`
-                : sql`${schemas.webhookSubscriptions.uuid} = ${webhookId}`;
+            const whereClause = buildWebhookWhereClause(webhookId!, owner);
 
             await db
                 .delete(schemas.webhookSubscriptions)
@@ -280,29 +227,18 @@ export class WebhooksController {
     public deliveries = async (req: RequestWithAuth, res: Response): Promise<void> => {
         try {
             const { webhookId } = req.params;
-            const apiKeyId = req.auth?.uuid;
-            const userId = req.auth?.user;
-            const limit = parseInt(req.query.limit as string) || 100;
-            const offset = parseInt(req.query.offset as string) || 0;
+            const owner = this.getOwnerContext(req);
+            const { limit, offset } = normalizePagination(
+                req.query.limit as string | undefined,
+                req.query.offset as string | undefined
+            );
             const status = req.query.status as string;
             const from = req.query.from as string;
             const to = req.query.to as string;
             const db = await getDB();
 
-            // Verify webhook belongs to user/apiKey, or just by webhookId if no auth
-            const whereClause = userId
-                ? sql`${schemas.webhookSubscriptions.uuid} = ${webhookId} AND ${schemas.webhookSubscriptions.userId} = ${userId}`
-                : apiKeyId
-                ? sql`${schemas.webhookSubscriptions.uuid} = ${webhookId} AND ${schemas.webhookSubscriptions.apiKey} = ${apiKeyId}`
-                : sql`${schemas.webhookSubscriptions.uuid} = ${webhookId}`;
-
-            const webhook = await db
-                .select()
-                .from(schemas.webhookSubscriptions)
-                .where(whereClause)
-                .limit(1);
-
-            if (!webhook.length) {
+            const webhook = await getOwnedWebhook(db, webhookId!, owner);
+            if (!webhook) {
                 res.status(404).json({
                     success: false,
                     error: "Webhook not found",
@@ -360,24 +296,11 @@ export class WebhooksController {
     public test = async (req: RequestWithAuth, res: Response): Promise<void> => {
         try {
             const { webhookId } = req.params;
-            const apiKeyId = req.auth?.uuid;
-            const userId = req.auth?.user;
+            const owner = this.getOwnerContext(req);
             const db = await getDB();
 
-            // Verify webhook belongs to user/apiKey, or just by webhookId if no auth
-            const whereClause = userId
-                ? sql`${schemas.webhookSubscriptions.uuid} = ${webhookId} AND ${schemas.webhookSubscriptions.userId} = ${userId}`
-                : apiKeyId
-                ? sql`${schemas.webhookSubscriptions.uuid} = ${webhookId} AND ${schemas.webhookSubscriptions.apiKey} = ${apiKeyId}`
-                : sql`${schemas.webhookSubscriptions.uuid} = ${webhookId}`;
-
-            const webhook = await db
-                .select()
-                .from(schemas.webhookSubscriptions)
-                .where(whereClause)
-                .limit(1);
-
-            if (!webhook.length) {
+            const webhook = await getOwnedWebhook(db, webhookId!, owner);
+            if (!webhook) {
                 res.status(404).json({
                     success: false,
                     error: "Webhook not found",
@@ -397,7 +320,7 @@ export class WebhooksController {
                     },
                     "webhook",
                     webhookId!,
-                    userId || apiKeyId  // Use userId if exists, otherwise apiKeyId
+                    owner.userId || owner.apiKeyId
                 );
 
                 res.json({
@@ -423,15 +346,10 @@ export class WebhooksController {
     public activate = async (req: RequestWithAuth, res: Response): Promise<void> => {
         try {
             const { webhookId } = req.params;
-            const apiKeyId = req.auth?.uuid;
-            const userId = req.auth?.user;
+            const owner = this.getOwnerContext(req);
             const db = await getDB();
 
-            const whereClause = userId
-                ? sql`${schemas.webhookSubscriptions.uuid} = ${webhookId} AND ${schemas.webhookSubscriptions.userId} = ${userId}`
-                : apiKeyId
-                ? sql`${schemas.webhookSubscriptions.uuid} = ${webhookId} AND ${schemas.webhookSubscriptions.apiKey} = ${apiKeyId}`
-                : sql`${schemas.webhookSubscriptions.uuid} = ${webhookId}`;
+            const whereClause = buildWebhookWhereClause(webhookId!, owner);
 
             await db
                 .update(schemas.webhookSubscriptions)
@@ -457,15 +375,10 @@ export class WebhooksController {
     public deactivate = async (req: RequestWithAuth, res: Response): Promise<void> => {
         try {
             const { webhookId } = req.params;
-            const apiKeyId = req.auth?.uuid;
-            const userId = req.auth?.user;
+            const owner = this.getOwnerContext(req);
             const db = await getDB();
 
-            const whereClause = userId
-                ? sql`${schemas.webhookSubscriptions.uuid} = ${webhookId} AND ${schemas.webhookSubscriptions.userId} = ${userId}`
-                : apiKeyId
-                ? sql`${schemas.webhookSubscriptions.uuid} = ${webhookId} AND ${schemas.webhookSubscriptions.apiKey} = ${apiKeyId}`
-                : sql`${schemas.webhookSubscriptions.uuid} = ${webhookId}`;
+            const whereClause = buildWebhookWhereClause(webhookId!, owner);
 
             await db
                 .update(schemas.webhookSubscriptions)
@@ -490,24 +403,11 @@ export class WebhooksController {
     public replayDelivery = async (req: RequestWithAuth, res: Response): Promise<void> => {
         try {
             const { webhookId, deliveryId } = req.params;
-            const apiKeyId = req.auth?.uuid;
-            const userId = req.auth?.user;
+            const owner = this.getOwnerContext(req);
             const db = await getDB();
 
-            // Verify webhook belongs to user
-            const whereClause = userId
-                ? sql`${schemas.webhookSubscriptions.uuid} = ${webhookId} AND ${schemas.webhookSubscriptions.userId} = ${userId}`
-                : apiKeyId
-                ? sql`${schemas.webhookSubscriptions.uuid} = ${webhookId} AND ${schemas.webhookSubscriptions.apiKey} = ${apiKeyId}`
-                : sql`${schemas.webhookSubscriptions.uuid} = ${webhookId}`;
-
-            const webhook = await db
-                .select()
-                .from(schemas.webhookSubscriptions)
-                .where(whereClause)
-                .limit(1);
-
-            if (!webhook.length) {
+            const webhook = await getOwnedWebhook(db, webhookId!, owner);
+            if (!webhook) {
                 res.status(404).json({
                     success: false,
                     error: "Webhook not found",
@@ -585,6 +485,13 @@ export class WebhooksController {
             this.handleError(error, res);
         }
     };
+
+    private getOwnerContext(req: RequestWithAuth): OwnerContext {
+        return {
+            apiKeyId: req.auth?.uuid,
+            userId: req.auth?.user,
+        };
+    }
 
     private handleError(error: any, res: Response): void {
         if (error instanceof z.ZodError) {

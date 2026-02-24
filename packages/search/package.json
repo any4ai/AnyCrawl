@@ -1,6 +1,6 @@
 {
     "name": "@anycrawl/search",
-    "version": "1.0.0-beta.2",
+    "version": "1.0.0-beta.15",
     "private": true,
     "type": "module",
     "scripts": {

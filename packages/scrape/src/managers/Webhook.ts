@@ -394,20 +394,28 @@ export class WebhookManager {
                 }
 
                 for (const retry of retries) {
-                    // Re-enqueue for delivery
-                    const queueManager = QueueManager.getInstance();
-                    const queue = queueManager.getQueue(this.WEBHOOK_QUEUE);
-                    await queue.add(
-                        "webhook-delivery",
-                        { deliveryId: retry.uuid },
-                        { jobId: `${retry.uuid}-retry-${retry.attemptNumber}` }
-                    );
-
-                    // Update status to pending to prevent duplicate processing
-                    await db
+                    // Step 1: Update status FIRST to prevent duplicate pickup by other instances
+                    // Use atomic update with status check to win the race
+                    const updated = await db
                         .update(schemas.webhookDeliveries)
-                        .set({ status: "pending" })
-                        .where(eq(schemas.webhookDeliveries.uuid, retry.uuid));
+                        .set({ status: "pending", updatedAt: new Date() })
+                        .where(
+                            sql`${schemas.webhookDeliveries.uuid} = ${retry.uuid}
+                                AND ${schemas.webhookDeliveries.status} = 'retrying'`
+                        )
+                        .returning({ uuid: schemas.webhookDeliveries.uuid });
+
+                    // Step 2: Only enqueue if we successfully updated (won the race)
+                    if (updated.length > 0) {
+                        const queueManager = QueueManager.getInstance();
+                        const queue = queueManager.getQueue(this.WEBHOOK_QUEUE);
+                        await queue.add(
+                            "webhook-delivery",
+                            { deliveryId: retry.uuid },
+                            { jobId: `${retry.uuid}-retry-${retry.attemptNumber}` }
+                        );
+                        log.debug(`[WEBHOOK] Re-enqueued delivery ${retry.uuid} for retry`);
+                    }
                 }
             } catch (error) {
                 log.error(`[WEBHOOK] Retry processor error: ${error}`);

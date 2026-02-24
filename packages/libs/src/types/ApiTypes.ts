@@ -1,4 +1,5 @@
 import { Request } from "express";
+import type { BillingChargeDetailsV1 } from "./BillingChargeDetails.js";
 
 export interface RequestWithAuth extends Request {
     auth?: {
@@ -16,6 +17,7 @@ export interface RequestWithAuth extends Request {
         expiresAt?: Date;
     };
     creditsUsed?: number;
+    billingChargeDetails?: BillingChargeDetailsV1;
     checkCredits?: boolean;
     jobId?: string;
 }

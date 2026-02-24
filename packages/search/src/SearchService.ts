@@ -219,11 +219,10 @@ export class SearchService {
                 }
             }
 
-            log.info(`Executing search for: ${actualEngineName}, pages: ${effectivePages}`);
+            log.info(`Executing search for: ${actualEngineName}, pages: ${effectivePages}, concurrent: ${options.concurrent ?? false}`);
 
-            // Execute requests for each page
-            for (let i = 0; i < effectivePages; i++) {
-                const pageNum = i + 1;
+            // Helper function to fetch a single page
+            const fetchPage = async (pageNum: number): Promise<{ pageNum: number; results: SearchResult[]; success: boolean }> => {
                 try {
                     // Build task options
                     const taskOptions: any = { ...options, page: pageNum };
@@ -257,24 +256,37 @@ export class SearchService {
 
                     log.info(`Page ${pageNum} returned ${results.length} results`);
 
-                    // Call onPage callback if provided
-                    if (onPage) {
-                        onPage(pageNum, results, actualEngineName, true);
-                    }
-
-                    // Accumulate results
-                    allResults.push(...results);
-
+                    return { pageNum, results, success: true };
                 } catch (error) {
                     log.error(`Error fetching page ${pageNum}: ${error}`);
+                    return { pageNum, results: [], success: false };
+                }
+            };
 
-                    // Call onPage callback with error
+            // Execute requests - concurrent or sequential based on options
+            if (options.concurrent) {
+                // Concurrent: fetch all pages in parallel
+                const pageNumbers = Array.from({ length: effectivePages }, (_, i) => i + 1);
+                const pageResults = await Promise.all(pageNumbers.map(fetchPage));
+
+                // Sort by page number and accumulate results
+                pageResults.sort((a, b) => a.pageNum - b.pageNum);
+                for (const { pageNum, results, success } of pageResults) {
                     if (onPage) {
-                        onPage(pageNum, [], actualEngineName, false);
+                        onPage(pageNum, results, actualEngineName, success);
                     }
+                    allResults.push(...results);
+                }
+            } else {
+                // Sequential: fetch pages one by one
+                for (let i = 0; i < effectivePages; i++) {
+                    const pageNum = i + 1;
+                    const { results, success } = await fetchPage(pageNum);
 
-                    // Continue to next page on error
-                    continue;
+                    if (onPage) {
+                        onPage(pageNum, results, actualEngineName, success);
+                    }
+                    allResults.push(...results);
                 }
             }
 

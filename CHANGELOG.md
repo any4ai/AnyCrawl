@@ -5,6 +5,92 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.0-beta.15] - 2026-02-08
+
+### Fixed
+
+- Treat any non-free subscription tier as paid for scheduled task limits
+
+## [1.0.0-beta.14] - 2026-02-08
+
+### Fixed
+
+- Add missing axios dependency in @anycrawl/scrape to prevent runtime Webhook import errors
+
+## [1.0.0-beta.13] - 2026-02-08
+
+### Added
+
+- Page cache (S3-backed) and map cache (DB-backed) with cache controls (`max_age`, `store_in_cache`, `use_index`) across scrape/crawl/map plus cache hit tracking
+- Map API for website URL discovery/extraction (with default search engine discovery behavior)
+- `links` output format to extract all URLs from scraped pages (scrape/crawl/search)
+- `summary` output format for content summarization
+- Comprehensive webhook events for scrape/crawl/search/map and scheduled task execution cancel endpoint with enhanced execution metrics
+- Subscription tiers with scheduled task limits and credit estimation
+- JS SDK support for the Map API
+
+### Changed
+
+- HTML to Markdown conversion improvements (GFM support, smart main-content extraction, lazy-loaded images, section support)
+- URL extraction now uses Crawlee implementation
+
+### Fixed
+
+- Search credits calculation now accounts for page count
+- Cache key parameter handling in caching layer
+- Docs metadata generation when page description is missing
+
+## [1.0.0-beta.12] - 2026-01-31
+
+### Added
+
+- Proxy modes (`auto`/`base`/`stealth`) with centralized credit calculation
+- Session rotation option to rotate after every error in engine configurator
+- MCP setup guides and improved SEO with structured data
+
+### Changed
+
+- Enhanced scheduled tasks with credit estimation and validation
+- Improved queue handling in Worker with detailed logging for Webhook and Scheduler managers
+
+### Fixed
+
+- Task schema now allows nullable description and max executions per day
+
+## [1.0.0-beta.11] - 2026-01-28
+
+### Added
+
+- Template task type support for scheduled tasks, allowing dynamic engine selection based on template configuration
+
+## [1.0.0-beta.10] - 2026-01-28
+
+### Added
+
+- Webhook and Scheduler managers with support for scheduled tasks and webhook events
+- Network traffic tracking for jobs
+- IP address whitelisting for API keys, enhancing security by allowing only specified IPs to access the API
+
+### Changed
+
+- Enhanced proxy handling with `original_url` for improved rule matching and session management during retries
+- Updated Next.js and related dependencies to version 15.3.6
+
+### Fixed
+
+- Standardized JSON key naming conventions in API responses for consistency
+- Updated import paths to include `.js` extension for serializer utility
+
+## [1.0.0-beta.9] - 2025-11-21
+
+### Added
+
+- `scrape_paths` parameter for selective content extraction in crawl API, allowing users to specify which URLs to scrape while still discovering links from included paths
+
+### Fixed
+
+- Updated minimatch import to named import for consistency
+
 ## [1.0.0-beta.8] - 2025-10-22
 
 ### Added

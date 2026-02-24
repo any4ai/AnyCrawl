@@ -36,6 +36,41 @@
       "when": 1769408240848,
       "tag": "0004_fluffy_firestar",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1738368000000,
+      "tag": "0005_add_subscription_tier",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1770492000000,
+      "tag": "0006_cache_tables",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "6",
+      "when": 1770531122000,
+      "tag": "0007_cache_hits",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1770619200000,
+      "tag": "0008_billing_ledger",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "6",
+      "when": 1770710400000,
+      "tag": "0009_billing_charge_details",
+      "breakpoints": true
     }
   ]
 }

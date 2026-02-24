@@ -28,6 +28,8 @@ export const apiKey = p.pgTable("api_key", {
     expiresAt: p.timestamp("expires_at"),
     // Allowed IP addresses whitelist (JSON array of IP addresses or CIDR ranges)
     allowedIps: p.jsonb("allowed_ips").$type<string[]>(),
+    // Subscription tier for rate limiting (free, paid, etc.)
+    subscriptionTier: p.text("subscription_tier").default("free").notNull(),
 });
 
 export const requestLog = p.pgTable("request_log", {
@@ -68,6 +70,32 @@ export const requestLog = p.pgTable("request_log", {
     createdAt: p.timestamp("created_at").notNull(),
 });
 
+export const billingLedger = p.pgTable("billing_ledger", {
+    // Primary key with auto-incrementing ID
+    uuid: p
+        .uuid()
+        .primaryKey()
+        .$defaultFn(() => randomUUID()),
+    // Billing ownership
+    jobId: p.text("job_id").notNull(),
+    apiKey: p.uuid("api_key_id").references(() => apiKey.uuid),
+    // Billing metadata
+    mode: p.text("mode").notNull(), // 'delta' | 'target'
+    reason: p.text("reason").notNull(),
+    idempotencyKey: p.text("idempotency_key").notNull().unique(),
+    // Billing amount and usage snapshot
+    charged: p.integer("charged").notNull(),
+    beforeUsed: p.integer("before_used").notNull(),
+    afterUsed: p.integer("after_used").notNull(),
+    // Itemized charge details (nullable for historical rows)
+    chargeDetails: p.jsonb("charge_details"),
+    // Credits snapshot (nullable when unavailable)
+    beforeCredits: p.integer("before_credits"),
+    afterCredits: p.integer("after_credits"),
+    // Timestamp
+    createdAt: p.timestamp("created_at").notNull(),
+});
+
 export const jobs = p.pgTable("jobs", {
     // Primary key with auto-incrementing ID
     uuid: p
@@ -98,6 +126,10 @@ export const jobs = p.pgTable("jobs", {
     failed: p.integer("failed").notNull().default(0),
     // Number of credits consumed
     creditsUsed: p.integer("credits_used").notNull().default(0),
+    // Credit deduction timestamp (null = not yet deducted, set when deduction completes)
+    deductedAt: p.timestamp("deducted_at"),
+    // Number of cache hits recorded for this job
+    cacheHits: p.integer("cache_hits").notNull().default(0),
     // Network traffic usage (application layer bytes)
     trafficBytes: p.bigint("traffic_bytes", { mode: "number" }).notNull().default(0),
     trafficRequestBytes: p.bigint("traffic_request_bytes", { mode: "number" }).notNull().default(0),
@@ -218,8 +250,8 @@ export const scheduledTasks = p.pgTable("scheduled_tasks", {
         .$defaultFn(() => randomUUID()),
     // API key that created this task
     apiKey: p.uuid("api_key_id").references(() => apiKey.uuid),
-    // User ID (from api_key.user or api_key.uuid)
-    userId: p.uuid("user_id").notNull(),
+    // User ID (from api_key.user, can be null)
+    userId: p.uuid("user_id"),
     name: p.text("name").notNull(),
     description: p.text("description"),
     taskType: p.text("task_type").notNull(),
@@ -255,12 +287,9 @@ export const taskExecutions = p.pgTable("task_executions", {
     status: p.text("status").default("pending").notNull(),
     startedAt: p.timestamp("started_at", { withTimezone: true }),
     completedAt: p.timestamp("completed_at", { withTimezone: true }),
-    durationMs: p.integer("duration_ms"),
     jobUuid: p.uuid("job_uuid").references(() => jobs.uuid),
-    creditsUsed: p.integer("credits_used").default(0).notNull(),
-    itemsProcessed: p.integer("items_processed").default(0).notNull(),
-    itemsSucceeded: p.integer("items_succeeded").default(0).notNull(),
-    itemsFailed: p.integer("items_failed").default(0).notNull(),
+    // Note: creditsUsed, itemsProcessed, itemsSucceeded, itemsFailed, durationMs
+    // are retrieved from jobs table via JOIN - removed to avoid data duplication
     errorMessage: p.text("error_message"),
     errorCode: p.text("error_code"),
     errorDetails: p.jsonb("error_details"),
@@ -277,8 +306,8 @@ export const webhookSubscriptions = p.pgTable("webhook_subscriptions", {
         .$defaultFn(() => randomUUID()),
     // API key that created this webhook
     apiKey: p.uuid("api_key_id").references(() => apiKey.uuid),
-    // User ID (from api_key.user or api_key.uuid)
-    userId: p.uuid("user_id").notNull(),
+    // User ID (from api_key.user, can be null)
+    userId: p.uuid("user_id"),
     name: p.text("name").notNull(),
     description: p.text("description"),
     webhookUrl: p.text("webhook_url").notNull(),
@@ -330,3 +359,61 @@ export const webhookDeliveries = p.pgTable("webhook_deliveries", {
     createdAt: p.timestamp("created_at", { withTimezone: true }).default(sql`now()`).notNull(),
     deliveredAt: p.timestamp("delivered_at", { withTimezone: true }),
 });
+
+// Cache tables for storing scraped page data
+export const pageCache = p.pgTable("page_cache", {
+    uuid: p
+        .uuid()
+        .primaryKey()
+        .$defaultFn(() => randomUUID()),
+    // URL information
+    url: p.text("url").notNull(),
+    urlHash: p.text("url_hash").notNull(),
+    domain: p.text("domain").notNull(),
+    // S3 storage reference
+    s3Key: p.text("s3_key").notNull(),
+    contentHash: p.text("content_hash"),
+    // Metadata
+    title: p.text("title"),
+    description: p.text("description"),
+    statusCode: p.integer("status_code").notNull(),
+    contentType: p.text("content_type"),
+    contentLength: p.integer("content_length"),
+    // Options hash for cache key matching
+    optionsHash: p.text("options_hash").notNull(),
+    // Scrape configuration snapshot
+    engine: p.text("engine"),
+    isMobile: p.boolean("is_mobile").default(false),
+    hasProxy: p.boolean("has_proxy").default(false),
+    hasScreenshot: p.boolean("has_screenshot").default(false),
+    // Timestamps
+    scrapedAt: p.timestamp("scraped_at", { withTimezone: true }).notNull(),
+    createdAt: p.timestamp("created_at", { withTimezone: true }).default(sql`now()`).notNull(),
+}, (table) => [
+    p.uniqueIndex("page_cache_url_options_idx").on(table.urlHash, table.optionsHash),
+    p.index("page_cache_url_hash_idx").on(table.urlHash),
+    p.index("page_cache_domain_idx").on(table.domain),
+    p.index("page_cache_scraped_at_idx").on(table.scrapedAt),
+]);
+
+export const mapCache = p.pgTable("map_cache", {
+    uuid: p
+        .uuid()
+        .primaryKey()
+        .$defaultFn(() => randomUUID()),
+    // Domain information
+    domain: p.text("domain").notNull(),
+    domainHash: p.text("domain_hash").notNull(),
+    // Discovered URLs
+    urls: p.jsonb("urls").notNull().$type<Array<{ url: string; title?: string; description?: string }>>(),
+    urlCount: p.integer("url_count").notNull(),
+    // Source of discovery
+    source: p.text("source").notNull(), // 'sitemap' | 'search' | 'crawl'
+    // Timestamps
+    discoveredAt: p.timestamp("discovered_at", { withTimezone: true }).notNull(),
+    createdAt: p.timestamp("created_at", { withTimezone: true }).default(sql`now()`).notNull(),
+}, (table) => [
+    p.uniqueIndex("map_cache_domain_source_idx").on(table.domainHash, table.source),
+    p.index("map_cache_domain_hash_idx").on(table.domainHash),
+    p.index("map_cache_discovered_at_idx").on(table.discoveredAt),
+]);

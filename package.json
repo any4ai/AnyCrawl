@@ -13,6 +13,7 @@
         "start": "turbo run start",
         "start:api": "turbo run start --filter=api",
         "start:docs": "turbo run start --filter=docs",
+        "start:worker": "turbo run start --filter=@anycrawl/scrape",
         "test": "turbo run test",
         "test:watch": "turbo run test:watch",
         "test:coverage": "turbo run test:coverage",
@@ -36,6 +37,7 @@
     "devDependencies": {
         "@anycrawl/js-sdk": "^0.0.1",
         "@dotenv-run/cli": "^1.3.6",
+        "baseline-browser-mapping": "^2.9.19",
         "knip": "^5.47.0",
         "prettier": "^3.5.3",
         "tsx": "^4.19.4",

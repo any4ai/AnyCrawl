@@ -31,6 +31,7 @@ PATCH  /v1/scheduled-tasks/:taskId/pause   # Pause task
 PATCH  /v1/scheduled-tasks/:taskId/resume  # Resume task
 DELETE /v1/scheduled-tasks/:taskId      # Delete task
 GET    /v1/scheduled-tasks/:taskId/executions  # Get execution history
+DELETE /v1/scheduled-tasks/:taskId/executions/:executionId  # Cancel an execution
 ```
 
 ## Quick Start
@@ -374,6 +375,39 @@ curl -X PUT "https://api.anycrawl.dev/v1/scheduled-tasks/:taskId" \
   }'
 ```
 
+### Response
+
+```json
+{
+  "success": true,
+  "data": {
+    "uuid": "550e8400-e29b-41d4-a716-446655440000",
+    "name": "Daily Tech News",
+    "description": "Updated description",
+    "task_type": "scrape",
+    "cron_expression": "0 10 * * *",
+    "timezone": "Asia/Shanghai",
+    "task_payload": {
+      "url": "https://news.ycombinator.com",
+      "engine": "cheerio",
+      "formats": ["markdown"]
+    },
+    "concurrency_mode": "skip",
+    "is_active": true,
+    "is_paused": false,
+    "next_execution_at": "2026-01-28T02:00:00.000Z",
+    "total_executions": 45,
+    "successful_executions": 43,
+    "failed_executions": 2,
+    "consecutive_failures": 0,
+    "last_execution_at": "2026-01-27T01:00:00.000Z",
+    "created_at": "2026-01-01T00:00:00.000Z",
+    "updated_at": "2026-01-27T12:00:00.000Z",
+    "icon": "FileText"
+  }
+}
+```
+
 <Callout type="info">
 Only include fields you want to update. All other fields will remain unchanged.
 </Callout>
@@ -413,14 +447,75 @@ curl -X GET "https://api.anycrawl.dev/v1/scheduled-tasks/:taskId/executions?limi
       "completed_at": "2026-01-27T01:02:15.000Z",
       "duration_ms": 135000,
       "job_uuid": "job-uuid-1",
+      "triggered_by": "scheduler",
+      "scheduled_for": "2026-01-27T01:00:00.000Z",
+      "error_message": null,
       "credits_used": 5,
       "items_processed": 1,
       "items_succeeded": 1,
-      "items_failed": 0
+      "items_failed": 0,
+      "job_status": "completed",
+      "job_success": true,
+      "icon": "CircleCheck"
     }
   ]
 }
 ```
+
+<Callout type="info">
+**Note:** The `credits_used`, `items_processed`, `items_succeeded`, `items_failed`, `job_status`, and `job_success` fields are retrieved from the associated job record via JOIN. The `duration_ms` is calculated from `started_at` and `completed_at`.
+</Callout>
+
+### Cancel an Execution
+
+Cancel a single execution that is currently pending or running. This is useful when you need to stop a specific execution without pausing the entire task.
+
+```bash tab="cURL"
+curl -X DELETE "https://api.anycrawl.dev/v1/scheduled-tasks/:taskId/executions/:executionId" \
+  -H "Authorization: Bearer <your-api-key>"
+```
+
+```javascript tab="JavaScript"
+const response = await fetch(
+  `https://api.anycrawl.dev/v1/scheduled-tasks/${taskId}/executions/${executionId}`,
+  {
+    method: "DELETE",
+    headers: {
+      "Authorization": "Bearer YOUR_API_KEY"
+    }
+  }
+);
+
+const data = await response.json();
+console.log(data.message);
+```
+
+```python tab="Python"
+import requests
+
+response = requests.delete(
+    f"https://api.anycrawl.dev/v1/scheduled-tasks/{task_id}/executions/{execution_id}",
+    headers={
+        "Authorization": "Bearer YOUR_API_KEY"
+    }
+)
+
+data = response.json()
+print(data["message"])
+```
+
+### Response
+
+```json
+{
+  "success": true,
+  "message": "Execution cancelled successfully"
+}
+```
+
+<Callout type="info">
+Only executions with status `pending` or `running` can be cancelled. Completed, failed, or already cancelled executions will return an error.
+</Callout>
 
 ## Automatic Failure Handling
 

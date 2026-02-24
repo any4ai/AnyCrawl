@@ -5,6 +5,16 @@ import { log } from "@anycrawl/libs";
 import { buildExtractionPrompt, EXTRACT_SYSTEM_PROMPT } from "../prompts/extract.prompts.js";
 import { CostTracking } from "./CostTracking.js";
 
+const VALID_JSON_SCHEMA_TYPES = new Set([
+    'object',
+    'array',
+    'string',
+    'number',
+    'integer',
+    'boolean',
+    'null',
+]);
+
 // --- Schema normalization helpers ---
 function removeDefaultProperty(obj: any): any {
     if (Array.isArray(obj)) {
@@ -161,6 +171,53 @@ class LLMExtract extends BaseAgent {
         return this.countTokens(this.systemPrompt);
     }
 
+    private isValidNormalizedSchema(schema: any): boolean {
+        if (!schema || typeof schema !== 'object') {
+            return false;
+        }
+
+        const typeValue = schema.type;
+        if (typeof typeValue === 'string') {
+            return VALID_JSON_SCHEMA_TYPES.has(typeValue);
+        }
+
+        if (Array.isArray(typeValue)) {
+            return typeValue.every((item) => typeof item === 'string' && VALID_JSON_SCHEMA_TYPES.has(item));
+        }
+
+        return false;
+    }
+
+    private buildEmptyDataFromSchema(schema: JSONSchema7): any {
+        if (!schema || typeof schema !== 'object') {
+            return null;
+        }
+
+        const typeValue = schema.type;
+        const hasObjectType = typeValue === 'object' || (Array.isArray(typeValue) && typeValue.includes('object'));
+
+        if (hasObjectType && schema.properties && typeof schema.properties === 'object') {
+            const result: Record<string, any> = {};
+            for (const [key, value] of Object.entries(schema.properties)) {
+                result[key] = this.buildEmptyDataFromSchema(value as JSONSchema7);
+            }
+            return result;
+        }
+
+        return null;
+    }
+
+    /**
+     * Choose object-generation mode based on model capability.
+     * "json" avoids response-format warnings on providers without native schema support.
+     */
+    private getGenerateMode(): "auto" | "json" {
+        if (this.modelConfig?.supports_response_schema) {
+            return "auto";
+        }
+        return "json";
+    }
+
     /**
      * Extract field names from schema for prompt construction
      */
@@ -302,9 +359,41 @@ class LLMExtract extends BaseAgent {
 
         const inputText = Array.isArray(text) ? text.join('\n') : text;
         const inputTokens = this.countTokens(inputText);
+        const generationMode = this.getGenerateMode();
 
         log.debug(`📊 Model: ${this.modelId}`);
         log.debug(`📏 Input tokens: ${inputTokens}, Max input: ${maxTokensInput}`);
+
+        if (!this.isValidNormalizedSchema(normalizedSchema)) {
+            const totalDuration = Date.now() - overallStart;
+            log.warning(`Invalid schema provided for extraction, skipping LLM call. schema.type=${JSON.stringify((normalizedSchema as any)?.type)}`);
+            return {
+                data: {},
+                tokens: {
+                    input: inputTokens,
+                    output: 0,
+                    total: inputTokens,
+                },
+                chunks: 1,
+                cost: 0,
+                durationMs: totalDuration,
+            };
+        }
+
+        if (inputText.trim().length === 0) {
+            const totalDuration = Date.now() - overallStart;
+            return {
+                data: this.buildEmptyDataFromSchema(normalizedSchema),
+                tokens: {
+                    input: inputTokens,
+                    output: 0,
+                    total: inputTokens,
+                },
+                chunks: 1,
+                cost: 0,
+                durationMs: totalDuration,
+            };
+        }
 
         // If text is short enough, process directly
         if (inputTokens <= maxTokensInput) {
@@ -319,11 +408,13 @@ class LLMExtract extends BaseAgent {
                     system: options.systemPrompt || this.systemPrompt || "",
                     messages: [{ role: 'user', content: fullPrompt }],
                     schema: jsonSchema(normalizedSchema),
+                    mode: generationMode,
                 });
 
                 const systemPrompt = options.systemPrompt || this.systemPrompt || "";
-                const usageTokens = this.extractUsageTokens(result, fullPrompt + systemPrompt, result.object);
-                if (typeof usageTokens.providerCost === 'number') {
+                const extractedData = result.object || result;
+                const usageTokens = this.extractUsageTokens(result, fullPrompt + systemPrompt, extractedData);
+                if (typeof usageTokens.providerCost === 'number' && usageTokens.providerCost > 0) {
                     recordCall({
                         type: "extract",
                         metadata: { direct: true },
@@ -343,7 +434,7 @@ class LLMExtract extends BaseAgent {
 
                 const totalDuration = Date.now() - overallStart;
                 const finalResult = {
-                    data: result.object || result,
+                    data: extractedData,
                     tokens: {
                         input: usageTokens.inputTokens,
                         output: usageTokens.outputTokens,
@@ -366,8 +457,8 @@ class LLMExtract extends BaseAgent {
                         finishReason: error.finishReason,
                         usage: error.usage
                     });
-                } else if (error instanceof Error && error.message.includes('Cost limit exceeded"')) {
-                    log.warning('Cost limit exceeded"', {
+                } else if (error instanceof Error && error.message.includes('Cost limit exceeded')) {
+                    log.warning('Cost limit exceeded', {
                         error: error instanceof Error ? error.message : String(error)
                     });
                 } else {
@@ -397,13 +488,15 @@ class LLMExtract extends BaseAgent {
                     system: options.systemPrompt || this.systemPrompt || "",
                     messages: [{ role: 'user', content: fullPrompt }],
                     schema: jsonSchema(normalizedSchema),
+                    mode: generationMode,
                 });
-                allResults.push(result.object);
+                const chunkData = result.object;
+                allResults.push(chunkData);
 
                 // Track tokens and cost for this chunk using provider usage if available
                 const systemPrompt = options.systemPrompt || this.systemPrompt || "";
-                const usageTokens = this.extractUsageTokens(result, fullPrompt + systemPrompt, result.object);
-                if (typeof usageTokens.providerCost === 'number') {
+                const usageTokens = this.extractUsageTokens(result, fullPrompt + systemPrompt, chunkData);
+                if (typeof usageTokens.providerCost === 'number' && usageTokens.providerCost > 0) {
                     recordCall({
                         type: "extract",
                         metadata: { direct: false, chunkIndex: index + 1, totalChunks: allChunks.length },

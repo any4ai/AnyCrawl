@@ -27,6 +27,8 @@ export const SCRAPE_FORMATS = [
     "screenshot@fullPage",
     "rawHtml",
     "json",
+    "summary",
+    "links",
 ] as const;
 
 export const EXTRACT_SOURCES = [
@@ -37,5 +39,6 @@ export const EXTRACT_SOURCES = [
 // Job type constants (avoid importing BaseEngine early)
 export const JOB_TYPE_SCRAPE = 'scrape' as const;
 export const JOB_TYPE_CRAWL = 'crawl' as const;
+export const JOB_TYPE_MAP = 'map' as const;
 
 export const AVAILABLE_SEARCH_ENGINES = ["google", "searxng", 'ac-engine'] as const;

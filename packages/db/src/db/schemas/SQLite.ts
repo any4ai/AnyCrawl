@@ -27,6 +27,8 @@ export const apiKey = p.sqliteTable("api_key", {
     expiresAt: p.integer("expires_at", { mode: "timestamp" }),
     // Allowed IP addresses whitelist (JSON array of IP addresses or CIDR ranges)
     allowedIps: p.text("allowed_ips", { mode: "json" }).$type<string[]>(),
+    // Subscription tier for rate limiting (free, paid, etc.)
+    subscriptionTier: p.text("subscription_tier").default("free").notNull(),
 });
 
 export const requestLog = p.sqliteTable("request_log", {
@@ -67,6 +69,32 @@ export const requestLog = p.sqliteTable("request_log", {
     createdAt: p.integer("created_at", { mode: "timestamp" }).notNull().$defaultFn(() => new Date()),
 });
 
+export const billingLedger = p.sqliteTable("billing_ledger", {
+    // Primary key with auto-incrementing ID
+    uuid: p
+        .text("uuid")
+        .primaryKey()
+        .$defaultFn(() => randomUUID()),
+    // Billing ownership
+    jobId: p.text("job_id").notNull(),
+    apiKey: p.text("api_key_id").references(() => apiKey.uuid),
+    // Billing metadata
+    mode: p.text("mode").notNull(), // 'delta' | 'target'
+    reason: p.text("reason").notNull(),
+    idempotencyKey: p.text("idempotency_key").notNull().unique(),
+    // Billing amount and usage snapshot
+    charged: p.integer("charged").notNull(),
+    beforeUsed: p.integer("before_used").notNull(),
+    afterUsed: p.integer("after_used").notNull(),
+    // Itemized charge details (nullable for historical rows)
+    chargeDetails: p.text("charge_details", { mode: "json" }).$type<Record<string, unknown>>(),
+    // Credits snapshot (nullable when unavailable)
+    beforeCredits: p.integer("before_credits"),
+    afterCredits: p.integer("after_credits"),
+    // Timestamp
+    createdAt: p.integer("created_at", { mode: "timestamp" }).notNull().$defaultFn(() => new Date()),
+});
+
 export const jobs = p.sqliteTable("jobs", {
     // Primary key with auto-incrementing ID
     uuid: p
@@ -97,6 +125,10 @@ export const jobs = p.sqliteTable("jobs", {
     failed: p.integer("failed").notNull().default(0),
     // Number of credits consumed
     creditsUsed: p.integer("credits_used").notNull().default(0),
+    // Credit deduction timestamp (null = not yet deducted, set when deduction completes)
+    deductedAt: p.integer("deducted_at", { mode: "timestamp" }),
+    // Number of cache hits recorded for this job
+    cacheHits: p.integer("cache_hits").notNull().default(0),
     // Network traffic usage (application layer bytes)
     trafficBytes: p.integer("traffic_bytes").notNull().default(0),
     trafficRequestBytes: p.integer("traffic_request_bytes").notNull().default(0),
@@ -217,8 +249,8 @@ export const scheduledTasks = p.sqliteTable("scheduled_tasks", {
         .$defaultFn(() => randomUUID()),
     // API key that created this task
     apiKey: p.text("api_key_id").references(() => apiKey.uuid),
-    // User ID (from api_key.user or api_key.uuid)
-    userId: p.text("user_id").notNull(),
+    // User ID (from api_key.user, can be null)
+    userId: p.text("user_id"),
     name: p.text("name").notNull(),
     description: p.text("description"),
     taskType: p.text("task_type").notNull(),
@@ -254,12 +286,9 @@ export const taskExecutions = p.sqliteTable("task_executions", {
     status: p.text("status").default("pending").notNull(),
     startedAt: p.integer("started_at", { mode: "timestamp" }),
     completedAt: p.integer("completed_at", { mode: "timestamp" }),
-    durationMs: p.integer("duration_ms"),
     jobUuid: p.text("job_uuid").references(() => jobs.uuid),
-    creditsUsed: p.integer("credits_used").default(0).notNull(),
-    itemsProcessed: p.integer("items_processed").default(0).notNull(),
-    itemsSucceeded: p.integer("items_succeeded").default(0).notNull(),
-    itemsFailed: p.integer("items_failed").default(0).notNull(),
+    // Note: creditsUsed, itemsProcessed, itemsSucceeded, itemsFailed, durationMs
+    // are retrieved from jobs table via JOIN - removed to avoid data duplication
     errorMessage: p.text("error_message"),
     errorCode: p.text("error_code"),
     errorDetails: p.text("error_details", { mode: "json" }),
@@ -276,8 +305,8 @@ export const webhookSubscriptions = p.sqliteTable("webhook_subscriptions", {
         .$defaultFn(() => randomUUID()),
     // API key that created this webhook
     apiKey: p.text("api_key_id").references(() => apiKey.uuid),
-    // User ID (from api_key.user or api_key.uuid)
-    userId: p.text("user_id").notNull(),
+    // User ID (from api_key.user, can be null)
+    userId: p.text("user_id"),
     name: p.text("name").notNull(),
     description: p.text("description"),
     webhookUrl: p.text("webhook_url").notNull(),
@@ -328,4 +357,53 @@ export const webhookDeliveries = p.sqliteTable("webhook_deliveries", {
     nextRetryAt: p.integer("next_retry_at", { mode: "timestamp" }),
     createdAt: p.integer("created_at", { mode: "timestamp" }).notNull().$defaultFn(() => new Date()),
     deliveredAt: p.integer("delivered_at", { mode: "timestamp" }),
+});
+
+// Cache tables for storing scraped page data
+export const pageCache = p.sqliteTable("page_cache", {
+    uuid: p
+        .text("uuid")
+        .primaryKey()
+        .$defaultFn(() => randomUUID()),
+    // URL information
+    url: p.text("url").notNull(),
+    urlHash: p.text("url_hash").notNull(),
+    domain: p.text("domain").notNull(),
+    // S3 storage reference
+    s3Key: p.text("s3_key").notNull(),
+    contentHash: p.text("content_hash"),
+    // Metadata
+    title: p.text("title"),
+    description: p.text("description"),
+    statusCode: p.integer("status_code").notNull(),
+    contentType: p.text("content_type"),
+    contentLength: p.integer("content_length"),
+    // Options hash for cache key matching
+    optionsHash: p.text("options_hash").notNull(),
+    // Scrape configuration snapshot
+    engine: p.text("engine"),
+    isMobile: p.integer("is_mobile", { mode: "boolean" }).default(false),
+    hasProxy: p.integer("has_proxy", { mode: "boolean" }).default(false),
+    hasScreenshot: p.integer("has_screenshot", { mode: "boolean" }).default(false),
+    // Timestamps
+    scrapedAt: p.integer("scraped_at", { mode: "timestamp" }).notNull(),
+    createdAt: p.integer("created_at", { mode: "timestamp" }).notNull().$defaultFn(() => new Date()),
+});
+
+export const mapCache = p.sqliteTable("map_cache", {
+    uuid: p
+        .text("uuid")
+        .primaryKey()
+        .$defaultFn(() => randomUUID()),
+    // Domain information
+    domain: p.text("domain").notNull(),
+    domainHash: p.text("domain_hash").notNull(),
+    // Discovered URLs
+    urls: p.text("urls", { mode: "json" }).notNull().$type<Array<{ url: string; title?: string; description?: string }>>(),
+    urlCount: p.integer("url_count").notNull(),
+    // Source of discovery
+    source: p.text("source").notNull(), // 'sitemap' | 'search' | 'crawl'
+    // Timestamps
+    discoveredAt: p.integer("discovered_at", { mode: "timestamp" }).notNull(),
+    createdAt: p.integer("created_at", { mode: "timestamp" }).notNull().$defaultFn(() => new Date()),
 });

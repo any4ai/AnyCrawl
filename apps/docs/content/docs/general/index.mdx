@@ -36,13 +36,14 @@ OpenAPI friendly.
 
 AnyCrawl API follows consistent naming conventions:
 
-- **Request Parameters**: Use `snake_case` format
-  - Example: `webhook_url`, `event_types`, `cron_expression`, `max_retries`
+- **Request Parameters**: Primarily `snake_case`
+  - Common examples: `webhook_url`, `event_types`, `cron_expression`, `max_retries`
+  - Note: a few endpoint-specific fields use existing camelCase names (for example, `timeRange` in Search).
 
 - **Response Fields**: Use `snake_case` format
   - Example: `task_id`, `webhook_id`, `next_execution_at`, `task_type`, `cron_expression`, `is_active`
 
-All API endpoints consistently use `snake_case` for both request parameters and response fields, making it easy to work with the API across different programming languages.
+For request bodies, rely on each endpoint's parameter table/OpenAPI as the source of truth.
 
 ### Response Format
 

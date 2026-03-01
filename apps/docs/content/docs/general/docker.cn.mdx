@@ -98,11 +98,14 @@ AnyCrawl 采用微服务架构，包含以下服务：
 
 ### 爬虫配置
 
-| 变量名                      | 描述             | 默认值 | 示例                |
-| --------------------------- | ---------------- | ------ | ------------------- |
-| `ANYCRAWL_HEADLESS`         | 是否使用无头模式 | `true` | `true`, `false`     |
-| `ANYCRAWL_PROXY_URL`        | 代理服务器地址   | -      | `http://proxy:8080` |
-| `ANYCRAWL_IGNORE_SSL_ERROR` | 忽略 SSL 错误    | `true` | `true`, `false`     |
+| 变量名                         | 描述                                    | 默认值   | 示例                           |
+| ------------------------------ | --------------------------------------- | -------- | ------------------------------ |
+| `ANYCRAWL_HEADLESS`            | 是否使用无头模式                        | `true`   | `true`, `false`                |
+| `ANYCRAWL_PROXY_URL`           | 基础代理服务器地址                      | -        | `http://proxy:8080`            |
+| `ANYCRAWL_PROXY_STEALTH_URL`   | 隐身代理服务器地址                      | -        | `http://residential-proxy:8080` |
+| `ANYCRAWL_PROXY_STEALTH_CREDITS` | 使用隐身代理时额外消耗的积分            | `5`      | `5`                            |
+| `ANYCRAWL_STEALTH_TIMEOUT_MS`  | 隐身/auto 代理模式默认超时（毫秒）      | `120000` | `120000`                       |
+| `ANYCRAWL_IGNORE_SSL_ERROR`    | 忽略 SSL 错误                           | `true`   | `true`, `false`                |
 
 ### 数据库配置
 
@@ -142,6 +145,9 @@ ANYCRAWL_API_PORT=8080
 # 爬虫配置
 ANYCRAWL_HEADLESS=true
 ANYCRAWL_PROXY_URL=
+ANYCRAWL_PROXY_STEALTH_URL=
+ANYCRAWL_PROXY_STEALTH_CREDITS=5
+ANYCRAWL_STEALTH_TIMEOUT_MS=120000
 ANYCRAWL_IGNORE_SSL_ERROR=true
 
 # 数据库配置

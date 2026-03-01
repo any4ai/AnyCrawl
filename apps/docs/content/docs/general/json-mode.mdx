@@ -20,6 +20,8 @@ JSON mode supports three structured extraction modes:
 
 Tip: Set `extract_source` to control whether structured extraction reads from generated `markdown` or original `html`. Default is `markdown`; use `html` for cases where markdown loses important structure.
 
+Important: include `"json"` in `formats` when using `json_options`, otherwise the response will not contain extracted JSON data.
+
 ---
 
 ### 1. Prompt Only (Flexible Structure)
@@ -36,6 +38,7 @@ curl -X POST "https://api.anycrawl.dev/v1/scrape" \
   -H "Content-Type: application/json" \
   -d '{
     "url": "https://example.com",
+    "formats": ["json"],
     "json_options": {
       "user_prompt": "Extract the company mission, open source status, and employee count."
     }
@@ -51,6 +54,7 @@ const response = await fetch("https://api.anycrawl.dev/v1/scrape", {
     },
     body: JSON.stringify({
         url: "https://example.com",
+        formats: ["json"],
         json_options: {
             user_prompt: "Extract the company mission, open source status, and employee count.",
         },
@@ -71,6 +75,7 @@ response = requests.post(
     },
     json={
         'url': 'https://example.com',
+        'formats': ['json'],
         'json_options': {
             'user_prompt': 'Extract the company mission, open source status, and employee count.'
         }
@@ -95,6 +100,7 @@ curl -X POST "https://api.anycrawl.dev/v1/scrape" \
   -H "Content-Type: application/json" \
   -d '{
     "url": "https://example.com",
+    "formats": ["json"],
     "json_options": {
       "schema": {
         "type": "object",
@@ -118,6 +124,7 @@ const response = await fetch("https://api.anycrawl.dev/v1/scrape", {
     },
     body: JSON.stringify({
         url: "https://example.com",
+        formats: ["json"],
         json_options: {
             schema: {
                 type: "object",
@@ -156,6 +163,7 @@ response = requests.post(
     },
     json={
         'url': 'https://example.com',
+        'formats': ['json'],
         'json_options': {
             'schema': schema
         }
@@ -181,6 +189,7 @@ curl -X POST "https://api.anycrawl.dev/v1/scrape" \
   -H "Content-Type: application/json" \
   -d '{
     "url": "https://example.com",
+    "formats": ["json"],
     "json_options": {
       "schema": {
         "type": "object",
@@ -205,6 +214,7 @@ const response = await fetch("https://api.anycrawl.dev/v1/scrape", {
     },
     body: JSON.stringify({
         url: "https://example.com",
+        formats: ["json"],
         json_options: {
             schema: {
                 type: "object",
@@ -245,6 +255,7 @@ response = requests.post(
     },
     json={
         'url': 'https://example.com',
+        'formats': ['json'],
         'json_options': {
             'schema': schema,
             'user_prompt': 'Extract the company mission (string), open source status (boolean), and employee count (number).'

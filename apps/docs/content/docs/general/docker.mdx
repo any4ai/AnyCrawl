@@ -166,11 +166,14 @@ AnyCrawl adopts a microservices architecture with the following services:
 
 ### Scraping Configuration
 
-| Variable Name               | Description          | Default | Example             |
-| --------------------------- | -------------------- | ------- | ------------------- |
-| `ANYCRAWL_HEADLESS`         | Use headless mode    | `true`  | `true`, `false`     |
-| `ANYCRAWL_PROXY_URL`        | Proxy server address | -       | `http://proxy:8080` |
-| `ANYCRAWL_IGNORE_SSL_ERROR` | Ignore SSL errors    | `true`  | `true`, `false`     |
+| Variable Name                    | Description                                          | Default  | Example                          |
+| -------------------------------- | ---------------------------------------------------- | -------- | -------------------------------- |
+| `ANYCRAWL_HEADLESS`              | Use headless mode                                    | `true`   | `true`, `false`                  |
+| `ANYCRAWL_PROXY_URL`             | Base proxy server address                            | -        | `http://proxy:8080`              |
+| `ANYCRAWL_PROXY_STEALTH_URL`     | Stealth proxy server address                         | -        | `http://residential-proxy:8080`  |
+| `ANYCRAWL_PROXY_STEALTH_CREDITS` | Extra credits charged when stealth proxy is used     | `5`      | `5`                              |
+| `ANYCRAWL_STEALTH_TIMEOUT_MS`    | Default timeout for stealth/auto proxy mode (ms)    | `120000` | `120000`                         |
+| `ANYCRAWL_IGNORE_SSL_ERROR`      | Ignore SSL errors                                    | `true`   | `true`, `false`                  |
 
 ### Database Configuration
 
@@ -210,6 +213,9 @@ ANYCRAWL_API_PORT=8080
 # Scraping configuration
 ANYCRAWL_HEADLESS=true
 ANYCRAWL_PROXY_URL=
+ANYCRAWL_PROXY_STEALTH_URL=
+ANYCRAWL_PROXY_STEALTH_CREDITS=5
+ANYCRAWL_STEALTH_TIMEOUT_MS=120000
 ANYCRAWL_IGNORE_SSL_ERROR=true
 
 # Database configuration

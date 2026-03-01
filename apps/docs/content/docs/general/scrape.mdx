@@ -173,7 +173,7 @@ print(result['data']['markdown'])
 | `variables`         | object                   | No       | -              | Template variables (only used when `template_id` is provided)                                                                               |
 | `engine`            | enum                     | No       | `cheerio`      | Scraping engine type, options: `cheerio`, `playwright`, `puppeteer`                                                                         |
 | `formats`           | array                    | No       | `["markdown"]` | Output formats, options: `markdown`, `html`, `text`, `screenshot`, `screenshot@fullPage`, `rawHtml`, `json`, `summary`, `links`                      |
-| `timeout`           | number                   | No       | `30000`        | Timeout in milliseconds, default: 30000                                                                                                     |
+| `timeout`           | number                   | No       | `60000`        | Timeout in milliseconds. If omitted: `120000` for `proxy=stealth` / `proxy=auto`; otherwise `60000`. |
 | `retry`             | boolean                  | No       | `false`        | Whether to retry on failure                                                                                                                 |
 | `max_age`           | number                   | No       | -              | Cache max age (ms). Use `0` to skip cache read; omit to use server default                                                                     |
 | `store_in_cache`    | boolean                  | No       | `true`         | Whether to write Page Cache for this scrape                                                                                                  |
@@ -184,7 +184,7 @@ print(result['data']['markdown'])
 | `exclude_tags`      | array                    | No       | -              | Exclude tags, like: `h1`                                                                                                                    |
 | `only_main_content` | boolean                  | No       | `true`         | Only extract main content, removing headers, footers, navigation, etc. (`include_tags` takes precedence)                                     |
 | `proxy`             | string (URI)             | No       | -              | Proxy server address, format: `http://proxy:port` or `https://proxy:port`                                                                   |
-| `json_options`      | json                     | No       | -              | JSON options, like: `{"schema": {}, "prompt": true}`                                                                                        |
+| `json_options`      | json                     | No       | -              | JSON options, like: `{"schema": {}, "user_prompt": "Extract key fields"}`                                                                  |
 | `extract_source`    | enum                     | No       | `markdown`     | Source to extract JSON from: `markdown` (default) or `html`                                                                                 |
 | `ocr_options`       | boolean                  | No       | `false`        | Enable OCR enhancement for markdown images only. Adds OCR text blocks to markdown output; does not change `html`/`rawHtml`.                |
 
@@ -286,7 +286,7 @@ The `json_options` parameter is an object that accepts the following parameters:
 ```json
 {
     "schema": {},
-    "prompt": "Extract the title and content of the page"
+    "user_prompt": "Extract the title and content of the page"
 }
 ```
 
@@ -312,7 +312,7 @@ or
         },
         "required": ["company_name", "summary"]
     },
-    "prompt": "Extract the company name, summary, and if it is open source"
+    "user_prompt": "Extract the company name, summary, and if it is open source"
 }
 ```
 

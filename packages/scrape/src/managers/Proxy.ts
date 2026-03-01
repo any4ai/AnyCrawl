@@ -708,6 +708,10 @@ const proxyConfiguration = new ProxyConfiguration({
         const requestUrl = options?.request?.url || 'unknown';
         const originalUrl = (options?.request?.userData as any)?.original_url;
         const matchUrl = originalUrl || requestUrl;
+        const retryCountRaw = Number((options?.request as any)?.retryCount);
+        const retryCount = Number.isFinite(retryCountRaw) && retryCountRaw >= 0
+            ? Math.floor(retryCountRaw)
+            : 0;
         const userDataTier = (options?.request?.userData as any)?._proxyTier;
         const proxyTierRaw = (options as any)?.proxyTier;
         const proxyTier =
@@ -721,10 +725,19 @@ const proxyConfiguration = new ProxyConfiguration({
 
             // Check if it's a proxy mode or custom URL
             if (isProxyMode(proxyValue)) {
-                const resolvedProxy = getProxyFromMode(proxyValue, proxyTier);
+                let effectiveProxyTier = proxyTier;
+
+                // Auto mode policy:
+                // First attempt uses base tier (0). Any retry moves directly to stealth tier (1),
+                // avoiding additional rotation within base proxies.
+                if (proxyValue === 'auto' && retryCount >= 1) {
+                    effectiveProxyTier = 1;
+                }
+
+                const resolvedProxy = getProxyFromMode(proxyValue, effectiveProxyTier);
                 if (resolvedProxy) {
                     const tierCount = getProxyTierCount(proxyValue);
-                    const tierInfo = tierCount > 1 ? ` (tier ${proxyTier}/${tierCount - 1})` : '';
+                    const tierInfo = tierCount > 1 ? ` (tier ${effectiveProxyTier}/${tierCount - 1})` : '';
                     log.info(`[PROXY] URL: ${requestUrl}${originalUrl && originalUrl !== requestUrl ? ` (original: ${originalUrl})` : ''} → Using proxy mode "${proxyValue}"${tierInfo}: ${resolvedProxy}`);
                     return resolvedProxy;
                 }

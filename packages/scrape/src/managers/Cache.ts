@@ -27,8 +27,11 @@ export class CacheManager {
         options: CacheKeyParams,
         maxAge?: number
     ): Promise<CachedResult | null> {
+        log.info(`[CACHE] getFromCache ENTER: url=${url.substring(0, 50)}...`);
         const config = getCacheConfig();
+        log.info(`[CACHE] getFromCache config check: storage=${process.env.ANYCRAWL_STORAGE}, cacheEnabled=${process.env.ANYCRAWL_CACHE_ENABLED}, pageCacheEnabled=${config.pageCacheEnabled}`);
         if (!config.pageCacheEnabled) {
+            log.warning(`[CACHE] getFromCache skipped: pageCacheEnabled=${config.pageCacheEnabled}`);
             return null;
         }
 
@@ -36,12 +39,14 @@ export class CacheManager {
 
         // max_age = 0 means force refresh, skip cache
         if (effectiveMaxAge === 0) {
+            log.debug(`[CACHE] getFromCache skipped: effectiveMaxAge=0`);
             return null;
         }
 
         try {
             const { urlHash, optionsHash } = computeCacheKey({ ...options, url });
             const minScrapedAt = new Date(Date.now() - effectiveMaxAge);
+            log.info(`[CACHE] getFromCache: urlHash=${urlHash.substring(0, 16)}..., optionsHash=${optionsHash.substring(0, 16)}..., minScrapedAt=${minScrapedAt.toISOString()}`);
 
             const db = await getDB();
             const [cached] = await db
@@ -56,6 +61,7 @@ export class CacheManager {
                 .limit(1);
 
             if (!cached) {
+                log.info(`[CACHE] Cache miss for ${url} (no matching entry found)`);
                 return null;
             }
 
@@ -93,7 +99,9 @@ export class CacheManager {
         }
     ): Promise<void> {
         const config = getCacheConfig();
+        log.info(`[CACHE] saveToCache config check: storage=${process.env.ANYCRAWL_STORAGE}, cacheEnabled=${process.env.ANYCRAWL_CACHE_ENABLED}, pageCacheEnabled=${config.pageCacheEnabled}`);
         if (!config.pageCacheEnabled) {
+            log.warning(`[CACHE] saveToCache skipped: pageCacheEnabled=${config.pageCacheEnabled}`);
             return;
         }
 
@@ -110,6 +118,7 @@ export class CacheManager {
 
         try {
             const { urlHash, optionsHash } = computeCacheKey({ ...options, url });
+            log.info(`[CACHE] computeCacheKey: url=${url.substring(0, 50)}..., urlHash=${urlHash.substring(0, 16)}..., optionsHash=${optionsHash.substring(0, 16)}..., proxy=${options.proxy}, engine=${options.engine}`);
             const domain = new URL(url).hostname.toLowerCase();
             const now = new Date();
 

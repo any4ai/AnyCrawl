@@ -10,6 +10,31 @@ import { renderUrlTemplate } from "../../utils/urlTemplate.js";
 import { triggerWebhookEvent } from "../../utils/webhookHelper.js";
 import { randomUUID } from "crypto";
 export class ScrapeController {
+    private resolveWaitTimeoutMs(jobPayload: any, hasExplicitTimeout: boolean): number {
+        const options = (jobPayload?.options || {}) as Record<string, any>;
+        const proxyMode = typeof options.proxy === "string" ? options.proxy : "";
+        const requestTimeoutMs = Number(options.timeout);
+        const explicitTimeoutMs = hasExplicitTimeout && Number.isFinite(requestTimeoutMs) && requestTimeoutMs > 0
+            ? Math.floor(requestTimeoutMs)
+            : null;
+
+        const stealthTimeoutRaw = Number.parseInt(process.env.ANYCRAWL_STEALTH_TIMEOUT_MS || "", 10);
+        const stealthTimeoutMs = Number.isFinite(stealthTimeoutRaw) && stealthTimeoutRaw > 0
+            ? stealthTimeoutRaw
+            : 120_000;
+        const baseTimeoutMs = 60_000;
+
+        if (proxyMode === "auto") {
+            return explicitTimeoutMs ?? stealthTimeoutMs;
+        }
+
+        if (proxyMode === "stealth") {
+            return explicitTimeoutMs ?? stealthTimeoutMs;
+        }
+
+        return explicitTimeoutMs ?? baseTimeoutMs;
+    }
+
     public handle = async (req: RequestWithAuth, res: Response): Promise<void> => {
         let jobId: string | null = null;
         let engineName: string | null = null;
@@ -66,6 +91,8 @@ export class ScrapeController {
                 }
             } catch { /* ignore render errors; schema will validate later */ }
 
+            const hasExplicitTimeout = Object.prototype.hasOwnProperty.call(requestData, "timeout");
+
             // Validate and parse the merged data
             const jobPayload = scrapeSchema.parse(requestData);
             engineName = jobPayload.engine;
@@ -79,8 +106,11 @@ export class ScrapeController {
             log.debug(`[SCRAPE] Cache decision: pageCacheEnabled=${cacheConfig.pageCacheEnabled} hasTemplate=${hasTemplate} shouldCheckCache=${shouldCheckCache}`);
 
             if (shouldCheckCache) {
+                log.info(`[SCRAPE] Checking cache for ${jobPayload.url}`);
                 try {
                     const cacheManager = CacheManager.getInstance();
+                    log.info(`[CACHE] CacheManager instance: ${cacheManager ? 'exists' : 'null'}, getFromCache: ${typeof cacheManager.getFromCache}`);
+                    log.info(`[CACHE] Calling getFromCache with url=${jobPayload.url}, engine=${jobPayload.engine}, proxy=${jobPayload.options.proxy}`);
                     const cached = await cacheManager.getFromCache(
                         jobPayload.url,
                         {
@@ -237,8 +267,10 @@ export class ScrapeController {
                 "scrape"
             );
 
-            // waiting job done
-            const job = await QueueManager.getInstance().waitJobDone(`scrape-${engineName}`, jobId, jobPayload.options.timeout || 60_000);
+            // waiting job done - timeout based on proxy mode
+            const waitTimeout = this.resolveWaitTimeoutMs(jobPayload, hasExplicitTimeout);
+            log.info(`[SCRAPE] waitJobDone: jobId=${jobId}, proxy=${jobPayload.options.proxy}, timeout=${waitTimeout}`);
+            const job = await QueueManager.getInstance().waitJobDone(`scrape-${engineName}`, jobId, waitTimeout);
             const { uniqueKey, queueName, options, engine, ...jobData } = job;
             // for failed job to cancel the job in the queue
             // Check if job failed
@@ -307,7 +339,12 @@ export class ScrapeController {
                     message: err.message,
                     code: err.code,
                 }));
-                const message = error.errors.map((err) => err.message).join(", ");
+                const message = error.errors
+                    .map((err) => {
+                        const field = err.path.join(".");
+                        return field ? `${field}: ${err.message}` : err.message;
+                    })
+                    .join(", ");
                 // Ensure no credits are deducted for validation failure
                 req.creditsUsed = 0;
                 req.billingChargeDetails = undefined;

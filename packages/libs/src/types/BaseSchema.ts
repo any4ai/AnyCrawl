@@ -64,7 +64,7 @@ export const baseSchema = z.object({
     proxy: z.union([
         z.enum(["auto", "base", "stealth"]),
         z.string().url()
-    ]).optional(),
+    ]).default("auto"),
 
     /**
      * The formats to be used

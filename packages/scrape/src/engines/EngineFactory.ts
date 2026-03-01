@@ -1,4 +1,4 @@
-import { RequestQueueV2, LaunchContext, Dictionary, log } from "crawlee";
+import { RequestQueueV2, LaunchContext } from "crawlee";
 import type { EngineOptions } from "../types/engine.js";
 
 // Use type-only reference to avoid runtime import of Base and engines
@@ -70,6 +70,27 @@ const defaultHttpOptions: Record<string, any> = {
     ignoreSslErrors: process.env.ANYCRAWL_IGNORE_SSL_ERROR === "true" ? true : false,
 };
 
+function mergeLaunchContexts(
+    baseLaunchContext: EngineOptions["launchContext"] | undefined,
+    overrideLaunchContext: EngineOptions["launchContext"] | undefined
+): EngineOptions["launchContext"] | undefined {
+    if (!baseLaunchContext && !overrideLaunchContext) return undefined;
+
+    const baseArgs = baseLaunchContext?.launchOptions?.args || [];
+    const overrideArgs = overrideLaunchContext?.launchOptions?.args || [];
+    const mergedArgs = [...new Set([...baseArgs, ...overrideArgs])];
+
+    return {
+        ...baseLaunchContext,
+        ...overrideLaunchContext,
+        launchOptions: {
+            ...(baseLaunchContext?.launchOptions || {}),
+            ...(overrideLaunchContext?.launchOptions || {}),
+            ...(mergedArgs.length > 0 ? { args: mergedArgs } : {}),
+        },
+    };
+}
+
 // Shared proxy configuration loader to avoid code duplication
 let cachedProxyConfiguration: any = null;
 async function getProxyConfiguration() {
@@ -89,13 +110,19 @@ abstract class BaseEngineFactory implements IEngineFactory {
         const mod = await import(this.engineModule);
         const EngineClass = mod[this.engineClass];
         const proxyConfiguration = await getProxyConfiguration();
+        const engineSpecificOptions = this.getEngineSpecificOptions();
+        const mergedLaunchContext = mergeLaunchContexts(
+            engineSpecificOptions.launchContext as EngineOptions["launchContext"] | undefined,
+            options?.launchContext
+        );
 
         return new EngineClass({
             ...defaultOptions,
             proxyConfiguration,
             requestQueue: queue,
-            ...this.getEngineSpecificOptions(),
+            ...engineSpecificOptions,
             ...options,
+            ...(mergedLaunchContext ? { launchContext: mergedLaunchContext } : {}),
         });
     }
 

@@ -14,7 +14,7 @@ AnyCrawl supports four proxy modes that can be specified in API requests:
 
 | Mode | Description |
 |------|-------------|
-| `auto` | Automatically decide between base and stealth proxy. Uses stealth if available, otherwise base. |
+| `auto` | Automatically decide between base and stealth proxy. Starts with base when available; if base is unavailable or retries/failures occur, it upgrades/falls back to stealth. |
 | `base` | Use the proxy configured in `ANYCRAWL_PROXY_URL` (default) |
 | `stealth` | Use the proxy configured in `ANYCRAWL_PROXY_STEALTH_URL` (typically a residential or premium proxy) |
 | Custom URL | A full proxy URL string (e.g., `http://user:pass@proxy:8080`), returned as `custom` in responses |
@@ -44,6 +44,12 @@ AnyCrawl supports four proxy modes that can be specified in API requests:
     "proxy": "http://custom-proxy:8080"
 }
 ```
+
+## Timeout Behavior (Scrape API)
+
+- Request-level `timeout` always takes priority.
+- If `proxy` is `stealth` or `auto` and `timeout` is not provided, AnyCrawl uses `ANYCRAWL_STEALTH_TIMEOUT_MS` (default: `120000`).
+- For `base` mode or custom proxy URLs without explicit `timeout`, AnyCrawl uses `60000`.
 
 ## Configuration Methods
 
@@ -252,6 +258,8 @@ Result:
 | ----------------------------- | ----------------------------------------------- | ------------------------------------------------------ |
 | `ANYCRAWL_PROXY_URL`          | Base proxy configuration (single or multiple)   | `http://proxy:8080` or `http://p1:8080,http://p2:8080` |
 | `ANYCRAWL_PROXY_STEALTH_URL`  | Stealth/premium proxy (residential proxies)     | `http://residential-proxy:8080`                        |
+| `ANYCRAWL_PROXY_STEALTH_CREDITS` | Extra credits charged when stealth proxy is used | `5`                                                  |
+| `ANYCRAWL_STEALTH_TIMEOUT_MS` | Default timeout for `proxy=stealth` and `proxy=auto` when request `timeout` is omitted | `120000` |
 | `ANYCRAWL_PROXY_CONFIG`       | Path to JSON config file for URL-based routing  | `/path/to/proxy-config.json`                           |
 
 ### Priority Order

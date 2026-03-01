@@ -1,0 +1,120 @@
+name: anycrawl-pg
+
+x-common-service: &common-service
+  networks:
+    - anycrawl-network
+  volumes:
+    - anycrawl-storage:/usr/src/app/storage
+
+x-common-env: &common-env
+  NODE_ENV: ${NODE_ENV:-production}
+  ANYCRAWL_NAME: ${ANYCRAWL_NAME:-AnyCrawl}
+  ANYCRAWL_DOMAIN: ${ANYCRAWL_DOMAIN:-http://localhost:8080}
+  ANYCRAWL_HEADLESS: ${ANYCRAWL_HEADLESS:-true}
+  ANYCRAWL_PROXY_URL: ${ANYCRAWL_PROXY_URL:-}
+  ANYCRAWL_PROXY_CONFIG: ${ANYCRAWL_PROXY_CONFIG:-}
+  ANYCRAWL_IGNORE_SSL_ERROR: ${ANYCRAWL_IGNORE_SSL_ERROR:-true}
+  ANYCRAWL_REDIS_URL: redis://redis:6379
+  ANYCRAWL_API_PORT: ${ANYCRAWL_API_PORT:-8080}
+  ANYCRAWL_API_AUTH_ENABLED: ${ANYCRAWL_API_AUTH_ENABLED:-true}
+  ANYCRAWL_API_CREDITS_ENABLED: ${ANYCRAWL_API_CREDITS_ENABLED:-true}
+  ANYCRAWL_API_DB_TYPE: postgresql
+  ANYCRAWL_API_DB_CONNECTION: postgres://${POSTGRES_USER:-anycrawl}:${POSTGRES_PASSWORD:-anycrawl}@postgres:5432/${POSTGRES_DB:-anycrawl}
+  MIGRATE_DATABASE: ${MIGRATE_DATABASE:-true}
+  ANYCRAWL_SCHEDULER_ENABLED: ${ANYCRAWL_SCHEDULER_ENABLED:-true}
+  ANYCRAWL_WEBHOOKS_ENABLED: ${ANYCRAWL_WEBHOOKS_ENABLED:-true}
+  ANYCRAWL_WEBHOOKS_QUEUE_CONCURRENCY: ${ANYCRAWL_WEBHOOKS_QUEUE_CONCURRENCY:-10}
+  ALLOW_LOCAL_WEBHOOKS: ${ALLOW_LOCAL_WEBHOOKS:-false}
+
+services:
+  api:
+    <<: *common-service
+    image: ghcr.io/any4ai/anycrawl-api:latest
+    environment:
+      <<: *common-env
+    ports:
+      - "${ANYCRAWL_API_PORT:-8080}:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  scrape-playwright:
+    <<: *common-service
+    image: ghcr.io/any4ai/anycrawl-scrape-playwright:latest
+    environment:
+      <<: *common-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  scrape-cheerio:
+    <<: *common-service
+    image: ghcr.io/any4ai/anycrawl-scrape-cheerio:latest
+    environment:
+      <<: *common-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  scrape-puppeteer:
+    <<: *common-service
+    profiles: ["puppeteer"]
+    image: ghcr.io/any4ai/anycrawl-scrape-puppeteer:latest
+    platform: ${ANYCRAWL_PUPPETEER_PLATFORM:-linux/amd64}
+    environment:
+      <<: *common-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes
+    volumes:
+      - redis-data:/data
+    networks:
+      - anycrawl-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-anycrawl}
+      POSTGRES_USER: ${POSTGRES_USER:-anycrawl}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-anycrawl}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - anycrawl-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+volumes:
+  anycrawl-storage:
+  redis-data:
+  postgres-data:
+
+networks:
+  anycrawl-network:
+    driver: bridge

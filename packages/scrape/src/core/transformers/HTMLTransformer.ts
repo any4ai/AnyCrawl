@@ -104,10 +104,11 @@ const EXCLUDE_NON_MAIN_TAGS: string[] = [
     ".share",
     "#share",
 
-    // Widgets
-    ".widget",
-    "#widget",
-    ".widgets",
+    // NOTE:
+    // Avoid removing generic ".widget" containers globally. Many sites (e.g. publisher
+    // platforms) wrap their primary article body in widget-like classes such as
+    // ".widget-ArticleFulltext". Removing ".widget" causes core content like abstracts
+    // to be dropped under only_main_content mode.
 
     // Cookie notices
     ".cookie",
@@ -116,10 +117,10 @@ const EXCLUDE_NON_MAIN_TAGS: string[] = [
     ".cookie-notice",
     ".cookie-consent",
 
-    // Comments (often not main content)
-    ".comments",
-    "#comments",
-    ".comment-section",
+    // // Comments (often not main content)
+    // ".comments",
+    // "#comments",
+    // ".comment-section",
 
     // Related content (often sidebar)
     ".related",

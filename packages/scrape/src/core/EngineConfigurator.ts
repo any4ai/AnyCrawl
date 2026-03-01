@@ -6,6 +6,8 @@ import { ProgressManager } from "../managers/Progress.js";
 import { JOB_TYPE_CRAWL } from "@anycrawl/libs";
 import { CrawlLimitReachedError } from "../errors/index.js";
 import { getOrCreateBandwidthTracker } from "./BandwidthTracker.js";
+import { CloudflareChallengeHandler } from "../challenges/cloudflare/CloudflareChallengeHandler.js";
+import { ChallengeOrchestrator } from "../challenges/ChallengeOrchestrator.js";
 
 export enum ConfigurableEngineType {
     CHEERIO = 'cheerio',
@@ -273,6 +275,16 @@ export class EngineConfigurator {
             }
         };
 
+        const challengeOrchestrator = new ChallengeOrchestrator([
+            new CloudflareChallengeHandler(),
+        ]);
+        const challengePreHook = async (args: any) => {
+            if (args?.request) {
+                (args.request as any).__anycrawlChallengeOrchestrator = challengeOrchestrator;
+            }
+            await challengeOrchestrator.onPreNavigation(args);
+        };
+
         // Pre-navigation capture hook for preNav rules
         const preNavHook = async ({ page, request }: any) => {
             try {
@@ -472,39 +484,67 @@ export class EngineConfigurator {
             }
         };
 
+        const challengePostHook = async (args: any) => {
+            await challengeOrchestrator.onPostNavigation(args);
+        };
+
         // Add browser-specific hooks to preNavigationHooks
         const existingHooks = options.preNavigationHooks || [];
-        options.preNavigationHooks = [viewportHook, bandwidthHook, adBlockingHook, requestTimeoutHook, authenticationHook, preNavHook, ...existingHooks];
+        options.preNavigationHooks = [
+            viewportHook,
+            bandwidthHook,
+            adBlockingHook,
+            requestTimeoutHook,
+            authenticationHook,
+            challengePreHook,
+            preNavHook,
+            ...existingHooks
+        ];
 
-        log.info(`[EngineConfigurator] Browser-specific hooks configured for ${engineType}: total=${options.preNavigationHooks.length}, hooks=[viewport, bandwidth, adBlocking, requestTimeout, authentication, preNav], existingHooks=${existingHooks.length}`);
+        log.info(`[EngineConfigurator] Browser hooks configured for ${engineType}: total=${options.preNavigationHooks.length}`);
+
+        const existingPostHooks = options.postNavigationHooks || [];
+        options.postNavigationHooks = [challengePostHook, ...existingPostHooks];
+        log.info(`[EngineConfigurator] Post-navigation hooks configured for ${engineType}: total=${options.postNavigationHooks.length}`);
 
         // Apply headless configuration from environment
         if (options.headless === undefined) {
             options.headless = process.env.ANYCRAWL_HEADLESS !== "false";
         }
 
-        // Configure retry behavior - disable automatic retries for blocked pages
-        options.retryOnBlocked = true;
+        // Let 403 pages reach requestHandler; do not fail early in Crawlee blocked-page detection.
+        options.retryOnBlocked = false;
 
         options.maxRequestRetries = 3;
         options.maxSessionRotations = 3; // Enable session rotation
 
         // Configure session pool with specific settings
         if (options.useSessionPool !== false) {
+            const configuredBlockedStatusCodes = Array.isArray(options.sessionPoolOptions?.blockedStatusCodes)
+                ? options.sessionPoolOptions.blockedStatusCodes
+                : [401, 403, 429];
+            const normalizedBlockedStatusCodes = configuredBlockedStatusCodes
+                .filter((code: any) => Number.isFinite(code))
+                .map((code: any) => Number(code))
+                .filter((code: number) => code !== 403);
+
             options.sessionPoolOptions = {
                 ...options.sessionPoolOptions,
-                // Specify which status codes should NOT trigger session rotation
-                // This allows us to capture these status codes while still rotating for other errors
-                blockedStatusCodes: [], // Only these codes will trigger rotation
+                // Keep blocked-status handling for other protection codes, but never block on 403.
+                blockedStatusCodes: normalizedBlockedStatusCodes,
                 // Configure session options to rotate after every error
                 sessionOptions: {
                     ...options.sessionPoolOptions?.sessionOptions,
-                    maxErrorScore: 1, // Rotate sessions after every error
+                    maxErrorScore: options.sessionPoolOptions?.sessionOptions?.maxErrorScore ?? 1,
                 },
             };
-
-
+            log.info(`[EngineConfigurator] SessionPool blockedStatusCodes for ${engineType}: [${normalizedBlockedStatusCodes.join(", ")}] (403 excluded)`);
         }
+        const isTimeoutLikeError = (error: Error): boolean => {
+            const errorName = error?.name || (error as any)?.constructor?.name;
+            return errorName === "TimeoutError";
+        };
+
         // Configure how errors are evaluated
         options.errorHandler = async (context: any, error: Error) => {
             log.debug(`Error handler triggered: ${error.message}`);
@@ -518,12 +558,44 @@ export class EngineConfigurator {
             // Check error type and determine retry strategy
             const errorMessage = error.message || '';
 
-            // Handle 403 errors - allow retry with session rotation (up to 3 times)
-            // The refresh logic in requestHandler will attempt to recover before retry
-            if (errorMessage.includes('blocked status code: 403') || errorMessage.includes('403')) {
-                log.info('403 error detected, waiting 10 seconds before retry with session rotation');
-                log.debug('403 error: waiting completed, allowing retry with session rotation (refresh will be attempted in requestHandler)');
-                return true; // Retry with new session (up to maxSessionRotations = 3)
+            if (
+                errorMessage.includes("ANYCRAWL_PROXY_ACTION_UPGRADE_TO_STEALTH")
+                || errorMessage.includes("ANYCRAWL_PROXY_UPGRADE_TO_STEALTH")
+            ) {
+                if (context?.request) {
+                    context.request.noRetry = false;
+                }
+                log.info(`Proxy upgrade marker detected, retrying with stealth proxy for ${context?.request?.url || "unknown url"}`);
+                return true;
+            }
+
+            if (
+                errorMessage.includes("ANYCRAWL_PROXY_ACTION_ROTATE_PROXY")
+                || errorMessage.includes("ANYCRAWL_STEALTH_RETRY_WITH_NEW_PROXY")
+            ) {
+                if (context?.request) {
+                    context.request.noRetry = false;
+                }
+                log.info(`Challenge retry marker detected, retrying with rotated proxy for ${context?.request?.url || "unknown url"}`);
+                return true;
+            }
+
+            if (errorMessage.includes("Received blocked status code: 403")) {
+                if (context?.request) {
+                    context.request.noRetry = true;
+                }
+                log.info(`403 blocked-status session error detected, disabling retry for ${context?.request?.url || "unknown url"}`);
+                return false;
+            }
+
+            // Timeout-like errors should fail fast and never retry.
+            // Crawlee ignores the return value of errorHandler, so we need to set request.noRetry explicitly.
+            if (isTimeoutLikeError(error)) {
+                if (context?.request) {
+                    context.request.noRetry = true;
+                }
+                log.info(`Timeout-like error detected, disabling retry for ${context?.request?.url || "unknown url"}`);
+                return false;
             }
 
             // Proxy-related errors that might be temporary
@@ -547,7 +619,6 @@ export class EngineConfigurator {
     }
 
     private static configurePuppeteer(options: any): void {
-        // Puppeteer-specific configurations can be added here
         options.browserPoolOptions = {
             useFingerprints: true,
             fingerprintOptions: {
@@ -559,7 +630,6 @@ export class EngineConfigurator {
     }
 
     private static configurePlaywright(options: any): void {
-        // Playwright-specific configurations can be added here
         options.browserPoolOptions = {
             useFingerprints: true,
             fingerprintOptions: {

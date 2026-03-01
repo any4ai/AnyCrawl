@@ -138,20 +138,25 @@ export function computeCacheKey(params: CacheKeyParams): { urlHash: string; opti
 export function shouldCache(options: any, result: any): boolean {
     // Don't cache if explicitly disabled
     if (options?.store_in_cache === false) {
+        log.debug(`[CACHE] shouldCache: false (store_in_cache=false)`);
         return false;
     }
     // Don't cache template-based requests (template output may be non-deterministic / depends on variables)
     if (options?.template_id) {
+        log.debug(`[CACHE] shouldCache: false (template_id=${options.template_id})`);
         return false;
     }
     // Don't cache if custom headers are used
     if (options?.headers && Object.keys(options.headers).length > 0) {
+        log.debug(`[CACHE] shouldCache: false (headers=${JSON.stringify(Object.keys(options.headers))})`);
         return false;
     }
     // Don't cache if actions are used
     if (options?.actions && options.actions.length > 0) {
+        log.debug(`[CACHE] shouldCache: false (actions count=${options.actions.length})`);
         return false;
     }
+    log.debug(`[CACHE] shouldCache: true`);
     return true;
 }
 

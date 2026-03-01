@@ -23,7 +23,8 @@ import { CrawlLimitReachedError } from "../errors/index.js";
 import type { CrawlingContext, EngineOptions } from "../types/engine.js";
 import { minimatch } from "minimatch";
 import { BandwidthManager } from "../managers/Bandwidth.js";
-import { getResolvedProxyModeName, getProxyTierCount } from "../managers/Proxy.js";
+import { getResolvedProxyModeName } from "../managers/Proxy.js";
+import { ensureChallengeState, consumeProxyAction } from "../challenges/ChallengeContext.js";
 
 // Template system imports - directly use @anycrawl/template-client
 
@@ -173,6 +174,49 @@ export abstract class BaseEngine {
         }
 
         return { statusCode, statusMessage };
+    }
+
+    /**
+     * Try reading the final main-document HTTP status from browser performance entries.
+     * This helps when context.response still points to an intermediate challenge response.
+     */
+    protected async extractFinalNavigationStatus(context: CrawlingContext): Promise<ResponseStatus | null> {
+        const userData = (context.request.userData || {}) as any;
+        const cached = userData?._anycrawlFinalNavigationStatus;
+        if (cached && typeof cached.statusCode === "number") {
+            return cached as ResponseStatus;
+        }
+
+        const page = (context as any)?.page;
+        if (!page || page.isClosed?.() || typeof page.evaluate !== "function") {
+            return null;
+        }
+
+        try {
+            const statusCode = await page.evaluate(() => {
+                try {
+                    const entries = performance.getEntriesByType("navigation");
+                    const latest = entries.length > 0 ? entries[entries.length - 1] : null;
+                    const responseStatus = Number((latest as any)?.responseStatus);
+                    return Number.isFinite(responseStatus) ? responseStatus : 0;
+                } catch {
+                    return 0;
+                }
+            });
+
+            if (!Number.isFinite(statusCode) || statusCode <= 0) {
+                return null;
+            }
+
+            const finalStatus: ResponseStatus = {
+                statusCode,
+                statusMessage: `HTTP ${statusCode}`,
+            };
+            userData._anycrawlFinalNavigationStatus = finalStatus;
+            return finalStatus;
+        } catch {
+            return null;
+        }
     }
 
     /**
@@ -566,13 +610,182 @@ export abstract class BaseEngine {
         customRequestHandler?: (context: CrawlingContext) => Promise<any> | void,
         customFailedRequestHandler?: (context: CrawlingContext, error: Error) => Promise<any> | void
     ) {
-        const checkHttpError = async (context: CrawlingContext) => {
-            if (context.response) {
-                const status = this.extractResponseStatus(context.response as CrawlerResponse);
-                return !this.isSuccessfulResponse(status);
+        const resolveEffectiveStatus = async (
+            context: CrawlingContext,
+            rawStatus: ResponseStatus
+        ): Promise<ResponseStatus> => {
+            if (rawStatus.statusCode < HttpStatusCategory.CLIENT_ERROR) {
+                return rawStatus;
             }
-            return false;
-        }
+            const finalStatus = await this.extractFinalNavigationStatus(context);
+            if (!finalStatus || finalStatus.statusCode <= 0) {
+                return rawStatus;
+            }
+            if (finalStatus.statusCode !== rawStatus.statusCode) {
+                log.info(
+                    `[HTTP] Using final navigation status ${finalStatus.statusCode} (raw=${rawStatus.statusCode}) for ${context.request.url}`
+                );
+            }
+            return finalStatus;
+        };
+
+        const retrySolvedChallengeWithReload = async (
+            context: CrawlingContext,
+            previousStatus: ResponseStatus
+        ): Promise<{ rawStatus: ResponseStatus; effectiveStatus: ResponseStatus } | null> => {
+            const page = (context as any)?.page;
+            if (!page || page.isClosed?.() || typeof page.reload !== "function") {
+                return null;
+            }
+
+            const userData = (context.request.userData || {}) as any;
+            if (userData._anycrawlPostChallengeReloadAttempted) {
+                return null;
+            }
+            userData._anycrawlPostChallengeReloadAttempted = true;
+
+            const options = userData.options || {};
+            const timeoutMs = Number(options.timeout) > 0
+                ? Number(options.timeout)
+                : (process.env.ANYCRAWL_NAV_TIMEOUT ? parseInt(process.env.ANYCRAWL_NAV_TIMEOUT) : 30_000);
+            const configuredWaitUntil = String(options.wait_until || process.env.ANYCRAWL_NAV_WAIT_UNTIL || "domcontentloaded");
+            const playwrightWaitUntil =
+                configuredWaitUntil === "networkidle" || configuredWaitUntil === "load" || configuredWaitUntil === "domcontentloaded"
+                    ? configuredWaitUntil
+                    : "domcontentloaded";
+            const puppeteerWaitUntil =
+                configuredWaitUntil === "networkidle"
+                    ? "networkidle0"
+                    : (configuredWaitUntil === "load" || configuredWaitUntil === "domcontentloaded"
+                        ? configuredWaitUntil
+                        : "domcontentloaded");
+
+            try {
+                log.info(
+                    `[HTTP] Challenge solved but status is ${previousStatus.statusCode}; reloading once to confirm final status for ${context.request.url}`
+                );
+
+                let reloadResponse: any = null;
+                if (typeof page.waitForLoadState === "function") {
+                    reloadResponse = await page.reload({
+                        waitUntil: playwrightWaitUntil as "load" | "domcontentloaded" | "networkidle",
+                        timeout: timeoutMs,
+                    });
+                } else {
+                    reloadResponse = await page.reload({
+                        waitUntil: puppeteerWaitUntil as "load" | "domcontentloaded" | "networkidle0",
+                        timeout: timeoutMs,
+                    });
+                }
+
+                if (reloadResponse) {
+                    (context as any).response = reloadResponse;
+                }
+                delete userData._anycrawlFinalNavigationStatus;
+
+                // Let potential post-challenge redirects settle before evaluating status.
+                await sleep(1_000);
+
+                const refreshedRaw = context.response
+                    ? this.extractResponseStatus(context.response as CrawlerResponse)
+                    : previousStatus;
+                const refreshedEffective = await resolveEffectiveStatus(context, refreshedRaw);
+
+                if (refreshedEffective.statusCode !== previousStatus.statusCode) {
+                    log.info(
+                        `[HTTP] Post-challenge reload changed status ${previousStatus.statusCode} -> ${refreshedEffective.statusCode} for ${context.request.url}`
+                    );
+                } else {
+                    log.info(
+                        `[HTTP] Post-challenge reload kept status ${refreshedEffective.statusCode} for ${context.request.url}`
+                    );
+                }
+
+                return {
+                    rawStatus: refreshedRaw,
+                    effectiveStatus: refreshedEffective,
+                };
+            } catch (error) {
+                log.warning(
+                    `[HTTP] Post-challenge reload failed for ${context.request.url}: ${error instanceof Error ? error.message : String(error)}`
+                );
+                return null;
+            }
+        };
+
+        const checkHttpError = async (context: CrawlingContext) => {
+            if (!context.response) {
+                return {
+                    isHttpError: false,
+                    rawStatus: null as ResponseStatus | null,
+                    effectiveStatus: null as ResponseStatus | null,
+                };
+            }
+
+            let rawStatus = this.extractResponseStatus(context.response as CrawlerResponse);
+            let effectiveStatus = await resolveEffectiveStatus(context, rawStatus);
+            const challengeState = ensureChallengeState(context.request);
+
+            if (Boolean(challengeState?.solved) && effectiveStatus.statusCode === 403) {
+                const refreshed = await retrySolvedChallengeWithReload(context, effectiveStatus);
+                if (refreshed) {
+                    rawStatus = refreshed.rawStatus;
+                    effectiveStatus = refreshed.effectiveStatus;
+                }
+            }
+
+            if (Boolean(challengeState?.solved) && this.isSuccessfulResponse(effectiveStatus)) {
+                return {
+                    isHttpError: false,
+                    rawStatus,
+                    effectiveStatus,
+                };
+            }
+
+            return {
+                isHttpError: !this.isSuccessfulResponse(effectiveStatus),
+                rawStatus,
+                effectiveStatus,
+            };
+        };
+
+        const settleAfterSolvedChallenge = async (context: CrawlingContext): Promise<void> => {
+            const challengeState = ensureChallengeState(context.request);
+            if (!Boolean(challengeState?.solved)) {
+                return;
+            }
+
+            const page = (context as any)?.page;
+            if (!page || page.isClosed?.()) {
+                return;
+            }
+
+            const userData = (context.request.userData || {}) as any;
+            if (userData._anycrawlPostChallengeSettled) {
+                return;
+            }
+            userData._anycrawlPostChallengeSettled = true;
+
+            try {
+                if (typeof page.waitForLoadState === "function") {
+                    await page.waitForLoadState("domcontentloaded", { timeout: 5_000 });
+                } else if (typeof page.waitForNavigation === "function") {
+                    await page.waitForNavigation({
+                        waitUntil: "domcontentloaded",
+                        timeout: 5_000,
+                    });
+                } else {
+                    await sleep(500);
+                }
+
+                // Give redirects/scripts a short settle window before extraction.
+                await sleep(300);
+            } catch (error) {
+                log.debug(
+                    `[HTTP] Post-challenge settle skipped for ${context.request.url}: ${error instanceof Error ? error.message : String(error)}`
+                );
+            }
+        };
 
         const requestHandler = async (context: CrawlingContext) => {
             // Note: Progress checking is now handled by limitFilterHook in preNavigationHooks
@@ -595,123 +808,50 @@ export abstract class BaseEngine {
                 // Ignore errors when accessing proxyInfo or session
             }
 
-            // If we get a 403, switch proxy tier (auto: base → stealth) when possible and retry.
-            // This is only applied for proxy mode "auto" (proxy="base" must not upgrade).
-            if (context.response) {
-                const status = this.extractResponseStatus(context.response as CrawlerResponse);
-                if (status.statusCode === 403) {
-                    const proxyValue = context.request.userData?.options?.proxy as string | undefined;
-                    const currentTierRaw = (context.request.userData as any)?._proxyTier;
-                    const currentTier = typeof currentTierRaw === "number" && Number.isFinite(currentTierRaw) ? currentTierRaw : 0;
-                    const tierCount = getProxyTierCount(proxyValue);
-                    const nextTier = currentTier + 1;
+            const httpCheck = await checkHttpError(context);
+            const isHttpError = httpCheck.isHttpError;
+            const effectiveStatus = httpCheck.effectiveStatus;
 
-                    // Only upgrade for mode "auto" (custom proxy URLs cannot switch; "base" must not upgrade).
-                    if (proxyValue === "auto" && tierCount > nextTier) {
-                        (context.request.userData as any)._proxyTier = nextTier;
+            if (isHttpError && httpCheck.rawStatus) {
+                const userData = (context.request.userData || {}) as any;
+                const challengeState = ensureChallengeState(context.request);
+                const queueName = userData.queueName || "unknown";
+                const jobId = userData.jobId || "unknown";
+                const provider = typeof challengeState.provider === "string"
+                    ? challengeState.provider
+                    : "unknown";
+                const proxyAction = consumeProxyAction(context.request);
 
-                        const jobId = context.request.userData?.jobId || "unknown";
-                        const queueName = context.request.userData?.queueName || "unknown";
-                        log.warning(
-                            `[PROXY] [${queueName}] [${jobId}] 403 Forbidden → switching proxy tier ${currentTier}→${nextTier} for mode="${proxyValue}" and retrying: ${context.request.url}`
-                        );
-
-                        // Throw to let Crawlee retry with a new proxy (and session rotation if enabled).
-                        throw new Error("403_PROXY_TIER_FALLBACK");
-                    }
+                if (proxyAction === "upgrade_to_stealth") {
+                    const proxyUpgradeError = new Error("ANYCRAWL_PROXY_ACTION_UPGRADE_TO_STEALTH");
+                    proxyUpgradeError.name = "AnycrawlProxyUpgradeError";
+                    log.warning(
+                        `[PROXY-UPGRADE] [${queueName}] [${jobId}] challenge handler requested stealth proxy upgrade (${provider}): ${context.request.url}`
+                    );
+                    throw proxyUpgradeError;
                 }
-            }
 
-            // Check for 403 error early and try refreshing before other processing
-            // This happens before Crawlee's retry mechanism, giving us a chance to recover
-            if (context.response && (context as any).page) {
-                const status = this.extractResponseStatus(context.response as CrawlerResponse);
-                if (status.statusCode === 403) {
-                    const page = (context as any).page;
-                    const jobId = context.request.userData?.jobId || 'unknown';
-                    const queueName = context.request.userData?.queueName || 'unknown';
-
+                if (proxyAction === "rotate_proxy") {
                     try {
-                        // Wait 10 seconds before retrying to avoid overwhelming the server
-                        log.info(`[${queueName}] [${jobId}] 403 Forbidden detected, waiting 10 seconds before retry: ${context.request.url}`);
-                        await sleep(10000);
-
-                        // Check if page is still open
-                        if (!(page.isClosed && page.isClosed())) {
-                            log.info(`[${queueName}] [${jobId}] Attempting to refresh page after wait: ${context.request.url}`);
-
-                            // Capture response after reload
-                            let refreshResponse: any = null;
-                            const responseHandler = (response: any) => {
-                                try {
-                                    const responseUrl = typeof response.url === 'function' ? response.url() : response.url;
-                                    if (responseUrl === context.request.url || responseUrl === page.url()) {
-                                        refreshResponse = response;
-                                    }
-                                } catch {
-                                    // Ignore errors in response handler
-                                }
-                            };
-
-                            page.on('response', responseHandler);
-
-                            try {
-                                // Reload the page and wait for network idle
-                                await page.reload({ waitUntil: 'networkidle' });
-
-                                // Wait a bit for the page to fully stabilize
-                                await sleep(1000);
-
-                                // Remove the response handler
-                                page.off('response', responseHandler);
-
-                                // Check the status code from the refresh response
-                                if (refreshResponse) {
-                                    let newStatusCode = 403;
-                                    try {
-                                        newStatusCode = typeof refreshResponse.status === 'function'
-                                            ? refreshResponse.status()
-                                            : (refreshResponse.status || 403);
-                                    } catch {
-                                        // Fallback: re-check context.response
-                                        if (context.response) {
-                                            const newStatus = this.extractResponseStatus(context.response as CrawlerResponse);
-                                            newStatusCode = newStatus.statusCode;
-                                        }
-                                    }
-
-                                    if (newStatusCode === 403) {
-                                        log.warning(`[${queueName}] [${jobId}] Still 403 after refresh: ${context.request.url}`);
-                                    } else {
-                                        log.info(`[${queueName}] [${jobId}] Status changed after refresh: ${newStatusCode} for ${context.request.url}`);
-                                        // Update context.response if possible
-                                        if (refreshResponse && (context as any).response) {
-                                            (context as any).response = refreshResponse;
-                                        }
-                                    }
-                                } else {
-                                    // If we couldn't capture response, re-check context.response
-                                    if (context.response) {
-                                        const newStatus = this.extractResponseStatus(context.response as CrawlerResponse);
-                                        if (newStatus.statusCode !== 403) {
-                                            log.info(`[${queueName}] [${jobId}] Status changed after refresh: ${newStatus.statusCode} for ${context.request.url}`);
-                                        }
-                                    }
-                                }
-                            } catch (reloadError) {
-                                page.off('response', responseHandler);
-                                throw reloadError;
-                            }
+                        const session = (context as any).session;
+                        if (session && typeof session.retire === "function") {
+                            session.retire();
                         }
-                    } catch (refreshError) {
-                        log.warning(`[${queueName}] [${jobId}] Failed to refresh page for 403 error: ${refreshError instanceof Error ? refreshError.message : String(refreshError)}`);
+                    } catch {
+                        // ignore session retire failures
                     }
+
+                    log.warning(
+                        `[CHALLENGE-RETRY] [${queueName}] [${jobId}] retrying with rotated proxy (provider=${provider}): ${context.request.url}`
+                    );
+
+                    const retryError = new Error("ANYCRAWL_PROXY_ACTION_ROTATE_PROXY");
+                    retryError.name = "AnycrawlChallengeRetryError";
+                    throw retryError;
                 }
             }
 
-            // check if http status code is 400 or higher
-            // Note: 403 refresh logic is already handled earlier in the handler (before this check)
-            let isHttpError = await checkHttpError(context);
+            await settleAfterSolvedChallenge(context);
 
             // Cheerio traffic tracking (browser engines use CDP-based tracking)
             try {
@@ -845,6 +985,23 @@ export abstract class BaseEngine {
                         (context as any).preNavKeyPrefix = `preNav:${jobId}:`;
                     }
                 } catch { /* ignore */ }
+
+                const enrichChallengePayload = async (payload: any) => {
+                    if (!payload || typeof payload !== "object") return payload;
+
+                    const orchestrator = (context.request as any)?.__anycrawlChallengeOrchestrator;
+
+                    if (!orchestrator || typeof orchestrator.enrichPayload !== "function") {
+                        return payload;
+                    }
+
+                    try {
+                        return await orchestrator.enrichPayload(context, payload);
+                    } catch (error) {
+                        log.warning(`[challenge] payload enrich failed at ${context.request.url}: ${error instanceof Error ? error.message : String(error)}`);
+                        return payload;
+                    }
+                };
 
                 // Check if this is a template-based request BEFORE extraction
                 const templateId = context.request.userData.options?.template_id;
@@ -1009,6 +1166,8 @@ export abstract class BaseEngine {
                     templateExecutionResolver?.();
                 }
 
+                data = await enrichChallengePayload(data);
+
                 // Run custom handler if provided
                 if (customRequestHandler) {
                     await customRequestHandler(context);
@@ -1028,13 +1187,20 @@ export abstract class BaseEngine {
 
                 // Only save result if shouldScrape is true
                 if (shouldScrape) {
-                    await insertJobResult(resultJobId, context.request.url, data, JOB_RESULT_STATUS.SUCCESS);
+                    const resultStatus = isHttpError ? JOB_RESULT_STATUS.FAILED : JOB_RESULT_STATUS.SUCCESS;
+                    await insertJobResult(resultJobId, context.request.url, data, resultStatus);
 
-                    // Save to cache if enabled and conditions are met
+                    // Save to cache only for successful responses
                     try {
                         const options = context.request.userData.options || {};
                         if (!isHttpError && options.store_in_cache !== false) {
-                            const status = this.extractResponseStatus(context.response as CrawlerResponse);
+                            // Use original proxy value for cache key if available (to ensure cache consistency)
+                            const originalProxy = (context.request.userData as any)._originalProxy ?? options.proxy;
+                            const rawStatus = this.extractResponseStatus(context.response as CrawlerResponse);
+                            const status =
+                                effectiveStatus && effectiveStatus.statusCode > 0
+                                    ? effectiveStatus
+                                    : await resolveEffectiveStatus(context, rawStatus);
                             const rawHeaders: any =
                                 typeof (context.response as any)?.headers === "function"
                                     ? (context.response as any).headers()
@@ -1058,7 +1224,7 @@ export abstract class BaseEngine {
                                     json_options: options.json_options,
                                     include_tags: options.include_tags,
                                     exclude_tags: options.exclude_tags,
-                                    proxy: options.proxy,
+                                    proxy: originalProxy,
                                     only_main_content: options.only_main_content,
                                     extract_source: options.extract_source,
                                     ocr_options: options.ocr_options,
@@ -1131,8 +1297,7 @@ export abstract class BaseEngine {
             }
             const { queueName, jobId } = context.request.userData;
 
-            // Log success
-            log.info(`[${queueName}] [${jobId}] Pushing data for ${context.request.url}`);
+            log.info(`[${queueName}] [${jobId}] Persisting result for ${context.request.url}`);
             // store into job table
 
             // Update job status if jobId exists

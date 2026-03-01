@@ -181,7 +181,8 @@ const res = await fetch("https://api.anycrawl.dev/v1/search", {
         variables: { lang: "en" },
     }),
 });
-const { job_id } = (await res.json()).data;
+const data = await res.json();
+console.log(data.data);
 ```
 
 ## Variables
@@ -263,7 +264,7 @@ Common errors when using templates:
 
 ### For API Callers
 
-- Always check the template description for required variables and allowed domains
+- Always check the template description for required variables and allowed domains/keywords
 - Use marketplace templates when available to save time
 - Handle 404 errors (template may have been deleted or archived)
 - Don't try to override template settings (engine, formats, etc.) - it will fail
@@ -295,6 +296,24 @@ Limit where your template can be used:
 
 - `type`: `"exact"` (exact match) or `"glob"` (pattern matching)
 - `patterns`: array of allowed domains or patterns
+
+### Keyword Restrictions (Search Templates)
+
+Limit which queries can be used with a search template:
+
+```json
+{
+    "allowedKeywords": {
+        "type": "glob",
+        "patterns": ["*tutorial*", "*documentation*"]
+    }
+}
+```
+
+- `allowedKeywords` is validated before query execution.
+- `type`: `"exact"` or `"glob"`
+- `patterns`: allowed keyword values/patterns
+- Query validation happens before `queryTransform` is applied.
 
 ### Pricing
 

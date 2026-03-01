@@ -14,9 +14,9 @@ Scheduled Tasks allow you to automate recurring web scraping, crawling, and data
 
 - **Cron Expression Scheduling**: Use standard cron syntax to define execution schedules
 - **Timezone Support**: Execute tasks in any timezone (e.g., Asia/Shanghai, America/New_York)
-- **Concurrency Control**: Three modes - skip, queue, or replace concurrent executions
+- **Concurrency Control**: Two modes - skip or queue concurrent executions
 - **Automatic Pause**: Auto-pause after consecutive failures to protect resources
-- **Credit Management**: Set minimum credit requirements and daily execution limits
+- **Credit Management**: Daily execution limits and estimated credit tracking
 - **Execution History**: Track all executions with detailed status and metrics
 - **Webhook Integration**: Receive real-time notifications for task events
 
@@ -161,23 +161,22 @@ Use [crontab.guru](https://crontab.guru/) to validate and understand cron expres
 | `description` | string | No | - | Task description |
 | `cron_expression` | string | Yes | - | Standard cron expression (5 fields) |
 | `timezone` | string | No | `"UTC"` | Timezone for execution (e.g., "Asia/Shanghai") |
-| `task_type` | string | Yes | - | Task type: `"scrape"`, `"crawl"`, or `"search"` |
+| `task_type` | string | Yes | - | Task type: `"scrape"`, `"crawl"`, `"search"`, or `"template"` |
 | `task_payload` | object | Yes | - | Task configuration (see below) |
 
 ### Concurrency Control
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| `concurrency_mode` | string | No | `"skip"` | Mode: `"skip"`, `"queue"`, `"replace"` |
-| `max_concurrent_executions` | number | No | `1` | Maximum concurrent executions |
+| `concurrency_mode` | string | No | `"skip"` | Mode: `"skip"` or `"queue"` |
 | `max_executions_per_day` | number | No | - | Daily execution limit |
 
-### Resource Management
+### Execution Metadata (Read-only)
 
-| Parameter | Type | Required | Default | Description |
-|-----------|------|----------|---------|-------------|
-| `min_credits_required` | number | No | `100` | Minimum credits needed to execute |
-| `auto_pause_on_low_credits` | boolean | No | `true` | Auto-pause when credits insufficient |
+These fields are returned in task responses and are **not accepted** in create/update request bodies:
+
+- `min_credits_required`: Estimated minimum credits for one execution (server-calculated)
+- `consecutive_failures`: Consecutive failure count used for automatic pausing
 
 ### Webhook Integration
 
@@ -239,10 +238,28 @@ You can either use `webhook_ids` to reference existing webhook subscriptions, or
   "engine": "google",
   "limit": 20,
   "country": "US",
-  "language": "en",
-  "time_range": "day"
+  "lang": "en",
+  "timeRange": "day"
 }
 ```
+
+### Template Task
+
+```json
+{
+  "template_id": "my-search-template",
+  "query": "machine learning tutorials",
+  "variables": {
+    "lang": "en"
+  }
+}
+```
+
+For `task_type: "template"`, `task_payload` must include:
+
+- `template_id` (required): template to execute
+- endpoint-specific input fields required by that template type (for example `url` for scrape/crawl templates, `query` for search templates)
+- optional `variables` to pass dynamic template inputs
 
 ## Concurrency Modes
 
@@ -261,14 +278,6 @@ Queue the new execution and wait for the previous one to complete.
 **Best for**: Tasks where every execution must happen without skipping.
 
 **Example**: Critical data collection that must not miss any scheduled runs.
-
-### replace
-
-Stop the current execution and immediately start the new one.
-
-**Best for**: Tasks where only the latest data matters.
-
-**Example**: Real-time price monitoring where older data is irrelevant.
 
 ## Managing Tasks
 
@@ -638,7 +647,7 @@ Track competitor mentions and industry trends hourly:
     "query": "YourCompany OR CompetitorA OR CompetitorB",
     "engine": "google",
     "limit": 50,
-    "time_range": "hour"
+    "timeRange": "day"
   },
   "concurrency_mode": "skip"
 }
@@ -656,12 +665,11 @@ Track competitor mentions and industry trends hourly:
 
 - Use `"skip"` for most tasks to avoid overlapping executions
 - Use `"queue"` only when every execution is critical
-- Use `"replace"` sparingly, only for real-time data needs
 
 ### 3. Manage Credits Wisely
 
-- Set `min_credits_required` based on typical job costs
-- Enable `auto_pause_on_low_credits` to prevent unexpected charges
+- Set `max_executions_per_day` for expensive tasks
+- Review `min_credits_required` in task details (server-calculated estimate)
 - Monitor credit usage in execution history
 
 ### 4. Monitor Task Health
@@ -682,7 +690,7 @@ Track competitor mentions and industry trends hourly:
 |------|-------|
 | Task name length | 1-255 characters |
 | Minimum interval | 1 minute |
-| Maximum concurrent executions | 1-50 |
+| Concurrency modes | `skip`, `queue` |
 | Task payload size | 100KB |
 | Cron expression format | Standard 5-field format |
 
@@ -715,8 +723,8 @@ Track competitor mentions and industry trends hourly:
 **Solutions**:
 - Reduce execution frequency
 - Set `max_executions_per_day` limits
-- Use `min_credits_required` threshold
-- Enable `auto_pause_on_low_credits`
+- Use lower-cost payloads (fewer pages/results, lighter formats)
+- Review execution history to identify expensive runs
 
 ## Related Documentation
 

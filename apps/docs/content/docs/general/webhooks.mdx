@@ -1,6 +1,6 @@
 ---
 title: Webhooks
-description: Receive real-time notifications for all AnyCrawl events including scraping, crawling, search, and scheduled tasks.
+description: Receive real-time notifications for all AnyCrawl events including scraping, crawling, mapping, search, and scheduled tasks.
 icon: Webhook
 ---
 
@@ -12,7 +12,7 @@ Webhooks allow you to receive real-time HTTP notifications when events occur in 
 
 ### Core Features
 
-- **Event Subscriptions**: Subscribe to scraping, crawling, search, scheduled task, and system events
+- **Event Subscriptions**: Subscribe to scraping, crawling, mapping, search, scheduled task, and system events
 - **Secure Delivery**: HMAC-SHA256 signature verification for authenticity
 - **Automatic Retries**: Exponential backoff retry mechanism for failed deliveries
 - **Delivery Tracking**: Complete history of all webhook deliveries
@@ -70,7 +70,15 @@ GET    /v1/webhook-events                        # List supported events
 | `search.started` | Search job started | Job begins execution |
 | `search.completed` | Search job completed | Job finishes successfully |
 | `search.failed` | Search job failed | Job encounters an error |
-| `search.cancelled` | Search job cancelled | Job is manually cancelled |
+
+### Map Events
+
+| Event | Description | Triggered When |
+|-------|-------------|----------------|
+| `map.created` | Map job created | New map job is queued |
+| `map.started` | Map job started | Job begins execution |
+| `map.completed` | Map job completed | Job finishes successfully |
+| `map.failed` | Map job failed | Job encounters an error |
 
 ### Test Events
 
@@ -175,11 +183,10 @@ print(f"Secret: {data['data']['secret']}")
 | `timeout_seconds` | number | No | `10` | Request timeout (1-60 seconds) |
 | `max_retries` | number | No | `3` | Maximum retry attempts (0-10) |
 | `retry_backoff_multiplier` | number | No | `2` | Retry backoff multiplier (1-10) |
-| `auto_disable_after_failures` | number | No | `10` | Auto-disable after N consecutive failures |
 | `custom_headers` | object | No | - | Custom HTTP headers |
 
 <Callout type="info">
-The webhook will be automatically disabled after `auto_disable_after_failures` consecutive failures to prevent excessive retries. You can reactivate it manually after fixing the issue.
+Webhooks are automatically disabled after 10 consecutive failures to prevent excessive retries. You can reactivate them manually after fixing the issue.
 </Callout>
 
 ### Metadata

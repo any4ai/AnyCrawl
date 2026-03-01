@@ -188,6 +188,7 @@ curl -X DELETE -H "Authorization: Bearer <YOUR_API_KEY>" \
 | `only_main_content` | boolean         | No       | `true`        | Only extract main content, removing headers, footers, navigation, etc.                                                    |
 | `json_options`      | object          | No       | -             | Options for structured JSON extraction (schema, user_prompt, schema_name, schema_description)                             |
 | `extract_source`    | enum            | No       | `markdown`    | Source to extract JSON from: `markdown` (default) or `html`                                                               |
+| `ocr_options`       | boolean         | No       | `false`       | Enable OCR enhancement for markdown images only. Affects markdown generation, not `html`/`rawHtml`.                       |
 | `scrape_options`    | object          | No       | -             | Per-page scrape options (same fields as `/v1/scrape` excluding top-level `url`/`engine`)                                  |
 
 ### `scrape_options` fields
@@ -204,6 +205,7 @@ curl -X DELETE -H "Authorization: Bearer <YOUR_API_KEY>" \
 | `proxy`             | string (URI)             | -              | Optional proxy URL                                                                                                                          |
 | `json_options`      | object                   | -              | Options for structured JSON extraction (schema, user_prompt, schema_name, schema_description)                                               |
 | `extract_source`    | enum                     | `markdown`     | Source to extract JSON from: `markdown` (default) or `html`                                                                                 |
+| `ocr_options`       | boolean                  | `false`        | Enable OCR enhancement for markdown images only. Affects markdown generation, not `html`/`rawHtml`.                                         |
 | `max_age`           | number                   | -              | Cache max age (ms). Use `0` to skip cache read; omit to use server default                                                                     |
 | `store_in_cache`    | boolean                  | `true`         | Whether to write Page Cache for per-page scrapes                                                                                              |
 

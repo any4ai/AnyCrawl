@@ -9,6 +9,7 @@ import { getOrCreateBandwidthTracker } from "./BandwidthTracker.js";
 import { CloudflareChallengeHandler } from "../challenges/cloudflare/CloudflareChallengeHandler.js";
 import { ChallengeOrchestrator } from "../challenges/ChallengeOrchestrator.js";
 import { ProxyCacheManager } from "../managers/ProxyCacheManager.js";
+import { smartWaitForDOMStable } from "../utils/smartWait.js";
 
 export enum ConfigurableEngineType {
     CHEERIO = 'cheerio',
@@ -177,30 +178,65 @@ export class EngineConfigurator {
             }
         };
 
-        // Ad blocking configuration
-        const adBlockingHook = async ({ page }: any) => {
-            const shouldBlock = (url: string) => AD_DOMAINS.some(domain => url.includes(domain));
+        const resourceBlockingHook = async ({ page, request }: any) => {
+            if (!page || (page as any).__anycrawlResourceBlockingApplied) return;
+            (page as any).__anycrawlResourceBlockingApplied = true;
 
-            if (engineType === ConfigurableEngineType.PLAYWRIGHT) {
-                await page.route('**/*', (route: any) => {
-                    const url = route.request().url();
-                    if (shouldBlock(url)) {
-                        log.info(`Aborting request to ${url}`);
-                        return route.abort();
-                    }
-                    return route.continue();
+            let cdp: any;
+            try {
+                if (engineType === ConfigurableEngineType.PLAYWRIGHT) {
+                    cdp = await page.context().newCDPSession(page);
+                } else if (engineType === ConfigurableEngineType.PUPPETEER) {
+                    cdp = await page.target().createCDPSession();
+                }
+            } catch { return; }
+            if (!cdp) return;
+            (page as any).__anycrawlCdpSession = cdp;
+
+            const formats: string[] = request?.userData?.options?.formats || [];
+            const needsScreenshot = formats.some(
+                (f: string) => f === "screenshot" || f === "screenshot@fullPage",
+            );
+
+            try {
+                await cdp.send("Network.enable");
+                await cdp.send("Network.setBlockedURLs", {
+                    urls: AD_DOMAINS.map((d: string) => `*${d}*`),
                 });
-            } else if (engineType === ConfigurableEngineType.PUPPETEER) {
-                await page.setRequestInterception(true);
-                page.on('request', (req: any) => {
-                    const url = req.url();
-                    if (shouldBlock(url)) {
-                        log.info(`Aborting request to ${url}`);
-                        req.abort();
-                    } else {
-                        req.continue();
+
+                if (needsScreenshot) {
+                    // Only block media (video/audio); let images and fonts load
+                    // normally so the screenshot captures a fully rendered page.
+                    await cdp.send("Fetch.enable", {
+                        patterns: [
+                            { resourceType: "Media", requestStage: "Request" },
+                        ],
+                    });
+                    log.debug(`[resourceBlockingHook] screenshot mode: only blocking media for ${engineType}`);
+                } else {
+                    await cdp.send("Fetch.enable", {
+                        patterns: [
+                            { resourceType: "Image", requestStage: "Request" },
+                            { resourceType: "Media", requestStage: "Request" },
+                            { resourceType: "Font", requestStage: "Request" },
+                        ],
+                    });
+                }
+
+                cdp.on("Fetch.requestPaused", async (e: any) => {
+                    try {
+                        log.debug(`[resourceBlocking] Blocked ${e.resourceType}: ${e.request?.url?.substring(0, 100)}`);
+                        await cdp.send("Fetch.failRequest", {
+                            requestId: e.requestId,
+                            errorReason: "BlockedByClient",
+                        });
+                    } catch {
+                        // CDP session closed
                     }
                 });
+                log.debug(`[resourceBlockingHook] CDP setup complete for ${engineType}`);
+            } catch (err) {
+                log.debug(`[resourceBlockingHook] CDP setup failed: ${err}`);
             }
         };
 
@@ -494,7 +530,7 @@ export class EngineConfigurator {
         options.preNavigationHooks = [
             viewportHook,
             bandwidthHook,
-            adBlockingHook,
+            resourceBlockingHook,
             requestTimeoutHook,
             authenticationHook,
             challengePreHook,
@@ -504,8 +540,13 @@ export class EngineConfigurator {
 
         log.info(`[EngineConfigurator] Browser hooks configured for ${engineType}: total=${options.preNavigationHooks.length}`);
 
+        const smartWaitPostHook = async ({ page, request }: any) => {
+            if (!page) return;
+            await smartWaitForDOMStable(page, request.url, { label: "postNav" });
+        };
+
         const existingPostHooks = options.postNavigationHooks || [];
-        options.postNavigationHooks = [challengePostHook, ...existingPostHooks];
+        options.postNavigationHooks = [challengePostHook, smartWaitPostHook, ...existingPostHooks];
         log.info(`[EngineConfigurator] Post-navigation hooks configured for ${engineType}: total=${options.postNavigationHooks.length}`);
 
         // Apply headless configuration from environment
@@ -632,10 +673,18 @@ export class EngineConfigurator {
 
             if (errorMessage.includes("Received blocked status code: 403")) {
                 if (context?.request) {
-                    context.request.noRetry = true;
+                    context.request.noRetry = false;
                 }
-                log.info(`403 blocked-status session error detected, disabling retry for ${context?.request?.url || "unknown url"}`);
-                return false;
+                try {
+                    const session = (context as any).session;
+                    if (session && typeof session.retire === "function") {
+                        session.retire();
+                    }
+                } catch {
+                    // ignore session retire failures
+                }
+                log.info(`403 blocked-status detected, allowing retry with session rotation for ${context?.request?.url || "unknown url"}`);
+                return true;
             }
 
             // Timeout-like errors should fail fast and never retry.

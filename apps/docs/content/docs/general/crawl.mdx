@@ -11,7 +11,7 @@ AnyCrawl crawl API discovers and processes multiple pages from a seed URL, apply
 **Key Features**
 
 - **Asynchronous jobs**: Queue a crawl and fetch results later
-- **Multi-Engine Support**: `cheerio`, `playwright`, `puppeteer`
+- **Multi-Engine Support**: `auto` (default), `cheerio`, `playwright`, `puppeteer`
 - **Flexible scope control**: `strategy`, `max_depth`, `include_paths`, `exclude_paths`
 - **Per-page options**: Reuse `/v1/scrape` options under `scrape_options`
 - **Pagination**: Stream results via `skip` to control payload size
@@ -167,7 +167,7 @@ curl -X DELETE -H "Authorization: Bearer <YOUR_API_KEY>" \
 | `url`               | string          | Yes      | -             | Seed URL to start crawling                                                                                               |
 | `template_id`       | string          | No       | -             | Template ID to use for this crawl                                                                                        |
 | `variables`         | object          | No       | -             | Template variables (only used when `template_id` is provided)                                                            |
-| `engine`            | enum            | No       | `cheerio`     | Per-page scraping engine: `cheerio`, `playwright`, `puppeteer`                                                           |
+| `engine`            | enum            | No       | `auto`        | Per-page scraping engine: `auto`, `cheerio`, `playwright`, `puppeteer`                                                   |
 | `exclude_paths`     | array of string | No       | -             | Path rules to exclude (glob-like), e.g. `/blog/*`                                                                        |
 | `include_paths`     | array of string | No       | -             | Path rules to include for crawling (applied after exclusion)                                                             |
 | `scrape_paths`      | array of string | No       | -             | Path rules for content extraction. Only matching URLs will have content saved. If not set, all included URLs are scraped |

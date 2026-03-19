@@ -189,7 +189,7 @@ export function computeCacheKey(params: CacheKeyParams): { urlHash: string; opti
 
     // Extract cacheable options (sorted for consistency)
     const cacheableOptions = {
-        engine: params.engine || 'cheerio',
+        engine: params.engine === 'auto' ? ((params as any)._autoResolvedEngine || 'cheerio') : (params.engine || 'cheerio'),
         formats: [...(params.formats || ['markdown'])].sort(),
         json_options: params.json_options ? JSON.stringify(sortKeys(params.json_options)) : null,
         include_tags: params.include_tags ? [...params.include_tags].sort() : undefined,

@@ -1,7 +1,7 @@
 export type ApiResponse<T> = { success: true; data: T } | { success: false; error: string; message?: string; data?: any };
 
 export type ExtractSource = 'html' | 'markdown';
-export type Engine = 'playwright' | 'cheerio' | 'puppeteer';
+export type Engine = 'auto' | 'playwright' | 'cheerio' | 'puppeteer';
 export type ScrapeFormat = 'markdown' | 'html' | 'text' | 'screenshot' | 'screenshot@fullPage' | 'rawHtml' | 'json' | 'summary' | 'links';
 
 // Project-aligned JSON schema (@anycrawl/libs: jsonSchemaType)
@@ -78,7 +78,7 @@ export type ScrapeOptionsInput = {
 
 export type ScrapeRequest = {
     url: string;
-    engine: Engine;
+    engine?: Engine;
     /** Template ID to use (merges with template defaults) */
     template_id?: string;
     /** Template variables for URL/option substitution */
@@ -130,7 +130,7 @@ export type CrawlOptions = {
 
 export type CrawlRequest = {
     url: string;
-    engine: Engine;
+    engine?: Engine;
     /** Template ID to use */
     template_id?: string;
     /** Template variables for URL/option substitution */

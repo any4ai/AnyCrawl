@@ -152,7 +152,7 @@ Scrape a single URL and extract content in various formats.
 **Parameters:**
 
 - `url` (required): The URL to scrape
-- `engine` (required): Scraping engine (`playwright`, `cheerio`, `puppeteer`)
+- `engine` (optional): Scraping engine (`auto`, `playwright`, `cheerio`, `puppeteer`). Defaults to `auto`
 - `formats` (optional): Output formats (`markdown`, `html`, `text`, `screenshot`, `screenshot@fullPage`, `rawHtml`, `json`)
 - `timeout` (optional): Timeout in milliseconds (default: 300000)
 - `wait_for` (optional): Wait time for page to load
@@ -188,7 +188,7 @@ Start a crawl job to scrape multiple pages from a website. By default this waits
 **Parameters:**
 
 - `url` (required): The base URL to crawl
-- `engine` (required): Scraping engine
+- `engine` (optional): Scraping engine (`auto`, `playwright`, `cheerio`, `puppeteer`). Defaults to `auto`
 - `max_depth` (optional): Maximum crawl depth (default: 10)
 - `limit` (optional): Maximum number of pages (default: 100)
 - `strategy` (optional): Crawling strategy (`all`, `same-domain`, `same-hostname`, `same-origin`)
@@ -346,6 +346,12 @@ Unprocessed HTML content.
 Structured data extraction using custom schemas.
 
 ## Engines
+
+### Auto (Default)
+
+- Intelligent engine selection
+- Automatically picks the optimal engine per URL
+- Best for general-purpose scraping
 
 ### Cheerio
 

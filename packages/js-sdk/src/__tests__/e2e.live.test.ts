@@ -75,7 +75,7 @@ maybeDescribe('E2E Tier 2: multi-engine & search', () => {
         ['cheerio'],
         ['playwright'],
         ['puppeteer'],
-    ] as const)('scrape works with engine=%s', async (engine) => {
+    ])('scrape works with engine=%s', async (engine) => {
         const res = await client.scrape({
             url: 'https://example.com',
             engine: engine as any,

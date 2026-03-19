@@ -6,10 +6,11 @@ import { EngineFactoryRegistry } from "../engines/EngineFactory.js";
 import type { Engine } from "../engines/EngineFactory.js";
 import { ALLOWED_ENGINES } from "@anycrawl/libs";
 
+const VIRTUAL_ENGINES = ["auto"] as const;
+
 export const AVAILABLE_ENGINES = (() => {
     if (process.env.ANYCRAWL_AVAILABLE_ENGINES) {
         const engines = process.env.ANYCRAWL_AVAILABLE_ENGINES.split(',').map(e => e.trim().toLowerCase());
-        // Validate that all specified engines are allowed
         const invalidEngines = engines.filter(e => !ALLOWED_ENGINES.includes(e as any));
         if (invalidEngines.length > 0) {
             throw new Error(`Invalid engine types specified: ${invalidEngines.join(', ')}. Allowed engines are: ${ALLOWED_ENGINES.join(', ')}`);
@@ -18,6 +19,10 @@ export const AVAILABLE_ENGINES = (() => {
     }
     return ALLOWED_ENGINES;
 })();
+
+const REAL_ENGINES = AVAILABLE_ENGINES.filter(
+    (e: string) => !(VIRTUAL_ENGINES as readonly string[]).includes(e),
+);
 
 // Define engine type
 export type EngineType = (typeof AVAILABLE_ENGINES)[number];
@@ -47,16 +52,14 @@ export class EngineQueueManager {
     }
 
     async initializeQueues(): Promise<void> {
-        // Initialize queues for all available engines
-        for (const engineType of AVAILABLE_ENGINES) {
+        for (const engineType of REAL_ENGINES) {
             const queue = await Utils.getInstance().getQueue(engineType);
             this.queues.set(engineType, queue);
         }
     }
 
     async initializeEngines(): Promise<void> {
-        // Initialize engines for all available engines
-        for (const engineType of AVAILABLE_ENGINES) {
+        for (const engineType of REAL_ENGINES) {
             const queue = this.queues.get(engineType);
             if (!queue) {
                 throw new Error(`Queue not initialized for ${engineType}`);

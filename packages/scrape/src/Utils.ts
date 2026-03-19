@@ -11,6 +11,7 @@ export class Utils {
     private static instance: Utils;
     private keyValueStore: KeyValueStore | undefined = undefined;
     private queueMap: Map<string, RequestQueueV2> = new Map();
+    private redisConnection: IORedis.Redis | undefined = undefined;
 
     private constructor() {
         const config = Configuration.getGlobalConfig();
@@ -70,14 +71,16 @@ export class Utils {
     }
 
     /**
-     * Get the Redis connection
+     * Get the shared Redis connection (singleton)
      * @returns The Redis connection
      */
     public getRedisConnection(): IORedis.Redis {
-        const redisConnection = new IORedis.default(process.env.ANYCRAWL_REDIS_URL!, {
-            maxRetriesPerRequest: null,
-        });
-        return redisConnection;
+        if (!this.redisConnection) {
+            this.redisConnection = new IORedis.default(process.env.ANYCRAWL_REDIS_URL!, {
+                maxRetriesPerRequest: null,
+            });
+        }
+        return this.redisConnection;
     }
 
     public async once(job: Job, options?: EngineOptions) {

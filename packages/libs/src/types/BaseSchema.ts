@@ -52,7 +52,7 @@ export const baseSchema = z.object({
     /**
      * The engine to be used
      */
-    engine: z.enum(ALLOWED_ENGINES).default("cheerio"),
+    engine: z.enum(ALLOWED_ENGINES).default("auto"),
 
     /**
      * The proxy mode or custom proxy URL to be used.

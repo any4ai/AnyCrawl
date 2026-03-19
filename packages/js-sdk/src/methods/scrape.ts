@@ -3,7 +3,7 @@ import type { ScrapeRequest, ScrapeResult } from '../types.js';
 import { unwrapApiResponse } from '../utils/index.js';
 
 export async function scrape(client: AxiosInstance, input: ScrapeRequest): Promise<ScrapeResult> {
-    const body: any = { url: input.url, engine: input.engine ?? 'playwright' };
+    const body: any = { url: input.url, engine: input.engine ?? 'auto' };
     if (input.template_id != null) body.template_id = input.template_id;
     if (input.variables != null) body.variables = input.variables;
     if (input.proxy != null) body.proxy = input.proxy;

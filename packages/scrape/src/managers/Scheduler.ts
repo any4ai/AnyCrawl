@@ -3,8 +3,9 @@ import { getDB, schemas, eq, sql, completedJob, failedJob, Billing } from "@anyc
 import { QueueManager } from "./Queue.js";
 import { randomUUID } from "crypto";
 import { Job, Queue } from "bullmq";
-import IORedis from "ioredis";
+import type IORedis from "ioredis";
 import { WebhookEventType, estimateTaskCredits, isScheduledTasksLimitEnabled, getScheduledTasksLimit, buildAutoPauseReason, CreditCalculator } from "@anycrawl/libs";
+import { Utils } from "../Utils.js";
 import { CronExpressionParser } from "cron-parser";
 import { finalizeExecution } from "./ExecutionLifecycle.js";
 
@@ -76,10 +77,7 @@ export class SchedulerManager {
         this.isRunning = true;
         log.info("[SCHEDULER] 🕒 Starting Scheduler Manager (BullMQ)...");
 
-        // Initialize shared Redis connection for distributed locking
-        this.redis = new IORedis.default(process.env.ANYCRAWL_REDIS_URL!, {
-            maxRetriesPerRequest: null,
-        });
+        this.redis = Utils.getInstance().getRedisConnection();
 
         // Get or create the scheduler queue
         const queueManager = QueueManager.getInstance();

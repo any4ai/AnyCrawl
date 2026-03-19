@@ -1,7 +1,7 @@
 import { Response } from "express";
 import { z } from "zod";
 import { scrapeSchema, RequestWithAuth, CreditCalculator, WebhookEventType, getCacheConfig, getResolvedProxyMode } from "@anycrawl/libs";
-import { QueueManager, CrawlerErrorType, CacheManager } from "@anycrawl/scrape";
+import { QueueManager, CrawlerErrorType, CacheManager, resolveAutoEngine } from "@anycrawl/scrape";
 import { STATUS, createJob, failedJob, completedJob, insertJobResult, updateJobCacheHits } from "@anycrawl/db";
 import { log } from "@anycrawl/libs";
 import { TemplateHandler, TemplateVariableMapper } from "../../utils/templateHandler.js";
@@ -95,7 +95,12 @@ export class ScrapeController {
 
             // Validate and parse the merged data
             const jobPayload = scrapeSchema.parse(requestData);
-            engineName = jobPayload.engine;
+            if (jobPayload.engine === 'auto') {
+                engineName = await resolveAutoEngine(jobPayload.url, jobPayload.options.proxy);
+                (jobPayload as any).engine = engineName;
+            } else {
+                engineName = jobPayload.engine;
+            }
 
             // Check cache before creating job (if max_age > 0 or undefined)
             const cacheConfig = getCacheConfig();
@@ -110,12 +115,12 @@ export class ScrapeController {
                 try {
                     const cacheManager = CacheManager.getInstance();
                     log.info(`[CACHE] CacheManager instance: ${cacheManager ? 'exists' : 'null'}, getFromCache: ${typeof cacheManager.getFromCache}`);
-                    log.info(`[CACHE] Calling getFromCache with url=${jobPayload.url}, engine=${jobPayload.engine}, proxy=${jobPayload.options.proxy}`);
+                    log.info(`[CACHE] Calling getFromCache with url=${jobPayload.url}, engine=${engineName}, proxy=${jobPayload.options.proxy}`);
                     const cached = await cacheManager.getFromCache(
                         jobPayload.url,
                         {
                             url: jobPayload.url,
-                            engine: jobPayload.engine,
+                            engine: engineName!,
                             formats: jobPayload.options.formats,
                             json_options: jobPayload.options.json_options,
                             include_tags: jobPayload.options.include_tags,

@@ -12,7 +12,7 @@ import { sleep } from '../utils/index.js';
 
 export async function createCrawl(client: AxiosInstance, input: CrawlRequest): Promise<CrawlJobResponse> {
     const scrape_options = buildCrawlScrapeOptions(input);
-    const body: any = { url: input.url, engine: input.engine ?? 'playwright' };
+    const body: any = { url: input.url, engine: input.engine ?? 'auto' };
     if (input.template_id != null) body.template_id = input.template_id;
     if (input.variables != null) body.variables = input.variables;
     if (input.exclude_paths != null) body.exclude_paths = input.exclude_paths;

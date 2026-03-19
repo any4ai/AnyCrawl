@@ -26,6 +26,7 @@ import { BandwidthManager } from "../managers/Bandwidth.js";
 import { getResolvedProxyModeName } from "../managers/Proxy.js";
 import { ensureChallengeState, consumeProxyAction } from "../challenges/ChallengeContext.js";
 import { ProxyCacheManager } from "../managers/ProxyCacheManager.js";
+import { smartWaitForDOMStable } from "../utils/smartWait.js";
 
 // Template system imports - directly use @anycrawl/template-client
 
@@ -684,8 +685,11 @@ export abstract class BaseEngine {
                 }
                 delete userData._anycrawlFinalNavigationStatus;
 
-                // Let potential post-challenge redirects settle before evaluating status.
-                await sleep(1_000);
+                await smartWaitForDOMStable(page, context.request.url, {
+                    label: "postReload",
+                    useCache: false,
+                    maxWaitMs: 3000,
+                });
 
                 const refreshedRaw = context.response
                     ? this.extractResponseStatus(context.response as CrawlerResponse)
@@ -767,25 +771,10 @@ export abstract class BaseEngine {
             }
             userData._anycrawlPostChallengeSettled = true;
 
-            try {
-                if (typeof page.waitForLoadState === "function") {
-                    await page.waitForLoadState("domcontentloaded", { timeout: 5_000 });
-                } else if (typeof page.waitForNavigation === "function") {
-                    await page.waitForNavigation({
-                        waitUntil: "domcontentloaded",
-                        timeout: 5_000,
-                    });
-                } else {
-                    await sleep(500);
-                }
-
-                // Give redirects/scripts a short settle window before extraction.
-                await sleep(300);
-            } catch (error) {
-                log.debug(
-                    `[HTTP] Post-challenge settle skipped for ${context.request.url}: ${error instanceof Error ? error.message : String(error)}`
-                );
-            }
+            await smartWaitForDOMStable(page, context.request.url, {
+                label: "postChallenge",
+                useCache: false,
+            });
         };
 
         const requestHandler = async (context: CrawlingContext) => {
@@ -850,6 +839,25 @@ export abstract class BaseEngine {
 
                     const retryError = new Error("ANYCRAWL_PROXY_ACTION_ROTATE_PROXY");
                     retryError.name = "AnycrawlChallengeRetryError";
+                    throw retryError;
+                }
+
+                if (effectiveStatus?.statusCode === 403) {
+                    try {
+                        const session = (context as any).session;
+                        if (session && typeof session.retire === "function") {
+                            session.retire();
+                        }
+                    } catch {
+                        // ignore session retire failures
+                    }
+
+                    log.warning(
+                        `[HTTP-403-RETRY] [${queueName}] [${jobId}] unhandled 403 (challenge.detected=${challengeState.detected ?? false}), retrying with rotated proxy: ${context.request.url}`
+                    );
+
+                    const retryError = new Error("ANYCRAWL_PROXY_ACTION_ROTATE_PROXY");
+                    retryError.name = "AnycrawlHttp403RetryError";
                     throw retryError;
                 }
             }
@@ -1255,23 +1263,25 @@ export abstract class BaseEngine {
                 }
 
                 // Record success to ProxyCacheManager for ALL proxy modes (auto/base/stealth)
-                // This caches the working proxy for future requests
-                try {
-                    const options = context.request.userData.options || {};
-                    const proxyMode = options.proxy;
-                    const proxyInfo = (context as any).proxyInfo;
-                    if (proxyMode && proxyInfo?.url) {
-                        const proxyCache = ProxyCacheManager.getInstance();
-                        const domain = proxyCache.extractDomain(context.request.url);
-                        if (domain) {
-                            log.debug(`[ProxyCache] Recording success: domain=${domain}, proxy=${proxyInfo.url}, mode=${proxyMode}`);
-                            proxyCache.recordDomainSuccess(domain, proxyInfo.url, proxyMode).catch(() => {
-                                // Ignore cache recording errors
-                            });
+                // Only record when the response was actually successful (skip HTTP errors like 403)
+                if (!isHttpError) {
+                    try {
+                        const options = context.request.userData.options || {};
+                        const proxyMode = options.proxy;
+                        const proxyInfo = (context as any).proxyInfo;
+                        if (proxyMode && proxyInfo?.url) {
+                            const proxyCache = ProxyCacheManager.getInstance();
+                            const domain = proxyCache.extractDomain(context.request.url);
+                            if (domain) {
+                                log.debug(`[ProxyCache] Recording success: domain=${domain}, proxy=${proxyInfo.url}, mode=${proxyMode}`);
+                                proxyCache.recordDomainSuccess(domain, proxyInfo.url, proxyMode).catch(() => {
+                                    // Ignore cache recording errors
+                                });
+                            }
                         }
+                    } catch (error) {
+                        // Ignore errors when recording success
                     }
-                } catch (error) {
-                    // Ignore errors when recording success
                 }
 
                 // Handle crawl logic if this is a crawl job (always run to discover links)

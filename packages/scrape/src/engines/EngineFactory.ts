@@ -31,6 +31,23 @@ const defaultLaunchContext: Partial<LaunchContext> = {
             const baseArgs = [
                 "--no-first-run",
                 "--disable-accelerated-2d-canvas",
+                ...(process.env.ANYCRAWL_LIGHT_MODE !== 'false' ? [
+                    "--disable-background-networking",
+                    "--disable-breakpad",
+                    "--disable-component-extensions-with-background-pages",
+                    "--disable-default-apps",
+                    "--disable-extensions",
+                    "--disable-features=TranslateUI",
+                    "--disable-hang-monitor",
+                    "--disable-popup-blocking",
+                    "--disable-prompt-on-repost",
+                    "--disable-sync",
+                    "--metrics-recording-only",
+                    "--password-store=basic",
+                    "--use-mock-keychain",
+                    "--mute-audio",
+                    "--force-color-profile=srgb",
+                ] : []),
             ];
             const sslArgs = (process.env.ANYCRAWL_IGNORE_SSL_ERROR === "true")
                 ? ["--ignore-certificate-errors", "--ignore-certificate-errors-spki-list"]

@@ -12,7 +12,7 @@ AnyCrawl scrape API converts any webpage into structured data optimized for Larg
 
 ### Core Features
 
-- **Multi-Engine Support**: Supports `cheerio` (static HTML parsing, fastest), `playwright` (cross-browser JavaScript rendering), `puppeteer` (Chrome-optimized JavaScript rendering)
+- **Multi-Engine Support**: Supports `auto` (intelligent engine selection, default), `cheerio` (static HTML parsing, fastest), `playwright` (cross-browser JavaScript rendering), `puppeteer` (Chrome-optimized JavaScript rendering)
 - **LLM Optimized**: Automatically extracts and formats content, generates Markdown format for easy LLM processing
 - **Proxy Support**: Supports HTTP/HTTPS proxy configuration
 - **Robust Error Handling**: Comprehensive error handling and retry mechanisms
@@ -29,7 +29,7 @@ POST https://api.anycrawl.dev/v1/scrape
 
 ### cURL
 
-#### Basic Scraping (using default cheerio engine)
+#### Basic Scraping (using default auto engine)
 
 ```bash tab="cURL"
 curl -X POST "https://api.anycrawl.dev/v1/scrape" \
@@ -171,7 +171,7 @@ print(result['data']['markdown'])
 | `url`               | string                   | Yes      | -              | URL to scrape, must be a valid HTTP/HTTPS address                                                                                           |
 | `template_id`       | string                   | No       | -              | Template ID to use for this scrape                                                                                                          |
 | `variables`         | object                   | No       | -              | Template variables (only used when `template_id` is provided)                                                                               |
-| `engine`            | enum                     | No       | `cheerio`      | Scraping engine type, options: `cheerio`, `playwright`, `puppeteer`                                                                         |
+| `engine`            | enum                     | No       | `auto`         | Scraping engine type, options: `auto`, `cheerio`, `playwright`, `puppeteer`                                                                 |
 | `formats`           | array                    | No       | `["markdown"]` | Output formats, options: `markdown`, `html`, `text`, `screenshot`, `screenshot@fullPage`, `rawHtml`, `json`, `summary`, `links`                      |
 | `timeout`           | number                   | No       | `60000`        | Timeout in milliseconds. If omitted: `120000` for `proxy=stealth` / `proxy=auto`; otherwise `60000`. |
 | `retry`             | boolean                  | No       | `false`        | Whether to retry on failure                                                                                                                 |
@@ -198,7 +198,14 @@ print(result['data']['markdown'])
 
 **Important Note**: Both `playwright` and `puppeteer` can use Chromium (Chrome's open-source version), but they serve different purposes and have different capabilities.
 
-#### `cheerio` (Default)
+#### `auto` (Default)
+
+- **Use Case**: When you don't know which engine is best for the target page
+- **Advantages**: Automatically analyzes the page and selects the optimal engine — uses `cheerio` for static pages and `playwright` for JavaScript-heavy pages
+- **How It Works**: Makes a lightweight HTTP request first; if the page requires JavaScript rendering, it automatically upgrades to a browser engine
+- **Recommended For**: General-purpose scraping, when you want the best performance without manual engine selection
+
+#### `cheerio`
 
 - **Use Case**: Static HTML content scraping
 - **Advantages**: Fastest scraping speed, lowest resource consumption
@@ -370,12 +377,12 @@ or
         "issues": [
             {
                 "field": "engine",
-                "message": "Invalid enum value. Expected 'playwright' | 'cheerio' | 'puppeteer', received 'invalid'",
+                "message": "Invalid enum value. Expected 'auto' | 'playwright' | 'cheerio' | 'puppeteer', received 'invalid'",
                 "code": "invalid_enum_value"
             }
         ],
         "messages": [
-            "Invalid enum value. Expected 'playwright' | 'cheerio' | 'puppeteer', received 'invalid'"
+            "Invalid enum value. Expected 'auto' | 'playwright' | 'cheerio' | 'puppeteer', received 'invalid'"
         ]
     }
 }
@@ -500,8 +507,9 @@ or
 
 ### Engine Selection Guidelines
 
-1. **Static Content Websites** (news, blogs, documentation) → Use `cheerio`
-2. **Complex Web Applications** (SPAs requiring JavaScript rendering) → Use `playwright` or `puppeteer`
+1. **Unsure / General Purpose** → Use `auto` (default) — the server picks the optimal engine automatically
+2. **Static Content Websites** (news, blogs, documentation) → Use `cheerio`
+3. **Complex Web Applications** (SPAs requiring JavaScript rendering) → Use `playwright` or `puppeteer`
 
 ### Performance Optimization
 
@@ -561,6 +569,7 @@ const results = await Promise.all(scrapePromises);
 
 A: Each engine has specific advantages:
 
+- **Auto** (default): Intelligently selects the best engine per URL — starts fast with Cheerio and upgrades to Playwright when JavaScript rendering is needed
 - **Cheerio**: For static HTML content, fastest performance, no JavaScript execution
 - **Playwright**: For complex web apps, better stability and auto-wait features, and it will support more browser types in the future
 - **Puppeteer**: Chrome/Chromium only, does not work on ARM CPUs and we do not provide related docker images

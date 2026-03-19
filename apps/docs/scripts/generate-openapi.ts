@@ -603,7 +603,7 @@ const errorResponseSchema = z.object({
             }),
             message: z.string().openapi({
                 description: 'Error message for the field',
-                example: "Invalid enum value. Expected 'playwright' | 'cheerio' | 'puppeteer', received 'cheeri1o'"
+                example: "Invalid enum value. Expected 'auto' | 'playwright' | 'cheerio' | 'puppeteer', received 'cheeri1o'"
             }),
             code: z.string().openapi({
                 description: 'Error code',
@@ -614,7 +614,7 @@ const errorResponseSchema = z.object({
         }),
         messages: z.array(z.string()).openapi({
             description: 'Array of validation error messages',
-            example: ["Invalid enum value. Expected 'playwright' | 'cheerio' | 'puppeteer', received 'cheeri1o'"]
+            example: ["Invalid enum value. Expected 'auto' | 'playwright' | 'cheerio' | 'puppeteer', received 'cheeri1o'"]
         })
     }).openapi({
         description: 'Validation error details'

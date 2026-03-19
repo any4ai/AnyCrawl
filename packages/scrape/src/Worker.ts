@@ -144,10 +144,10 @@ if (!schedulerOnly) {
                 .filter(q => q !== 'scheduler')
                 .map(q => q.replace(/^(scrape-|crawl-)/, ''))
         );
-        AVAILABLE_ENGINES = [...ALL_ENGINES].filter((engine: string) => requestedEngines.has(engine));
+        AVAILABLE_ENGINES = [...ALL_ENGINES].filter((engine: string) => engine !== 'auto' && requestedEngines.has(engine));
         log.info(`🎯 Starting selected queues: ${Array.from(requestedEngines).join(', ')}`);
     } else {
-        AVAILABLE_ENGINES = [...ALL_ENGINES];
+        AVAILABLE_ENGINES = [...ALL_ENGINES].filter((engine: string) => engine !== 'auto');
         log.info("🚀 Starting all available queues");
     }
 
@@ -180,7 +180,13 @@ if (process.env.ANYCRAWL_WEBHOOKS_ENABLED === "true") {
 }
 
 async function runJob(job: Job) {
-    const engineType = job.data.engine || "cheerio";
+    // Resolve "auto" to the actual engine from _autoResolvedEngine or queue name
+    let engineType = job.data.engine || "cheerio";
+    if (engineType === "auto") {
+        engineType = job.data._autoResolvedEngine
+            || job.data.queueName?.replace(/^scrape-|^crawl-/, "")
+            || "playwright";
+    }
     if (!ALLOWED_ENGINES.includes(engineType)) {
         throw new Error(`Unsupported engine type: ${engineType}`);
     }

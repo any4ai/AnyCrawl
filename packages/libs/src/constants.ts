@@ -17,7 +17,7 @@ export const AD_DOMAINS = [
     'amazon-adsystem.com'
 ]
 
-export const ALLOWED_ENGINES = ["playwright", "cheerio", "puppeteer"] as const;
+export const ALLOWED_ENGINES = ["auto", "playwright", "cheerio", "puppeteer"] as const;
 
 export const SCRAPE_FORMATS = [
     "markdown",

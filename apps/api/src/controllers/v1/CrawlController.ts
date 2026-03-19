@@ -1,13 +1,14 @@
 import { Response } from "express";
 import { z } from "zod";
 import { crawlSchema, RequestWithAuth, CrawlSchemaInput, CreditCalculator, estimateTaskCredits, WebhookEventType } from "@anycrawl/libs";
-import { QueueManager, CrawlerErrorType, RequestTask, ProgressManager, AVAILABLE_ENGINES } from "@anycrawl/scrape";
+import { QueueManager, CrawlerErrorType, RequestTask, ProgressManager, AVAILABLE_ENGINES, runAutoCrawl } from "@anycrawl/scrape";
 import { cancelJob, createJob, failedJob, getJob, getJobResultsPaginated, getJobResultsCount, STATUS, getTemplate } from "@anycrawl/db";
 import { log } from "@anycrawl/libs";
 import { TemplateHandler } from "../../utils/templateHandler.js";
 import { validateTemplateOnlyFields } from "../../utils/templateValidator.js";
 import { renderUrlTemplate } from "../../utils/urlTemplate.js";
 import { triggerWebhookEvent } from "../../utils/webhookHelper.js";
+import { randomUUID } from "crypto";
 
 export class CrawlController {
     /**
@@ -72,24 +73,51 @@ export class CrawlController {
             }
 
             // Add job to queue
-            jobId = await QueueManager.getInstance().addJob(`crawl-${jobPayload.engine}`, jobPayload);
-            req.jobId = jobId;
+            if (jobPayload.engine === 'auto') {
+                jobId = randomUUID();
+                req.jobId = jobId;
 
-            // Calculate initial credits using CreditCalculator
-            req.billingChargeDetails = CreditCalculator.buildCrawlInitialChargeDetails({
-                scrape_options: jobPayload.options?.scrape_options,
-            }, {
-                templateCredits: defaultPrice,
-            });
-            req.creditsUsed = req.billingChargeDetails.total;
+                req.billingChargeDetails = CreditCalculator.buildCrawlInitialChargeDetails({
+                    scrape_options: jobPayload.options?.scrape_options,
+                }, {
+                    templateCredits: defaultPrice,
+                });
+                req.creditsUsed = req.billingChargeDetails.total;
 
-            await createJob({
-                job_id: jobId,
-                job_type: 'crawl',
-                job_queue_name: `crawl-${jobPayload.engine}`,
-                url: jobPayload.url,
-                req,
-            });
+                await createJob({
+                    job_id: jobId,
+                    job_type: 'crawl',
+                    job_queue_name: `crawl-auto`,
+                    url: jobPayload.url,
+                    req,
+                    status: STATUS.PENDING,
+                });
+
+                runAutoCrawl(jobId, jobPayload).catch(err => {
+                    const msg = err instanceof Error ? err.message : 'Crawl coordinator failed';
+                    failedJob(jobId!, msg, false, { total: 0, completed: 0, failed: 0 }).catch(() => {});
+                });
+            } else {
+                jobId = await QueueManager.getInstance().addJob(`crawl-${jobPayload.engine}`, jobPayload);
+                req.jobId = jobId;
+
+                // Calculate initial credits using CreditCalculator
+                req.billingChargeDetails = CreditCalculator.buildCrawlInitialChargeDetails({
+                    scrape_options: jobPayload.options?.scrape_options,
+                }, {
+                    templateCredits: defaultPrice,
+                });
+                req.creditsUsed = req.billingChargeDetails.total;
+
+                await createJob({
+                    job_id: jobId,
+                    job_type: 'crawl',
+                    job_queue_name: `crawl-${jobPayload.engine}`,
+                    url: jobPayload.url,
+                    req,
+                    status: STATUS.PENDING,
+                });
+            }
 
             // Trigger crawl.created webhook
             await triggerWebhookEvent(

@@ -155,15 +155,15 @@ describe('buildCrawlScrapeOptions', () => {
             url: 'https://example.com',
             engine: 'cheerio',
             scrape_options: {
-                extract_source: true,
-                ocr_options: { lang: 'en' },
+                extract_source: 'markdown',
+                ocr_options: true,
                 max_age: 3600,
                 store_in_cache: true,
             },
         });
         expect(result).toEqual({
-            extract_source: true,
-            ocr_options: { lang: 'en' },
+            extract_source: 'markdown',
+            ocr_options: true,
             max_age: 3600,
             store_in_cache: true,
         });
@@ -230,18 +230,18 @@ describe('buildSearchScrapeOptions', () => {
     it('should include json_options, extract_source, ocr_options, max_age, store_in_cache, proxy', () => {
         const result = buildSearchScrapeOptions({
             engine: 'cheerio',
-            json_options: { schema: {} },
-            extract_source: true,
-            ocr_options: { lang: 'en' },
+            json_options: { schema: { type: 'object' } },
+            extract_source: 'markdown',
+            ocr_options: true,
             max_age: 3600,
             store_in_cache: true,
             proxy: 'http://proxy:8080',
         });
         expect(result).toEqual({
             engine: 'cheerio',
-            json_options: { schema: {} },
-            extract_source: true,
-            ocr_options: { lang: 'en' },
+            json_options: { schema: { type: 'object' } },
+            extract_source: 'markdown',
+            ocr_options: true,
             max_age: 3600,
             store_in_cache: true,
             proxy: 'http://proxy:8080',

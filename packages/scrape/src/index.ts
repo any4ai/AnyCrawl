@@ -37,3 +37,9 @@ export * from "./services/MapService.js";
 
 // Cache Manager
 export * from "./managers/Cache.js";
+
+// Auto engine utilities
+export { resolveAutoEngine, analyzeHtmlForJSRequirement } from "./utils/autoEngine.js";
+export { runAutoCrawl } from "./utils/crawlCoordinator.js";
+export { DomainCache } from "./utils/DomainCache.js";
+export { smartWaitForDOMStable } from "./utils/smartWait.js";

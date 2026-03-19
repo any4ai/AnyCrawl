@@ -26,17 +26,15 @@ const client = new AnyCrawlClient(process.env.ANYCRAWL_API_KEY || "<YOUR_API_KEY
 // Health
 await client.healthCheck(); // -> { status: "ok" }
 
-// Scrape
+// Scrape (engine defaults to "auto" — automatically picks the best engine)
 const scrape = await client.scrape({
     url: "https://example.com",
-    engine: "cheerio",
     formats: ["markdown"],
 });
 
 // Crawl (async job)
 const job = await client.createCrawl({
     url: "https://anycrawl.dev",
-    engine: "cheerio",
     max_depth: 3,
     strategy: "same-domain",
     limit: 50,
@@ -52,7 +50,6 @@ const page1 = await client.getCrawlResults(job.job_id, 0);
 const aggregated = await client.crawl(
     {
         url: "https://anycrawl.dev",
-        engine: "cheerio",
         max_depth: 3,
         strategy: "same-domain",
         limit: 50,
@@ -100,12 +97,12 @@ You can also set `LOG_LEVEL` to control internal logs (`debug`, `info`, `warn`, 
 ```ts
 import type { Engine, ScrapeFormat } from "@anycrawl/js-sdk";
 
-const engine: Engine = "cheerio";
+const engine: Engine = "auto"; // or "cheerio", "playwright", "puppeteer"
 const formats: ScrapeFormat[] = ["markdown", "html"];
 
 await client.scrape({
     url: "https://example.com",
-    engine,
+    engine, // optional — defaults to "auto"
     // Optional:
     template_id: "my-template",
     variables: { key: "value" },
@@ -133,7 +130,7 @@ Returns either a success object with content or a failure with `error`.
 ```ts
 const job = await client.createCrawl({
     url: "https://site.com/docs",
-    engine: "playwright",
+    engine: "playwright", // optional — defaults to "auto"
     template_id: "my-template",
     variables: { section: "api" },
     max_depth: 5,
@@ -167,11 +164,9 @@ try {
     const aggregated = await client.crawl(
         {
             url: "https://anycrawl.dev",
-            engine: "cheerio",
             max_depth: 3,
             strategy: "same-domain",
             limit: 50,
-            // Scrape options are nested under scrape_options
             scrape_options: { formats: ["markdown"] },
         },
         3, // poll every 3s
@@ -287,8 +282,9 @@ const events = await client.getWebhookEvents();
 
 Notes:
 
+- Engine defaults to `auto` when omitted — the server automatically picks the best engine (`cheerio` for static pages, `playwright` for JS-heavy pages).
 - Scrape options live at top-level; crawl accepts nested `scrape_options` only; top-level only allows crawl strategy fields and optional `retry`.
-- search supports optional `scrape_options`; when provided without `engine`, it is omitted (no per-result scrape enrichment; API defaults to playwright when enrichment is used).
+- search supports optional `scrape_options`; when provided without `engine`, it is omitted (no per-result scrape enrichment; API defaults to auto when enrichment is used).
 
 ## Running E2E tests
 

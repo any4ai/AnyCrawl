@@ -1,10 +1,9 @@
-import { log } from "crawlee";
 import { getDB, schemas, eq, sql, completedJob, failedJob, Billing } from "@anycrawl/db";
 import { QueueManager } from "./Queue.js";
 import { randomUUID } from "crypto";
 import { Job, Queue } from "bullmq";
 import type IORedis from "ioredis";
-import { WebhookEventType, estimateTaskCredits, isScheduledTasksLimitEnabled, getScheduledTasksLimit, buildAutoPauseReason, CreditCalculator } from "@anycrawl/libs";
+import { WebhookEventType, estimateTaskCredits, isScheduledTasksLimitEnabled, getScheduledTasksLimit, buildAutoPauseReason, CreditCalculator, log, appConfig, config } from "@anycrawl/libs";
 import { Utils } from "../Utils.js";
 import { CronExpressionParser } from "cron-parser";
 import { finalizeExecution } from "./ExecutionLifecycle.js";
@@ -58,7 +57,7 @@ export class SchedulerManager {
 
     private constructor() {
         // Default to 10 seconds, configurable via environment variable
-        this.SYNC_INTERVAL_MS = parseInt(process.env.ANYCRAWL_SCHEDULER_SYNC_INTERVAL_MS || "10000");
+        this.SYNC_INTERVAL_MS = config.scheduler.syncIntervalMs;
     }
 
     public static getInstance(): SchedulerManager {
@@ -361,10 +360,7 @@ export class SchedulerManager {
                 return;
             }
 
-            // Check credits using dynamic estimation
-            // Only check if ANYCRAWL_API_CREDITS_ENABLED is true
-            const creditsEnabled = process.env.ANYCRAWL_API_CREDITS_ENABLED === "true";
-            if (creditsEnabled) {
+            if (appConfig.creditsEnabled) {
                 // Dynamically calculate required credits, use the larger of stored value and real-time estimate
                 let estimatedCredits = 0;
 
@@ -573,7 +569,7 @@ export class SchedulerManager {
 
             // Trigger webhook for task execution
             try {
-                if (process.env.ANYCRAWL_WEBHOOKS_ENABLED === "true") {
+                if (config.webhooks.enabled) {
                     const { WebhookManager } = await import("./Webhook.js");
                     await WebhookManager.getInstance().triggerEvent(
                         WebhookEventType.TASK_EXECUTED,
@@ -637,7 +633,7 @@ export class SchedulerManager {
 
                 // Trigger webhook for task failure
                 try {
-                    if (process.env.ANYCRAWL_WEBHOOKS_ENABLED === "true") {
+                    if (config.webhooks.enabled) {
                         const failedTask = await db
                             .select()
                             .from(schemas.scheduledTasks)
@@ -928,7 +924,7 @@ export class SchedulerManager {
             // charge initial crawl credits at dispatch time.
             if (
                 actualTaskType === "crawl"
-                && process.env.ANYCRAWL_API_CREDITS_ENABLED === "true"
+                && appConfig.creditsEnabled
                 && task.apiKey
             ) {
                 try {
@@ -1042,13 +1038,8 @@ export class SchedulerManager {
             if (taskType === "search") {
                 // Execute search task
                 // @ts-ignore - Dynamic import to avoid circular dependency
-                const { SearchService } = await import("@anycrawl/search");
-                const searchService = new SearchService({
-                    defaultEngine: process.env.ANYCRAWL_SEARCH_DEFAULT_ENGINE,
-                    enabledEngines: process.env.ANYCRAWL_SEARCH_ENABLED_ENGINES?.split(',').map(e => e.trim()),
-                    searxngUrl: process.env.ANYCRAWL_SEARXNG_URL,
-                    acEngineUrl: process.env.ANYCRAWL_AC_ENGINE_URL,
-                });
+                const { SearchService, getSearchConfig } = await import("@anycrawl/search");
+                const searchService = new SearchService(getSearchConfig());
 
                 const results = await searchService.search(payload.engine, {
                     query: payload.query,
@@ -1076,15 +1067,10 @@ export class SchedulerManager {
                 // Execute map task
                 const { MapService } = await import("../services/MapService.js");
                 // @ts-ignore - Dynamic import to avoid circular dependency
-                const { SearchService } = await import("@anycrawl/search");
+                const { SearchService, getSearchConfig } = await import("@anycrawl/search");
 
                 const mapService = new MapService();
-                const searchService = new SearchService({
-                    defaultEngine: process.env.ANYCRAWL_SEARCH_DEFAULT_ENGINE,
-                    enabledEngines: process.env.ANYCRAWL_SEARCH_ENABLED_ENGINES?.split(',').map(e => e.trim()),
-                    searxngUrl: process.env.ANYCRAWL_SEARXNG_URL,
-                    acEngineUrl: process.env.ANYCRAWL_AC_ENGINE_URL,
-                });
+                const searchService = new SearchService(getSearchConfig());
 
                 const mapUrl = payload.url?.startsWith('http://') || payload.url?.startsWith('https://')
                     ? payload.url
@@ -1132,7 +1118,7 @@ export class SchedulerManager {
         }
 
         // Deduct credits if successful and credits are enabled
-        if (isSuccess && creditsUsed > 0 && process.env.ANYCRAWL_API_CREDITS_ENABLED === 'true' && task.apiKey) {
+        if (isSuccess && creditsUsed > 0 && appConfig.creditsEnabled && task.apiKey) {
             try {
                 await Billing.chargeToUsedByJobId({
                     jobId,

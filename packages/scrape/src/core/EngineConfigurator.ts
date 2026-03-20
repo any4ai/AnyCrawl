@@ -1,4 +1,4 @@
-import { AD_DOMAINS, log } from "@anycrawl/libs";
+import { AD_DOMAINS, log, config } from "@anycrawl/libs";
 import { minimatch } from "minimatch";
 import { Utils } from "../Utils.js";
 import { BrowserName } from "crawlee";
@@ -242,8 +242,8 @@ export class EngineConfigurator {
 
         // set request timeout and faster navigation for each request
         const requestTimeoutHook = async ({ request }: any, gotoOptions: any) => {
-            const timeoutMs = request.userData.options.timeout || (process.env.ANYCRAWL_NAV_TIMEOUT ? parseInt(process.env.ANYCRAWL_NAV_TIMEOUT) : 30_000);
-            const waitUntil = (request.userData.options.wait_until || process.env.ANYCRAWL_NAV_WAIT_UNTIL || 'domcontentloaded') as any;
+            const timeoutMs = request.userData.options.timeout || config.navigation.timeoutMs;
+            const waitUntil = (request.userData.options.wait_until || config.navigation.waitUntil) as any;
             log.debug(`Setting navigation for ${request.url} to timeout=${timeoutMs}ms waitUntil=${waitUntil}`);
             gotoOptions.timeout = timeoutMs;
             gotoOptions.waitUntil = waitUntil;
@@ -402,7 +402,7 @@ export class EngineConfigurator {
                     try {
                         const url = typeof response.url === 'function' ? response.url() : (response.url || '');
                         if (!url) return;
-                        const verbose = process.env.ANYCRAWL_PRENAV_VERBOSE === '1' || process.env.ANYCRAWL_PRENAV_VERBOSE === 'true';
+                        const verbose = process.env.ANYCRAWL_PRENAV_VERBOSE === '1' || process.env.ANYCRAWL_PRENAV_VERBOSE === 'true'; // niche debug flag, stays local
 
                         // Only continue (and optionally log) if the URL matches at least one pending rule
                         // or verbose mode is explicitly enabled
@@ -551,7 +551,7 @@ export class EngineConfigurator {
 
         // Apply headless configuration from environment
         if (options.headless === undefined) {
-            options.headless = process.env.ANYCRAWL_HEADLESS !== "false";
+            options.headless = config.engine.headless;
         }
 
         // Let 403 pages reach requestHandler; do not fail early in Crawlee blocked-page detection.

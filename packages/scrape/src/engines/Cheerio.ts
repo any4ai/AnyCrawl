@@ -1,6 +1,7 @@
 import { BaseEngine, BaseEngineType } from "./Base.js";
 import type { EngineOptions, CrawlingContext } from "../types/engine.js";
-import { CheerioCrawler, log, CheerioCrawlingContext, Dictionary, Dataset } from "crawlee";
+import { CheerioCrawler, CheerioCrawlingContext, Dictionary, Dataset } from "crawlee";
+import { log } from "@anycrawl/libs";
 
 /**
  * CheerioEngine class for web scraping using Cheerio

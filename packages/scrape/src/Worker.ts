@@ -1,11 +1,10 @@
 import { WorkerManager } from "./managers/Worker.js";
 import { QueueManager } from "./managers/Queue.js";
 import { Job } from "bullmq";
-import { log } from "crawlee";
 import { Utils } from "./Utils.js";
 // Removed unused imports to keep startup lean
 import { ProgressManager } from "./managers/Progress.js";
-import { ALLOWED_ENGINES, JOB_TYPE_CRAWL, JOB_TYPE_SCRAPE } from "@anycrawl/libs";
+import { ALLOWED_ENGINES, JOB_TYPE_CRAWL, JOB_TYPE_SCRAPE, log, appConfig, config } from "@anycrawl/libs";
 import { ensureAIConfigLoaded } from "@anycrawl/ai/utils/config.js";
 import { refreshAIConfig, getDefaultLLModelId, getEnabledProviderModels } from "@anycrawl/ai/utils/helper.js";
 import { getDB, schemas, eq } from "@anycrawl/db";
@@ -122,10 +121,8 @@ try {
         log.warning(`[ai] validation: ${msg}. Check provider credentials (apiKey/baseURL) for the configured provider.`);
     }
 } catch { }
-const authEnabled = process.env.ANYCRAWL_API_AUTH_ENABLED === "true";
-const creditsEnabled = process.env.ANYCRAWL_API_CREDITS_ENABLED === "true";
-log.info(`🔐 Auth enabled: ${authEnabled}`);
-log.info(`💳 Credits deduction enabled: ${creditsEnabled}`);
+log.info(`🔐 Auth enabled: ${appConfig.authEnabled}`);
+log.info(`💳 Credits deduction enabled: ${appConfig.creditsEnabled}`);
 
 // Determine which engines to initialize based on requested queues
 let AVAILABLE_ENGINES: string[] = [];
@@ -163,7 +160,7 @@ if (!schedulerOnly) {
 }
 
 // Initialize Scheduler Manager (if enabled and requested)
-const shouldStartScheduler = process.env.ANYCRAWL_SCHEDULER_ENABLED === "true" &&
+const shouldStartScheduler = config.scheduler.enabled &&
     (requestedQueues.length === 0 || requestedQueues.includes('scheduler'));
 
 if (shouldStartScheduler) {
@@ -173,7 +170,7 @@ if (shouldStartScheduler) {
 }
 
 // Initialize Webhook Manager (if enabled)
-if (process.env.ANYCRAWL_WEBHOOKS_ENABLED === "true") {
+if (config.webhooks.enabled) {
     const { WebhookManager } = await import("./managers/Webhook.js");
     await WebhookManager.getInstance().initialize();
     log.info("✅ Webhook Manager initialized");
@@ -532,7 +529,7 @@ async function runJob(job: Job) {
             console.warn = () => { };
 
             // Stop Scheduler Manager (if enabled)
-            if (process.env.ANYCRAWL_SCHEDULER_ENABLED === "true") {
+            if (config.scheduler.enabled) {
                 try {
                     const { SchedulerManager } = await import("./managers/Scheduler.js");
                     await SchedulerManager.getInstance().stop();
@@ -543,7 +540,7 @@ async function runJob(job: Job) {
             }
 
             // Stop Webhook Manager (if enabled)
-            if (process.env.ANYCRAWL_WEBHOOKS_ENABLED === "true") {
+            if (config.webhooks.enabled) {
                 try {
                     const { WebhookManager } = await import("./managers/Webhook.js");
                     await WebhookManager.getInstance().stop();

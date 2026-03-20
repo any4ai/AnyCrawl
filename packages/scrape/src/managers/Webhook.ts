@@ -1,6 +1,6 @@
 import crypto from "crypto";
 import axios from "axios";
-import { log } from "crawlee";
+import { log } from "@anycrawl/libs";
 import { getDB, schemas, eq, sql } from "@anycrawl/db";
 import { QueueManager } from "./Queue.js";
 import { WorkerManager } from "./Worker.js";

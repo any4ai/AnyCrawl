@@ -1,5 +1,5 @@
 import { Job, Queue, Worker } from "bullmq";
-import { log } from "crawlee";
+import { log } from "@anycrawl/libs";
 import { randomUUID } from "node:crypto";
 import { Utils } from "../Utils.js";
 import type { EngineType } from "./EngineQueue.js";

@@ -1,21 +1,7 @@
 import { minimatch } from "minimatch";
+import type { DomainRestriction, DomainValidationResult } from "@anycrawl/libs";
 
-/**
- * Domain restriction configuration
- */
-export interface DomainRestriction {
-    type: "glob" | "exact";
-    patterns: string[];
-}
-
-/**
- * Domain validation result
- */
-export interface DomainValidationResult {
-    isValid: boolean;
-    error?: string;
-    code?: string;
-}
+export type { DomainRestriction, DomainValidationResult };
 
 /**
  * Domain validator for template domain restrictions and keyword/pattern matching

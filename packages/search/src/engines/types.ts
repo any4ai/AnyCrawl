@@ -1,4 +1,6 @@
-import { locales } from "@anycrawl/libs";
+import type { SearchLocale } from "@anycrawl/libs";
+
+export type { SearchLocale };
 
 /**
  * Base interface for all search results
@@ -55,8 +57,6 @@ export interface SearchTask {
 }
 
 export type SearchResultType = "web" | "images" | "news";
-
-export type SearchLocale = (typeof locales)[number]["code"] | "all";
 
 export interface SearchOptions {
     query: string;

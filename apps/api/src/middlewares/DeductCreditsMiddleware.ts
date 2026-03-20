@@ -1,6 +1,6 @@
 import { Response, NextFunction } from "express";
 import { Billing } from "@anycrawl/db";
-import { RequestWithAuth, type BillingChargeDetailsV1, type BillingMode } from "@anycrawl/libs";
+import { RequestWithAuth, type BillingChargeDetailsV1, type BillingMode, sleep, appConfig } from "@anycrawl/libs";
 import { log } from "@anycrawl/libs/log";
 
 // Routes that should not trigger credit deduction
@@ -21,8 +21,7 @@ export const deductCreditsMiddleware = async (
     res: Response,
     next: NextFunction
 ): Promise<void> => {
-    // Skip if auth is disabled or credits deduction is disabled
-    if (process.env.ANYCRAWL_API_AUTH_ENABLED !== "true" || process.env.ANYCRAWL_API_CREDITS_ENABLED !== "true") {
+    if (!appConfig.authEnabled || !appConfig.creditsEnabled) {
         next();
         return;
     }
@@ -51,13 +50,6 @@ export const deductCreditsMiddleware = async (
 
     next();
 };
-
-/**
- * Sleep utility for retry delays
- */
-function sleep(ms: number): Promise<void> {
-    return new Promise(resolve => setTimeout(resolve, ms));
-}
 
 /**
  * Deduct credits with automatic retry on failure

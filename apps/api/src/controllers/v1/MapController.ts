@@ -1,9 +1,9 @@
 import { Response } from "express";
 import { z } from "zod";
-import { mapSchema, RequestWithAuth, CreditCalculator, estimateTaskCredits, WebhookEventType } from "@anycrawl/libs";
+import { mapSchema, RequestWithAuth, CreditCalculator, estimateTaskCredits, WebhookEventType, appConfig } from "@anycrawl/libs";
 import { log } from "@anycrawl/libs";
 import { MapService } from "@anycrawl/scrape";
-import { SearchService } from "@anycrawl/search/SearchService";
+import { SearchService, getSearchConfig } from "@anycrawl/search/SearchService";
 import { randomUUID } from "crypto";
 import { createJob, completedJob, failedJob, STATUS, updateJobCacheHits } from "@anycrawl/db";
 import { triggerWebhookEvent } from "../../utils/webhookHelper.js";
@@ -14,12 +14,7 @@ export class MapController {
 
     constructor() {
         this.mapService = new MapService();
-        this.searchService = new SearchService({
-            defaultEngine: process.env.ANYCRAWL_SEARCH_DEFAULT_ENGINE,
-            enabledEngines: process.env.ANYCRAWL_SEARCH_ENABLED_ENGINES?.split(',').map(e => e.trim()),
-            searxngUrl: process.env.ANYCRAWL_SEARXNG_URL,
-            acEngineUrl: process.env.ANYCRAWL_AC_ENGINE_URL,
-        });
+        this.searchService = new SearchService(getSearchConfig());
         log.info("MapController initialized");
     }
 
@@ -32,7 +27,7 @@ export class MapController {
             const validatedData = mapSchema.parse(requestData);
 
             // Pre-check if user has enough credits
-            if (req.auth && process.env.ANYCRAWL_API_AUTH_ENABLED === "true" && process.env.ANYCRAWL_API_CREDITS_ENABLED === "true") {
+            if (req.auth && appConfig.authEnabled && appConfig.creditsEnabled) {
                 const userCredits = req.auth.credits;
                 const estimatedCredits = estimateTaskCredits('map', validatedData);
 

@@ -1,17 +1,11 @@
 import { Sitemap, RobotsTxtFile, gotScraping, extractUrlsFromCheerio } from "crawlee";
 import * as cheerio from "cheerio";
 import { log } from "@anycrawl/libs";
+import type { MapLink } from "@anycrawl/libs";
 import proxyConfiguration from "../managers/Proxy.js";
 import { CacheManager } from "../managers/Cache.js";
 
-/**
- * Map link item with optional title and description
- */
-export interface MapLink {
-    url: string;
-    title?: string;
-    description?: string;
-}
+export type { MapLink };
 
 /**
  * Options for map operation

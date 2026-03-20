@@ -1,7 +1,7 @@
 import IORedis from "ioredis";
 import { Utils } from "../Utils.js";
 import { completedJob, failedJob, getDB, getJob, schemas, eq, sql, Billing } from "@anycrawl/db";
-import { log, CreditCalculator, WebhookEventType } from "@anycrawl/libs";
+import { log, CreditCalculator, WebhookEventType, appConfig, config } from "@anycrawl/libs";
 import type { QueueName } from "./Queue.js";
 import { BandwidthManager } from "./Bandwidth.js";
 
@@ -269,7 +269,7 @@ export class ProgressManager {
                 await tx.update(schemas.jobs).set(updates).where(eq(schemas.jobs.jobId, jobId));
 
                 // Deduct credits from the API key balance per processed URL when credits are enabled and within limit
-                if (shouldDeductCredits && process.env.ANYCRAWL_API_CREDITS_ENABLED === 'true') {
+                if (shouldDeductCredits && appConfig.creditsEnabled) {
                     log.info(`[${queueNameForFinalize}] [${jobId}] Deducting ${perPageCost} credits for page ${done}`);
                     try {
                         const result = await Billing.chargeDeltaByJobId({
@@ -397,7 +397,7 @@ export class ProgressManager {
             // Trigger webhook event for crawl completion/failure
             try {
                 const dbJob = await getJob(jobId);
-                if (dbJob && process.env.ANYCRAWL_WEBHOOKS_ENABLED === "true") {
+                if (dbJob && config.webhooks.enabled) {
                     const { WebhookManager } = await import("./Webhook.js");
                     const eventType = succeeded === 0 ? WebhookEventType.CRAWL_FAILED : WebhookEventType.CRAWL_COMPLETED;
                     await WebhookManager.getInstance().triggerEvent(

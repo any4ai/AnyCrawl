@@ -1,4 +1,4 @@
-import { log } from "@anycrawl/libs";
+import { log, resolveWaitUntil } from "@anycrawl/libs";
 import { resetChallengeState, ensureChallengeState, requestProxyAction } from "../ChallengeContext.js";
 import { CDPTurnstileSolver } from "../../solvers/CDPTurnstileSolver.js";
 import { TwoCaptchaTurnstileProvider } from "../../solvers/providers/TwoCaptchaTurnstileProvider.js";
@@ -426,17 +426,7 @@ export class CloudflareChallengeHandler implements ChallengePlugin {
     private async waitForPostChallengeNavigation(page: any, request: any, timeoutMs: number): Promise<void> {
         if (!page || page.isClosed?.()) return;
         const options = request?.userData?.options || {};
-        const configuredWaitUntil = String(options.wait_until || process.env.ANYCRAWL_NAV_WAIT_UNTIL || "domcontentloaded");
-        const playwrightWaitUntil =
-            configuredWaitUntil === "networkidle" || configuredWaitUntil === "load" || configuredWaitUntil === "domcontentloaded"
-                ? configuredWaitUntil
-                : "domcontentloaded";
-        const puppeteerWaitUntil =
-            configuredWaitUntil === "networkidle"
-                ? "networkidle0"
-                : (configuredWaitUntil === "load" || configuredWaitUntil === "domcontentloaded"
-                    ? configuredWaitUntil
-                    : "domcontentloaded");
+        const { playwright: playwrightWaitUntil, puppeteer: puppeteerWaitUntil } = resolveWaitUntil(options.wait_until);
 
         const initialUrl = typeof page.url === "function" ? page.url() : String(request?.url || "");
         const navigationTimeoutMs = Math.min(timeoutMs, 15_000);

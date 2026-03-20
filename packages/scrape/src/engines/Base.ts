@@ -1,4 +1,4 @@
-import { BrowserCrawlingContext, CheerioCrawlingContext, Configuration, enqueueLinks, log, PlaywrightCrawlingContext, ProxyConfiguration, PuppeteerCrawlingContext, RequestQueue, sleep, Request } from "crawlee";
+import { BrowserCrawlingContext, CheerioCrawlingContext, Configuration, enqueueLinks, PlaywrightCrawlingContext, ProxyConfiguration, PuppeteerCrawlingContext, RequestQueue, sleep, Request } from "crawlee";
 import { Dictionary } from "crawlee";
 import { Utils } from "../Utils.js";
 import { ConfigValidator } from "../core/ConfigValidator.js";
@@ -13,11 +13,10 @@ import {
     ResponseStatus,
     CrawlerResponse
 } from "../types/crawler.js";
-import { insertJobResult, failedJob, completedJob, Billing } from "@anycrawl/db";
-import { JOB_RESULT_STATUS } from "../../../db/dist/map.js";
+import { insertJobResult, failedJob, completedJob, Billing, JOB_RESULT_STATUS } from "@anycrawl/db";
 import { ProgressManager } from "../managers/Progress.js";
 import { CacheManager } from "../managers/Cache.js";
-import { JOB_TYPE_CRAWL, JOB_TYPE_SCRAPE, CreditCalculator } from "@anycrawl/libs";
+import { log, JOB_TYPE_CRAWL, JOB_TYPE_SCRAPE, CreditCalculator, resolveWaitUntil, appConfig, config } from "@anycrawl/libs";
 import type { RequestTrafficMetric } from "@anycrawl/libs";
 import { CrawlLimitReachedError } from "../errors/index.js";
 import type { CrawlingContext, EngineOptions } from "../types/engine.js";
@@ -572,7 +571,7 @@ export abstract class BaseEngine {
         // Set default options
         this.options = {
             maxRequestRetries: 2,
-            requestHandlerTimeoutSecs: process.env.ANYCRAWL_REQUEST_HANDLER_TIMEOUT_SECS ? parseInt(process.env.ANYCRAWL_REQUEST_HANDLER_TIMEOUT_SECS) : 600,
+            requestHandlerTimeoutSecs: config.navigation.requestHandlerTimeoutSecs,
             ...options,
         };
 
@@ -649,18 +648,8 @@ export abstract class BaseEngine {
             const options = userData.options || {};
             const timeoutMs = Number(options.timeout) > 0
                 ? Number(options.timeout)
-                : (process.env.ANYCRAWL_NAV_TIMEOUT ? parseInt(process.env.ANYCRAWL_NAV_TIMEOUT) : 30_000);
-            const configuredWaitUntil = String(options.wait_until || process.env.ANYCRAWL_NAV_WAIT_UNTIL || "domcontentloaded");
-            const playwrightWaitUntil =
-                configuredWaitUntil === "networkidle" || configuredWaitUntil === "load" || configuredWaitUntil === "domcontentloaded"
-                    ? configuredWaitUntil
-                    : "domcontentloaded";
-            const puppeteerWaitUntil =
-                configuredWaitUntil === "networkidle"
-                    ? "networkidle0"
-                    : (configuredWaitUntil === "load" || configuredWaitUntil === "domcontentloaded"
-                        ? configuredWaitUntil
-                        : "domcontentloaded");
+                : config.navigation.timeoutMs;
+            const { playwright: playwrightWaitUntil, puppeteer: puppeteerWaitUntil } = resolveWaitUntil(options.wait_until as string);
 
             try {
                 log.info(
@@ -1347,7 +1336,7 @@ export abstract class BaseEngine {
                         // For scheduled task scrape jobs, calculate and update creditsUsed
                         // (API-triggered scrape jobs are handled by DeductCreditsMiddleware)
                         const isScheduledTask = !!context.request.userData.scheduled_task_id;
-                        if (isScheduledTask && process.env.ANYCRAWL_API_CREDITS_ENABLED === 'true') {
+                        if (isScheduledTask && appConfig.creditsEnabled) {
                             const scheduledUserData: any = context.request.userData || {};
                             const scrapeOptions = scheduledUserData.options || scheduledUserData || {};
                             const templateCredits = Number(scheduledUserData.scheduled_template_credits ?? 0);

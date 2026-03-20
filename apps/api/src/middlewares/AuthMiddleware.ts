@@ -1,6 +1,6 @@
 import { Response, NextFunction } from "express";
 import { getDB, schemas, eq } from "@anycrawl/db";
-import { RequestWithAuth } from "@anycrawl/libs";
+import { RequestWithAuth, appConfig } from "@anycrawl/libs";
 import { log } from "@anycrawl/libs/log";
 import { getClientIp, isIpAllowed } from "../utils/ipUtils.js";
 export const authMiddleware = async (
@@ -8,8 +8,7 @@ export const authMiddleware = async (
     res: Response,
     next: NextFunction
 ): Promise<void> => {
-    // check ANYCRAWL_API_AUTH_ENABLED is true, default is disabled
-    if (process.env.ANYCRAWL_API_AUTH_ENABLED !== "true") {
+    if (!appConfig.authEnabled) {
         next();
         return;
     }

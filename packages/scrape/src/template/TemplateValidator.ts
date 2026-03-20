@@ -1,33 +1,12 @@
-import { log } from "crawlee";
-import { minimatch } from "minimatch";
+import { log, TemplateValidationError } from "@anycrawl/libs";
+import type { DomainRestriction, DomainValidationResult } from "@anycrawl/libs";
+import { DomainValidator } from "@anycrawl/template-client";
 import type { CrawlingContext } from "../types/engine.js";
 
-/**
- * Template validation error types
- */
-export class TemplateValidationError extends Error {
-    constructor(message: string, public code: string) {
-        super(message);
-        this.name = 'TemplateValidationError';
-    }
-}
+export { TemplateValidationError } from "@anycrawl/libs";
+export type { DomainRestriction } from "@anycrawl/libs";
 
-/**
- * Template domain restriction configuration
- */
-export interface DomainRestriction {
-    type: "glob" | "exact";
-    patterns: string[];
-}
-
-/**
- * Template validation result
- */
-export interface TemplateValidationResult {
-    isValid: boolean;
-    error?: string;
-    code?: string;
-}
+export type TemplateValidationResult = DomainValidationResult;
 
 /**
  * Template validator for pre-navigation validation
@@ -125,63 +104,11 @@ export class TemplateValidator {
         };
     }
 
-    /**
-     * Validate domain restrictions
-     * @param context - The crawling context
-     * @param domainRestriction - Domain restriction configuration
-     * @returns TemplateValidationResult
-     */
     private static validateDomainRestriction(
         context: CrawlingContext,
         domainRestriction: DomainRestriction
     ): TemplateValidationResult {
-        try {
-            const requestUrl = context.request.url;
-            const url = new URL(requestUrl);
-            const hostname = url.hostname.toLowerCase();
-
-            if (!domainRestriction.patterns || domainRestriction.patterns.length === 0) {
-                return {
-                    isValid: true
-                };
-            }
-
-            let isAllowed = false;
-
-            for (const pattern of domainRestriction.patterns) {
-                if (domainRestriction.type === 'exact') {
-                    // Exact match
-                    if (hostname === pattern.toLowerCase()) {
-                        isAllowed = true;
-                        break;
-                    }
-                } else if (domainRestriction.type === 'glob') {
-                    // Glob pattern match
-                    if (minimatch(hostname, pattern.toLowerCase())) {
-                        isAllowed = true;
-                        break;
-                    }
-                }
-            }
-
-            if (!isAllowed) {
-                return {
-                    isValid: false,
-                    error: `Domain '${hostname}' is not allowed for this template. Allowed patterns: ${domainRestriction.patterns.join(', ')}`,
-                    code: 'DOMAIN_NOT_ALLOWED'
-                };
-            }
-
-            return {
-                isValid: true
-            };
-        } catch (error) {
-            return {
-                isValid: false,
-                error: `Domain validation failed: ${error instanceof Error ? error.message : String(error)}`,
-                code: 'DOMAIN_VALIDATION_ERROR'
-            };
-        }
+        return DomainValidator.validateDomain(context.request.url, domainRestriction);
     }
 
     /**
@@ -238,24 +165,10 @@ export class TemplateValidator {
         };
     }
 
-    /**
-     * Parse domain patterns from template metadata
-     * @param targetSites - Array of target sites from template metadata
-     * @returns DomainRestriction or undefined
-     */
     public static parseDomainRestriction(targetSites?: string[]): DomainRestriction | undefined {
         if (!targetSites || targetSites.length === 0) {
             return undefined;
         }
-
-        // Check if any pattern contains glob characters
-        const hasGlobPatterns = targetSites.some(site =>
-            site.includes('*') || site.includes('?') || site.includes('[') || site.includes('{')
-        );
-
-        return {
-            type: hasGlobPatterns ? 'glob' : 'exact',
-            patterns: targetSites
-        };
+        return DomainValidator.parseDomainRestriction(targetSites);
     }
 }

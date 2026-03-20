@@ -1,3 +1,3 @@
-import { CheerioCrawler, log, CheerioCrawlingContext, Dictionary, Dataset } from "crawlee";
+import { CheerioCrawler, CheerioCrawlingContext, Dictionary, Dataset } from "crawlee";
 
-export type { CheerioCrawler, log, CheerioCrawlingContext, Dictionary, Dataset };
+export type { CheerioCrawler, CheerioCrawlingContext, Dictionary, Dataset };

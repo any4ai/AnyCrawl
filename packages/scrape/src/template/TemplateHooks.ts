@@ -1,4 +1,4 @@
-import { log } from "crawlee";
+import { log } from "@anycrawl/libs";
 import type { CrawlingContext } from "../types/engine.js";
 
 /**

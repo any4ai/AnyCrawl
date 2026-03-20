@@ -1,7 +1,6 @@
-import { log } from "crawlee";
 import { QueueManager, QueueName } from "../managers/Queue.js";
 import { Utils } from "../Utils.js";
-import { WebhookEventType } from "@anycrawl/libs";
+import { log, WebhookEventType, config } from "@anycrawl/libs";
 import { getJob } from "@anycrawl/db";
 
 /**
@@ -33,7 +32,7 @@ export class JobManager {
         // Trigger webhook event for scrape completion
         try {
             const dbJob = await getJob(jobId);
-            if (dbJob && process.env.ANYCRAWL_WEBHOOKS_ENABLED === "true") {
+            if (dbJob && config.webhooks.enabled) {
                 const { WebhookManager } = await import("../managers/Webhook.js");
                 await WebhookManager.getInstance().triggerEvent(
                     WebhookEventType.SCRAPE_COMPLETED,
@@ -74,7 +73,7 @@ export class JobManager {
         // Trigger webhook event for scrape failure
         try {
             const dbJob = await getJob(jobId);
-            if (dbJob && process.env.ANYCRAWL_WEBHOOKS_ENABLED === "true") {
+            if (dbJob && config.webhooks.enabled) {
                 const { WebhookManager } = await import("../managers/Webhook.js");
                 await WebhookManager.getInstance().triggerEvent(
                     WebhookEventType.SCRAPE_FAILED,

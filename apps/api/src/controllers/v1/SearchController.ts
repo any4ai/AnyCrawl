@@ -1,8 +1,8 @@
 import { Response } from "express";
 import { z } from "zod";
-import { SearchService } from "@anycrawl/search/SearchService";
+import { SearchService, getSearchConfig } from "@anycrawl/search/SearchService";
 import { log } from "@anycrawl/libs/log";
-import { searchSchema, RequestWithAuth, CreditCalculator, WebhookEventType, estimateTaskCredits, getCacheConfig } from "@anycrawl/libs";
+import { searchSchema, RequestWithAuth, CreditCalculator, WebhookEventType, estimateTaskCredits, getCacheConfig, appConfig } from "@anycrawl/libs";
 import { randomUUID } from "crypto";
 import { STATUS, createJob, insertJobResult, completedJob, failedJob, updateJobCounts, updateJobCacheHits, JOB_RESULT_STATUS } from "@anycrawl/db";
 import { QueueManager, CacheManager } from "@anycrawl/scrape";
@@ -14,12 +14,7 @@ export class SearchController {
     private searchService: SearchService;
 
     constructor() {
-        this.searchService = new SearchService({
-            defaultEngine: process.env.ANYCRAWL_SEARCH_DEFAULT_ENGINE,
-            enabledEngines: process.env.ANYCRAWL_SEARCH_ENABLED_ENGINES?.split(',').map(e => e.trim()),
-            searxngUrl: process.env.ANYCRAWL_SEARXNG_URL,
-            acEngineUrl: process.env.ANYCRAWL_AC_ENGINE_URL,
-        });
+        this.searchService = new SearchService(getSearchConfig());
         log.info("SearchController initialized");
     }
 
@@ -60,7 +55,7 @@ export class SearchController {
             const validatedData = searchSchema.parse(requestData);
 
             // Pre-check if user has enough credits
-            if (req.auth && process.env.ANYCRAWL_API_AUTH_ENABLED === "true" && process.env.ANYCRAWL_API_CREDITS_ENABLED === "true") {
+            if (req.auth && appConfig.authEnabled && appConfig.creditsEnabled) {
                 const userCredits = req.auth.credits;
 
                 // Use estimateTaskCredits for accurate credit estimation

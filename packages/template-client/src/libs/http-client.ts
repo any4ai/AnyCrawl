@@ -1,16 +1,7 @@
-// Re-export HttpResponse type to avoid circular dependency during build
-export interface HttpResponse<T = any> {
-    status: number;
-    headers: Record<string, string>;
-    data: T;
-    rawText?: string;
-}
+import { normalizeProxyUrl } from "@anycrawl/libs";
+import type { HttpResponse } from "@anycrawl/libs";
 
-function normalizeProxyUrl(input?: string): string | undefined {
-    if (!input) return undefined;
-    const hasScheme = /^\w+:\/\//.test(input);
-    return hasScheme ? input : `http://${input}`;
-}
+export type { HttpResponse };
 
 type HttpClientLike = {
     get: <T = any>(url: string, opts?: any) => Promise<any>;

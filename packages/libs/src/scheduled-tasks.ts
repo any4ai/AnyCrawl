@@ -2,23 +2,18 @@
  * Scheduled Tasks Limit Utilities
  */
 
+import { config } from "./config.js";
+
 export type SubscriptionTier = "free" | "paid" | string;
 
-/**
- * Check if scheduled tasks limit feature is enabled
- */
+/** @deprecated Use `config.scheduler.limitEnabled` instead. */
 export function isScheduledTasksLimitEnabled(): boolean {
-    return process.env.ANYCRAWL_SCHEDULED_TASKS_LIMIT_ENABLED === "true";
+    return config.scheduler.limitEnabled;
 }
 
-/**
- * Get the scheduled tasks limit for a subscription tier
- */
+/** @deprecated Use `config.scheduler.limitFree` / `config.scheduler.limitPaid` instead. */
 export function getScheduledTasksLimit(tier: SubscriptionTier): number {
-    const freeLimit = parseInt(process.env.ANYCRAWL_SCHEDULED_TASKS_LIMIT_FREE || "1");
-    const paidLimit = parseInt(process.env.ANYCRAWL_SCHEDULED_TASKS_LIMIT_PAID || "100");
-
-    return tier === "free" ? freeLimit : paidLimit;
+    return tier === "free" ? config.scheduler.limitFree : config.scheduler.limitPaid;
 }
 
 /**

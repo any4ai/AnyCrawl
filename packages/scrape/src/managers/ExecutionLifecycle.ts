@@ -1,4 +1,4 @@
-import { log } from "crawlee";
+import { log } from "@anycrawl/libs";
 import { getDB, schemas, eq, sql } from "@anycrawl/db";
 
 type FinalExecutionStatus = "completed" | "failed" | "cancelled";

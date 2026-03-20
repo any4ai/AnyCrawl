@@ -1,3 +1,5 @@
+import { parseCommaSeparatedEnv } from "./utils.js";
+
 /**
  * Proxy modes supported by the system
  * - "auto": Automatically decide between base and stealth proxy, base first then fallback to stealth
@@ -23,8 +25,7 @@ export function isProxyMode(value: string | undefined): value is ProxyMode {
 }
 
 /**
- * Parse proxy URLs from environment variable
- * Supports comma-separated URLs
+ * Parse proxy URLs from a raw comma-separated string.
  */
 export function parseProxyUrls(envValue: string | undefined): string[] {
     if (!envValue) return [];
@@ -35,14 +36,14 @@ export function parseProxyUrls(envValue: string | undefined): string[] {
  * Get base proxy URLs from environment
  */
 export function getBaseProxyUrls(): string[] {
-    return parseProxyUrls(process.env.ANYCRAWL_PROXY_URL);
+    return parseCommaSeparatedEnv('ANYCRAWL_PROXY_URL');
 }
 
 /**
  * Get stealth proxy URLs from environment
  */
 export function getStealthProxyUrls(): string[] {
-    return parseProxyUrls(process.env.ANYCRAWL_PROXY_STEALTH_URL);
+    return parseCommaSeparatedEnv('ANYCRAWL_PROXY_STEALTH_URL');
 }
 
 /**

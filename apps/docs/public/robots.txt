@@ -1,6 +1,8 @@
 # Allow all crawlers
 User-agent: *
 Allow: /
+Disallow: /blog
+Disallow: /blog/
 
 # Sitemap location
 Sitemap: https://docs.anycrawl.dev/sitemap.xml

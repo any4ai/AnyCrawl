@@ -23,9 +23,10 @@
  */
 
 import { log } from "@anycrawl/libs";
+import type { ResolvedProxyMode } from "@anycrawl/libs";
 import { Utils } from "../Utils.js";
 
-export type ResolvedProxyMode = 'base' | 'stealth' | 'custom';
+export type { ResolvedProxyMode };
 
 export type FailureReason =
   | 'cloudflare_challenge'

@@ -1,5 +1,5 @@
 import { Response, NextFunction } from "express";
-import { RequestWithAuth } from "@anycrawl/libs";
+import { RequestWithAuth, appConfig } from "@anycrawl/libs";
 import { log } from "@anycrawl/libs/log";
 import { getDB, schemas, eq } from "@anycrawl/db";
 
@@ -22,8 +22,7 @@ export const checkCreditsMiddleware = async (
     res: Response,
     next: NextFunction
 ): Promise<void> => {
-    // Skip if auth is disabled or credits deduction is disabled.
-    if (process.env.ANYCRAWL_API_AUTH_ENABLED !== "true" || process.env.ANYCRAWL_API_CREDITS_ENABLED !== "true") {
+    if (!appConfig.authEnabled || !appConfig.creditsEnabled) {
         next();
         return;
     }

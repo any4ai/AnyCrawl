@@ -1,10 +1,10 @@
 import { randomUUID } from "node:crypto";
-import { log, RequestQueueV2 } from "crawlee";
+import { RequestQueueV2 } from "crawlee";
 import { Utils } from "../Utils.js";
 import type { EngineOptions } from "../types/engine.js";
 import { EngineFactoryRegistry } from "../engines/EngineFactory.js";
 import type { Engine } from "../engines/EngineFactory.js";
-import { ALLOWED_ENGINES } from "@anycrawl/libs";
+import { log, ALLOWED_ENGINES } from "@anycrawl/libs";
 
 const VIRTUAL_ENGINES = ["auto"] as const;
 

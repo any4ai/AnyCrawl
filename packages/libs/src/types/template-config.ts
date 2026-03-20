@@ -1,6 +1,33 @@
 import { CrawlingContext } from "crawlee";
 import type { TemplateScrapeSchema, TemplateCrawlSchema, TemplateSearchSchema } from "./index.js";
 
+/**
+ * Domain restriction configuration for templates
+ */
+export interface DomainRestriction {
+    type: "glob" | "exact";
+    patterns: string[];
+}
+
+/**
+ * Result of a domain/template validation check
+ */
+export interface DomainValidationResult {
+    isValid: boolean;
+    error?: string;
+    code?: string;
+}
+
+/**
+ * HTTP response structure used across packages
+ */
+export interface HttpResponse<T = any> {
+    status: number;
+    headers: Record<string, string>;
+    data: T;
+    rawText?: string;
+}
+
 // Template configuration types
 export interface TemplateConfig {
     // Basic information
@@ -249,8 +276,9 @@ export class TemplateExecutionError extends TemplateError {
 }
 
 export class TemplateValidationError extends TemplateError {
-    constructor(message: string) {
-        super(message, "TEMPLATE_VALIDATION_ERROR");
+    constructor(message: string, code: string = "TEMPLATE_VALIDATION_ERROR") {
+        super(message, code);
+        this.name = "TemplateValidationError";
     }
 }
 

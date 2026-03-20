@@ -4,14 +4,24 @@ import { SearxngSearchEngine } from "./engines/Searxng.js";
 // @ts-ignore - NodeNext resolution for .js import of TS source
 import { ACSearchEngine } from "./engines/ACEngine.js";
 import { HttpClient } from "@anycrawl/scrape";
-import { log } from "@anycrawl/libs";
+import { log, config as globalConfig } from "@anycrawl/libs";
 import { AVAILABLE_SEARCH_ENGINES } from "@anycrawl/libs/constants";
 
 export interface SearchServiceConfig {
-    defaultEngine?: string; // Default search engine name (e.g., 'google', 'searxng')
-    enabledEngines?: string[]; // List of enabled engines
-    searxngUrl?: string; // SearXNG instance URL
-    acEngineUrl?: string; // AC Engine instance URL
+    defaultEngine?: string;
+    enabledEngines?: string[];
+    searxngUrl?: string;
+    acEngineUrl?: string;
+}
+
+/** @deprecated Use `config.search` from `@anycrawl/libs` instead. */
+export function getSearchConfig(): SearchServiceConfig {
+    return {
+        defaultEngine: globalConfig.search.defaultEngine,
+        enabledEngines: globalConfig.search.enabledEngines,
+        searxngUrl: globalConfig.search.searxngUrl,
+        acEngineUrl: globalConfig.search.acEngineUrl,
+    };
 }
 
 export class SearchService {
@@ -21,12 +31,11 @@ export class SearchService {
     constructor(config: SearchServiceConfig = {}) {
         this.engines = new Map();
 
-        // Load config from environment variables with defaults
         this.config = {
-            defaultEngine: config.defaultEngine || process.env.ANYCRAWL_SEARCH_DEFAULT_ENGINE,
-            enabledEngines: config.enabledEngines || process.env.ANYCRAWL_SEARCH_ENABLED_ENGINES?.split(',').map(e => e.trim()),
-            searxngUrl: config.searxngUrl || process.env.ANYCRAWL_SEARXNG_URL,
-            acEngineUrl: config.acEngineUrl || process.env.ANYCRAWL_AC_ENGINE_URL,
+            defaultEngine: config.defaultEngine || globalConfig.search.defaultEngine,
+            enabledEngines: config.enabledEngines || globalConfig.search.enabledEngines,
+            searxngUrl: config.searxngUrl || globalConfig.search.searxngUrl,
+            acEngineUrl: config.acEngineUrl || globalConfig.search.acEngineUrl,
         };
 
         log.info(`SearchService initialized with config:`, this.config);

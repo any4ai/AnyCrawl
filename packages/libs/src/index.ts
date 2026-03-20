@@ -6,6 +6,8 @@ export * from "./credits.js";
 export * from "./proxy.js";
 export * from "./scheduled-tasks.js";
 export * from "./pagination.js";
+export * from "./utils.js";
+export * from "./config.js";
 export * from "./types/index.js";
 export * from "./data/index.js";
 export * from "./cache/index.js";

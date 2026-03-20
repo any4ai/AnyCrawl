@@ -1,6 +1,6 @@
 import type { RequestTrafficMetric } from "@anycrawl/libs";
+import { log } from "@anycrawl/libs";
 import { addJobTraffic } from "@anycrawl/db";
-import { log } from "crawlee";
 
 type TrafficDelta = {
     totalBytes: number;

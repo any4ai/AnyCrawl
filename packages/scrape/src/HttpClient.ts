@@ -1,6 +1,9 @@
 import { gotScraping, Request } from 'crawlee';
 import proxyConfiguration from './managers/Proxy.js';
-import { log } from '@anycrawl/libs';
+import { log, normalizeProxyUrl } from '@anycrawl/libs';
+import type { HttpResponse } from '@anycrawl/libs';
+
+export type { HttpResponse };
 
 export type HttpMethod = 'GET' | 'POST' | 'PUT' | 'DELETE';
 
@@ -13,19 +16,6 @@ export interface HttpClientOptions {
     requireProxy?: boolean; // default true
     cookieHeader?: string;
     proxy?: string; // per-request override, e.g. http://user:pass@host:port
-}
-
-export interface HttpResponse<T = any> {
-    status: number;
-    headers: Record<string, string>;
-    data: T;
-    rawText?: string;
-}
-
-function normalizeProxyUrl(input?: string): string | undefined {
-    if (!input) return undefined;
-    const hasScheme = /^\w+:\/\//.test(input);
-    return hasScheme ? input : `http://${input}`;
 }
 
 export async function request<T = any>(method: HttpMethod, url: string, opts?: HttpClientOptions): Promise<HttpResponse<T>> {

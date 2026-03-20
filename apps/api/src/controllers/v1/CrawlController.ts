@@ -1,6 +1,6 @@
 import { Response } from "express";
 import { z } from "zod";
-import { crawlSchema, RequestWithAuth, CrawlSchemaInput, CreditCalculator, estimateTaskCredits, WebhookEventType } from "@anycrawl/libs";
+import { crawlSchema, RequestWithAuth, CrawlSchemaInput, CreditCalculator, estimateTaskCredits, WebhookEventType, appConfig } from "@anycrawl/libs";
 import { QueueManager, CrawlerErrorType, RequestTask, ProgressManager, AVAILABLE_ENGINES, runAutoCrawl } from "@anycrawl/scrape";
 import { cancelJob, createJob, failedJob, getJob, getJobResultsPaginated, getJobResultsCount, STATUS, getTemplate } from "@anycrawl/db";
 import { log } from "@anycrawl/libs";
@@ -50,7 +50,7 @@ export class CrawlController {
             const jobPayload = crawlSchema.parse(requestData);
 
             // Check if user has enough credits for the requested limit
-            if (req.auth && process.env.ANYCRAWL_API_AUTH_ENABLED === "true" && process.env.ANYCRAWL_API_CREDITS_ENABLED === "true") {
+            if (req.auth && appConfig.authEnabled && appConfig.creditsEnabled) {
                 const userCredits = req.auth.credits;
 
                 // Use estimateTaskCredits for accurate credit estimation

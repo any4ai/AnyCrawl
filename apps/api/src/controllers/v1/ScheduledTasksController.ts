@@ -13,6 +13,7 @@ import {
     buildLimitExceededResponse,
     normalizePagination,
     log,
+    config,
 } from "@anycrawl/libs";
 import {
     getDB,
@@ -338,7 +339,7 @@ export class ScheduledTasksController {
             }
 
             try {
-                if (process.env.ANYCRAWL_WEBHOOKS_ENABLED === "true") {
+                if (config.webhooks.enabled) {
                     const pausedTask = await db
                         .select()
                         .from(schemas.scheduledTasks)
@@ -418,7 +419,7 @@ export class ScheduledTasksController {
             }
 
             try {
-                if (process.env.ANYCRAWL_WEBHOOKS_ENABLED === "true") {
+                if (config.webhooks.enabled) {
                     const resumedTask = await db
                         .select()
                         .from(schemas.scheduledTasks)

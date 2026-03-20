@@ -297,6 +297,8 @@ print(response.json())
 | `ocr_options`       | boolean                  | `false`        | 启用仅针对 Markdown 图片的 OCR 增强。影响 Markdown 生成，不影响 `html`/`rawHtml`。                                         |
 | `max_age`           | number                   | -              | 缓存最大有效期（毫秒）。使用 `0` 跳过缓存读取；省略则使用服务器默认值                                                                    |
 | `store_in_cache`    | boolean                  | `true`         | 是否为每个结果的抓取写入页面缓存                                                                                           |
+| `template_id`       | string                   | -              | **Scrape** 类型模板 ID，用于跟抓结果 URL（合并规则同 `/v1/scrape`）。不在模板 `allowedDomains` 内的结果 URL 会跳过跟抓。 |
+| `variables`         | object                   | -              | 上述 scrape 模板的变量（与 `template_id` 同时使用时有效）。 |
 
 ### 支持的搜索引擎
 
@@ -462,10 +464,25 @@ console.log(`Completed ${results.length} searches simultaneously`);
 
 ## 速率限制与积分
 
-- 每次搜索请求根据请求的页数消耗积分
-- 积分消耗 = 页数（例如 `pages: 3` = 3 积分）
-- **并发请求无速率限制**——API 原生支持高并发
-- 通过 API 响应头监控积分使用情况
+- **并发请求无速率限制**——API 原生支持高并发。
+- 通过响应头与扣费流水中的 `BillingChargeDetails` 核对实际消耗。
+
+### 积分模型（搜索 + 可选结果跟抓）
+
+每次 **`POST /v1/search`** 的扣费项（见服务器 `CreditCalculator.buildSearchChargeDetails`，`calculator: "search_v1"`）：
+
+1. **`search_pages`**：等于本次请求的 **`pages`**（省略时通常为 **1**），一般为「每搜索页 1 积分」。
+2. **`template_per_call`**：若请求体顶层带了 **`template_id`**（**search** 类型模板），按其配置的 **`pricing.perCall`（积分）** 收取 **整单一次**（例如 **1** 积分）。
+3. 若提供 **`scrape_options`** 且跟抓 **成功完成**：
+
+   - **`search_result_scrape`**：**`completed_scrape_count × per_result_engine_credits`**。其中 **`per_result_engine_credits`** = 合并后的 `scrape_options` 上计算的 **引擎侧跟抓单价**（`calculateScrapeCredits`：基础 **1** + 隐身代理 / JSON 抽取 / 摘要等加价）。
+   - **`search_result_scrape_template`**：若 **`scrape_options.template_id`** 指向 **scrape** 模板，则 **每条成功跟抓** 再收该模板的 **`pricing.perCall`**。**仅对 search 模板：** 若在 **search** 模板 **`metadata`** 里设 **`charge_scrape_template_credits: false`**，则 **不收** 本行（跟抓仍走 scrape 模板；**`search_result_scrape` 引擎费照收**）。未使用 search 模板时，有 `scrape_options.template_id` 则仍按原逻辑收 scrape 模板费。
+
+**举例（只算模板加价，便于和「10+1」对齐）：** search 模板 **1** 积分/次 + scrape 模板 **1** 积分/次 × **10** 条成功跟抓 ⇒ 模板相关共 **1 + 10 = 11** 积分。**整单总费用**还要加上 **`pages`** 与 **10 × 引擎跟抓单价**（若引擎单价为 **1**，则再至少 **+10**）。
+
+**域名规则：** 使用 `scrape_options.template_id` 时，仅对落在模板 **`allowedDomains`** 内的结果 URL 跟抓；被跳过的条目仍返回 SERP 字段，**不对该条收跟抓费**。
+
+完整公式、账单 `code` 与 Dashboard 展示字段：仓库 **`docs/api/search-scrape-credits-and-templates.md`**。
 
 ## 常见问题
 

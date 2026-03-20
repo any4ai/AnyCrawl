@@ -297,6 +297,8 @@ print(response.json())
 | `ocr_options`       | boolean                  | `false`        | 啟用僅針對 Markdown 圖片的 OCR 增強。影響 Markdown 產生，不影響 `html`/`rawHtml`。                                         |
 | `max_age`           | number                   | -              | 快取最大有效期（毫秒）。使用 `0` 跳過快取讀取；省略則使用伺服器預設值                                                                    |
 | `store_in_cache`    | boolean                  | `true`         | 是否為每個結果的抓取寫入頁面快取                                                                                           |
+| `template_id`       | string                   | -              | 用於跟抓的 **scrape** 模板 ID（與 `/v1/scrape` 相同）。不在 `allowedDomains` 內的 URL 會略過。 |
+| `variables`         | object                   | -              | 該 scrape 模板的變數（與 `template_id` 並用時）。 |
 
 ### 支援的搜尋引擎
 
@@ -462,10 +464,18 @@ console.log(`Completed ${results.length} searches simultaneously`);
 
 ## 速率限制與點數
 
-- 每次搜尋請求根據請求的頁數消耗點數
-- 點數消耗 = 頁數（例如 `pages: 3` = 3 點數）
-- **併發請求無速率限制**——API 原生支援高併發
-- 透過 API 回應標頭監控點數使用情況
+- **併發請求無速率限制**——API 原生支援高併發。
+- 請透過回應標頭與 `BillingChargeDetails` 核對用量。
+
+### 點數模型（搜尋 + 可選的結果跟抓）
+
+1. **`search_pages`** — 對應 **`pages`**（預設多為每頁 1 點）。
+2. **`template_per_call`** — 若請求帶頂層 **`template_id`**（**search** 模板），依 `pricing.perCall` 每請求收一次。
+3. 若提供 **`scrape_options`** 且跟抓成功：
+   - **`search_result_scrape`** — `completed_scrape_count ×` 引擎單價（`calculateScrapeCredits`）。
+   - **`search_result_scrape_template`** — 若有 **`scrape_options.template_id`**，每成功跟抓再收該 scrape 模板的 **`pricing.perCall`**。**僅 search 模板：** 若在 **search** 模板 **`metadata`** 設 **`charge_scrape_template_credits: false`**，則不收本行（**`search_result_scrape` 引擎費仍收**）。
+
+完整規格：倉庫 **`docs/api/search-scrape-credits-and-templates.md`**。
 
 ## 常見問題
 

@@ -297,6 +297,8 @@ Wenn gesetzt, kann jede Ergebnis-URL mit diesen Optionen gescrapet werden (wie `
 | `ocr_options`       | boolean                  | `false`        | OCR nur Markdown-Bilder                                                                                                                      |
 | `max_age`           | number                   | -              | Cache (ms); `0` = kein Lesen                                                                                                                 |
 | `store_in_cache`    | boolean                  | `true`         | Page Cache pro Ergebnis-Scrape                                                                                                               |
+| `template_id`       | string                   | -              | **Scrape**-Template-ID für Follow-up-Scrapes (wie `/v1/scrape`). URLs außerhalb von `allowedDomains` werden übersprungen. |
+| `variables`         | object                   | -              | Variablen für dieses Scrape-Template (mit `template_id`). |
 
 ### Unterstützte Suchmaschinen
 
@@ -460,10 +462,18 @@ console.log(`Completed ${results.length} searches simultaneously`);
 
 ## Limits und Credits
 
-- Credits hängen von der angeforderten Seitenzahl ab
-- Verbrauch ≈ Anzahl `pages` (z. B. `pages: 3` → 3 Credits)
-- **Kein Ratenlimit** bei Parallelität
-- Nutzung über API-Response-Header beobachten
+- **Kein Ratenlimit** bei Parallelität — die API unterstützt hohe Parallelität nativ.
+- Verbrauch über Response-Header und `BillingChargeDetails` prüfen.
+
+### Credit-Modell (Suche + optionale Follow-up-Scrapes)
+
+1. **`search_pages`** — entspricht **`pages`** (Standard oft 1 Credit pro Seite).
+2. **`template_per_call`** — bei top-level **`template_id`** (Search-Template): einmal pro Request `pricing.perCall`.
+3. Mit **`scrape_options`** und erfolgreichen Follow-ups:
+   - **`search_result_scrape`** — `completed_scrape_count ×` Engine-Einheit (`calculateScrapeCredits`).
+   - **`search_result_scrape_template`** — bei **`scrape_options.template_id`**: pro erfolgreichem Follow-up die Scrape-Template-`pricing.perCall`. **Nur Search-Templates:** `metadata.charge_scrape_template_credits: false` deaktiviert diese Zeile (Engine-Zeile bleibt).
+
+Vollständige Spezifikation: Repository **`docs/api/search-scrape-credits-and-templates.md`**.
 
 ## FAQ
 

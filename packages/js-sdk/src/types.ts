@@ -179,7 +179,12 @@ export type SearchRequest = {
     timeRange?: 'day' | 'week' | 'month' | 'year';
     /** Search source: web | images | news (SearXNG) */
     sources?: 'web' | 'images' | 'news';
-    scrape_options?: (Omit<ScrapeOptionsInput, 'retry'> & { engine: Engine });
+    scrape_options?: (Omit<ScrapeOptionsInput, 'retry'> & {
+        engine: Engine;
+        /** Scrape-type template for search result follow-up fetches */
+        template_id?: string;
+        variables?: Record<string, any>;
+    });
     /** 0: off, 1: medium, 2: high, null: default (Google only) */
     safe_search?: number | null;
     /** Template ID to use */

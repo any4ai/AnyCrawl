@@ -6,8 +6,10 @@ import { searchSchema, RequestWithAuth, CreditCalculator, WebhookEventType, esti
 import { randomUUID } from "crypto";
 import { STATUS, createJob, insertJobResult, completedJob, failedJob, updateJobCounts, updateJobCacheHits, JOB_RESULT_STATUS } from "@anycrawl/db";
 import { QueueManager, CacheManager } from "@anycrawl/scrape";
-import { TemplateHandler, TemplateVariableMapper } from "../../utils/templateHandler.js";
+import { TemplateHandler, validateVariables, applyVariableDefaults } from "../../utils/templateHandler.js";
 import { validateTemplateOnlyFields } from "../../utils/templateValidator.js";
+import { mergeOptionsWithTemplate } from "../../utils/optionMerger.js";
+import { DomainValidator } from "@anycrawl/template-client";
 import { renderTextTemplate } from "../../utils/urlTemplate.js";
 import { triggerWebhookEvent } from "../../utils/webhookHelper.js";
 export class SearchController {
@@ -22,6 +24,8 @@ export class SearchController {
         let searchJobId: string | null = null;
         let engineName: string | null = null;
         let defaultPrice: number = 0;
+        /** Search-template metadata: when false, do not bill scrape template perCall for follow-up scrapes. */
+        let chargeScrapeTemplateCreditsForFollowup = true;
         try {
             // Merge template options with request body before parsing
             let requestData = { ...req.body };
@@ -39,6 +43,10 @@ export class SearchController {
                     currentUserId
                 );
                 defaultPrice = TemplateHandler.reslovePrice(requestData.template, "credits", "perCall");
+                const stMeta = requestData.template?.metadata as { charge_scrape_template_credits?: boolean } | undefined;
+                if (stMeta && typeof stMeta.charge_scrape_template_credits === "boolean") {
+                    chargeScrapeTemplateCreditsForFollowup = stMeta.charge_scrape_template_credits;
+                }
 
                 // Remove template field before schema validation (schemas use strict mode)
                 delete requestData.template;
@@ -54,12 +62,72 @@ export class SearchController {
             // Validate and parse the merged data
             const validatedData = searchSchema.parse(requestData);
 
+            let mergedSearchScrapeOptions = validatedData.scrape_options;
+            let scrapeFollowTemplatePerCall = 0;
+            let scrapeFollowDomainRestriction: ReturnType<typeof DomainValidator.parseDomainRestriction> = undefined;
+
+            if (validatedData.scrape_options?.template_id) {
+                const uid = req.auth?.user ? String(req.auth.user) : undefined;
+                const tr = await TemplateHandler.getTemplateOptions(
+                    validatedData.scrape_options.template_id,
+                    "scrape",
+                    uid
+                );
+                if (!tr.success || !tr.template || !tr.templateOptions) {
+                    res.status(400).json({
+                        success: false,
+                        error: "Validation error",
+                        message: tr.error || "Invalid scrape template for search follow-up",
+                    });
+                    return;
+                }
+                try {
+                    validateVariables(
+                        tr.template.variables,
+                        validatedData.scrape_options.variables,
+                        validatedData.scrape_options
+                    );
+                } catch (ve) {
+                    res.status(400).json({
+                        success: false,
+                        error: "Validation error",
+                        message: ve instanceof Error ? ve.message : String(ve),
+                    });
+                    return;
+                }
+                const variablesWithDefaults = applyVariableDefaults(
+                    tr.template.variables,
+                    validatedData.scrape_options.variables
+                );
+                mergedSearchScrapeOptions = mergeOptionsWithTemplate(
+                    tr.templateOptions as Record<string, unknown>,
+                    {
+                        ...validatedData.scrape_options,
+                        ...(variablesWithDefaults !== undefined ? { variables: variablesWithDefaults } : {}),
+                    }
+                ) as typeof validatedData.scrape_options;
+                scrapeFollowTemplatePerCall = TemplateHandler.reslovePrice(tr.template, "credits", "perCall");
+                if (!chargeScrapeTemplateCreditsForFollowup) {
+                    scrapeFollowTemplatePerCall = 0;
+                }
+                scrapeFollowDomainRestriction = DomainValidator.parseDomainRestriction(
+                    tr.template.metadata?.allowedDomains
+                );
+            }
+
+            const searchEstimatePayload = {
+                ...validatedData,
+                scrape_options: mergedSearchScrapeOptions ?? validatedData.scrape_options,
+            };
+
             // Pre-check if user has enough credits
             if (req.auth && appConfig.authEnabled && appConfig.creditsEnabled) {
                 const userCredits = req.auth.credits;
 
                 // Use estimateTaskCredits for accurate credit estimation
-                const estimatedCredits = defaultPrice + estimateTaskCredits('search', validatedData);
+                const estimatedCredits =
+                    defaultPrice +
+                    estimateTaskCredits("search", searchEstimatePayload, { scrapeFollowTemplatePerCall });
 
                 if (estimatedCredits > userCredits) {
                     res.status(402).json({
@@ -154,12 +222,15 @@ export class SearchController {
                             JOB_RESULT_STATUS.FAILED
                         );
                     } else {
-                        if (validatedData.scrape_options) {
-                            const scrapeOptions = validatedData.scrape_options;
+                        if (mergedSearchScrapeOptions) {
+                            const scrapeOptions = mergedSearchScrapeOptions;
                             const engineForScrape = scrapeOptions.engine!;
                             const maxAge = scrapeOptions.max_age;
                             const effectiveMaxAge = maxAge ?? cacheConfig.defaultMaxAge;
-                            const shouldCheckCache = cacheConfig.pageCacheEnabled && (maxAge === undefined || maxAge > 0);
+                            const shouldCheckCache =
+                                cacheConfig.pageCacheEnabled &&
+                                (maxAge === undefined || maxAge > 0) &&
+                                !scrapeOptions.template_id;
                             const cacheOptions = {
                                 engine: engineForScrape,
                                 formats: scrapeOptions.formats,
@@ -173,7 +244,7 @@ export class SearchController {
                                 wait_for: scrapeOptions.wait_for,
                                 wait_until: scrapeOptions.wait_until,
                                 wait_for_selector: scrapeOptions.wait_for_selector,
-                                template_id: (scrapeOptions as any).template_id,
+                                template_id: scrapeOptions.template_id,
                                 store_in_cache: scrapeOptions.store_in_cache,
                             };
                             // Respect global limit across pages
@@ -182,6 +253,15 @@ export class SearchController {
                             for (const result of toProcess) {
                                 if (!result.url) continue; // Ensure url is a string for RequestTask
                                 const resultUrl = result.url as string;
+                                if (scrapeFollowDomainRestriction) {
+                                    const domainCheck = DomainValidator.validateDomain(
+                                        resultUrl,
+                                        scrapeFollowDomainRestriction
+                                    );
+                                    if (!domainCheck.isValid) {
+                                        continue;
+                                    }
+                                }
                                 if (shouldCheckCache) {
                                     const cached = await cacheManager.getFromCache(
                                         resultUrl,
@@ -199,13 +279,16 @@ export class SearchController {
                                         continue;
                                     }
                                 }
-                                // Extract engine from scrapeOptions and pass remaining options
-                                const { engine: _engine, ...options } = scrapeOptions;
+                                const {
+                                    engine: _engine,
+                                    variables: templateVars,
+                                    ...optionsSansEngine
+                                } = scrapeOptions as typeof scrapeOptions & { variables?: Record<string, unknown> };
                                 const jobPayload = {
                                     url: resultUrl,
                                     engine: engineForScrape,
-                                    options,
-                                    // Pass search job ID as parent ID for result recording
+                                    templateVariables: templateVars ?? {},
+                                    options: optionsSansEngine,
                                     parentId: searchJobId,
                                 };
                                 log.info(`Scrape job payload: ${JSON.stringify(jobPayload)}`);
@@ -294,10 +377,11 @@ export class SearchController {
             // Calculate credits using CreditCalculator
             req.billingChargeDetails = CreditCalculator.buildSearchChargeDetails({
                 pages: validatedData.pages,
-                scrape_options: validatedData.scrape_options,
+                scrape_options: mergedSearchScrapeOptions ?? validatedData.scrape_options,
                 completedScrapeCount,
             }, {
                 templateCredits: defaultPrice,
+                scrapeFollowTemplatePerCall,
             });
             req.creditsUsed = req.billingChargeDetails.total;
 

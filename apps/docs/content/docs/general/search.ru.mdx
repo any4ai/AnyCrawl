@@ -297,6 +297,8 @@ print(response.json())
 | `ocr_options`       | boolean                  | `false`        | Enable OCR enhancement for markdown images only. Affects markdown generation, not `html`/`rawHtml`.                                         |
 | `max_age`           | number                   | -              | Cache max age (ms). Use `0` to skip cache read; omit to use server default                                                                    |
 | `store_in_cache`    | boolean                  | `true`         | Whether to write Page Cache for per-result scrapes                                                                                           |
+| `template_id`       | string                   | -              | **Scrape** template ID for follow-ups (same as `/v1/scrape`). URLs outside `allowedDomains` are skipped. |
+| `variables`         | object                   | -              | Variables for that scrape template (with `template_id`). |
 
 ### Поддерживаемые поисковые системы
 
@@ -462,10 +464,18 @@ console.log(`Completed ${results.length} searches simultaneously`);
 
 ## Лимиты и кредиты
 
-- За поиск списываются кредиты в зависимости от числа запрошенных страниц выдачи
-- Расход ≈ число страниц (например, `pages: 3` → 3 кредита)
-- **Нет отдельного лимита частоты для параллельных запросов** — API поддерживает высокую параллельность
-- Следите за кредитами по заголовкам ответа API
+- **Нет отдельного лимита частоты для параллельных запросов** — API поддерживает высокую параллельность.
+- Учёт расхода — по заголовкам ответа и `BillingChargeDetails`.
+
+### Модель кредитов (поиск + опциональные follow-up scrapes)
+
+1. **`search_pages`** — соответствует **`pages`** (часто 1 кредит за страницу по умолчанию).
+2. **`template_per_call`** — при верхнеуровневом **`template_id`** (шаблон **search**): `pricing.perCall` один раз за запрос.
+3. При **`scrape_options`** и успешных follow-up:
+   - **`search_result_scrape`** — `completed_scrape_count ×` единица движка (`calculateScrapeCredits`).
+   - **`search_result_scrape_template`** — при **`scrape_options.template_id`**: `pricing.perCall` шаблона scrape за успех. **Только для search-шаблонов:** `metadata.charge_scrape_template_credits: false` отключает эту строку (строка движка остаётся).
+
+Полная спецификация: репозиторий **`docs/api/search-scrape-credits-and-templates.md`**.
 
 ## Частые вопросы
 

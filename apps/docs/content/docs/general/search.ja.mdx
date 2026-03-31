@@ -297,6 +297,8 @@ print(response.json())
 | `ocr_options`       | boolean                  | `false`        | Markdown 画像のみ OCR 補強を有効にする。Markdown 生成に影響し、`html`/`rawHtml` には影響しない。                                         |
 | `max_age`           | number                   | -              | キャッシュ最大経過時間（ミリ秒）。`0` で読み取りスキップ。省略時はサーバー既定                                                                    |
 | `store_in_cache`    | boolean                  | `true`         | 結果ごとのスクレイプでページキャッシュに書き込むか                                                                                           |
+| `template_id`       | string                   | -              | フォローアップ用 **scrape** テンプレート ID（`/v1/scrape` と同様）。`allowedDomains` 外の URL はスキップ。 |
+| `variables`         | object                   | -              | その scrape テンプレート用変数（`template_id` 指定時）。 |
 
 ### 対応検索エンジン
 
@@ -462,10 +464,18 @@ console.log(`Completed ${results.length} searches simultaneously`);
 
 ## レート制限とクレジット
 
-- 消費クレジットは、リクエストしたページ数に基づきます
-- クレジット消費 = ページ数（例: `pages: 3` なら 3 クレジット）
-- **同時リクエストに対するレート制限はありません** — API は高同時実行をネイティブにサポートします
-- クレジット使用量はレスポンスヘッダーなどで確認してください
+- **同時リクエストに対するレート制限はありません** — API は高同時実行をネイティブにサポートします。
+- 消費はレスポンスヘッダーと `BillingChargeDetails` で確認してください。
+
+### クレジットモデル（検索 + 任意のフォローアップ scrape）
+
+1. **`search_pages`** — **`pages`** に対応（既定は多くの場合 1 ページあたり 1 クレジット）。
+2. **`template_per_call`** — ルートの **`template_id`**（**search** テンプレート）がある場合、リクエストごとに `pricing.perCall` を 1 回。
+3. **`scrape_options`** がありフォローアップが成功した場合:
+   - **`search_result_scrape`** — `completed_scrape_count ×` エンジン単価（`calculateScrapeCredits`）。
+   - **`search_result_scrape_template`** — **`scrape_options.template_id`** がある場合、成功ごとに scrape テンプレートの `pricing.perCall`。**search テンプレートのみ:** `metadata.charge_scrape_template_credits: false` でこの行を課金しない（エンジン行は課金）。
+
+完全な仕様: リポジトリ **`docs/api/search-scrape-credits-and-templates.md`**。
 
 ## よくある質問
 

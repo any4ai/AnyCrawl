@@ -26,7 +26,10 @@ import {
 } from "@anycrawl/db";
 import { randomUUID } from "crypto";
 import { serializeRecord, serializeRecords } from "../../utils/serializer.js";
-import { handleWebhookAssociations, removeWebhookAssociations } from "./scheduled-tasks/webhookAssociations.js";
+import {
+    handleWebhookAssociations,
+    removeWebhookAssociations,
+} from "./scheduled-tasks/webhookAssociations.js";
 
 const TASK_TYPE_ICONS: Record<string, string> = {
     scrape: "FileText",
@@ -80,10 +83,15 @@ export class ScheduledTasksController {
             }
 
             let template = null;
-            if (validatedData.task_payload.template_id) {
+            // Accept both template_id (business key) and template_uuid (primary key).
+            const taskTemplateRef =
+                validatedData.task_payload.template_id || validatedData.task_payload.template_uuid;
+            if (taskTemplateRef) {
                 try {
-                    const { getTemplate } = await import("@anycrawl/db");
-                    template = await getTemplate(String(validatedData.task_payload.template_id));
+                    const { getTemplate, getTemplateByUuid } = await import("@anycrawl/db");
+                    template = validatedData.task_payload.template_id
+                        ? await getTemplate(String(validatedData.task_payload.template_id))
+                        : await getTemplateByUuid(String(validatedData.task_payload.template_uuid));
                 } catch (error) {
                     log.warning(`Failed to fetch template for credit calculation: ${error}`);
                 }
@@ -252,8 +260,10 @@ export class ScheduledTasksController {
 
             if (validatedData.task_type) updateData.taskType = validatedData.task_type;
             if (validatedData.task_payload) updateData.taskPayload = validatedData.task_payload;
-            if (validatedData.concurrency_mode) updateData.concurrencyMode = validatedData.concurrency_mode;
-            if (validatedData.max_executions_per_day) updateData.maxExecutionsPerDay = validatedData.max_executions_per_day;
+            if (validatedData.concurrency_mode)
+                updateData.concurrencyMode = validatedData.concurrency_mode;
+            if (validatedData.max_executions_per_day)
+                updateData.maxExecutionsPerDay = validatedData.max_executions_per_day;
 
             delete updateData.task_type;
             delete updateData.task_payload;
@@ -619,9 +629,10 @@ export class ScheduledTasksController {
 
             const executionsWithDuration = executions.map((execution: any) => ({
                 ...execution,
-                durationMs: execution.startedAt && execution.completedAt
-                    ? execution.completedAt.getTime() - execution.startedAt.getTime()
-                    : null,
+                durationMs:
+                    execution.startedAt && execution.completedAt
+                        ? execution.completedAt.getTime() - execution.startedAt.getTime()
+                        : null,
             }));
 
             const serialized = serializeRecords(executionsWithDuration);

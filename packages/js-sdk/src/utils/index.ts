@@ -77,5 +77,7 @@ export function buildSearchScrapeOptions(
     if (options.ocr_options != null) out.ocr_options = options.ocr_options;
     if (options.max_age != null) out.max_age = options.max_age;
     if (options.store_in_cache != null) out.store_in_cache = options.store_in_cache;
+    if (options.template_id != null) out.template_id = options.template_id;
+    if (options.variables != null) out.variables = options.variables;
     return out;
 }

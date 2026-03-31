@@ -123,7 +123,14 @@ export interface TemplateConfig {
         allowedDomains?: {
             type: "glob" | "exact";
             patterns: string[];
-        },
+        };
+        /**
+         * **Search templates only.** When `false`, a search that uses `scrape_options.template_id` for
+         * follow-up scrapes still runs those templates but does **not** charge scrape template
+         * per-call credits (`search_result_scrape_template`). Engine scrape credits (`search_result_scrape`) still apply.
+         * When omitted or `true`, scrape template pricing applies as usual.
+         */
+        charge_scrape_template_credits?: boolean;
         [key: string]: any;
     };
 

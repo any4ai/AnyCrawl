@@ -28,9 +28,9 @@ export const updateJobCounts = Job.updateCounts;
 export const updateJobCacheHits = Job.updateCacheHits;
 export const addJobTraffic = Job.addTraffic;
 
-
 export const createTemplate = Template.create;
 export const getTemplate = Template.get;
+export const getTemplateByUuid = Template.getByUuid;
 export const updateTemplate = Template.update;
 export const deleteTemplate = Template.delete;
 export const deleteTemplateIfExists = Template.deleteIfExists;
@@ -55,7 +55,7 @@ export {
     webhookSubscriptions,
     webhookDeliveries,
     pageCache,
-    mapCache
+    mapCache,
 } from "./db/schemas/PostgreSQL.js";
 
 export { eq, and, gt, gte, sql, desc, getDB, schemas, STATUS, JOB_RESULT_STATUS, Job, Billing };

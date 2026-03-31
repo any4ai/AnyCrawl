@@ -297,6 +297,8 @@ Khi có, mỗi URL kết quả có thể được scrape với các tùy chọn 
 | `ocr_options`       | boolean                  | `false`        | OCR cho ảnh markdown. Ảnh hưởng markdown, không `html`/`rawHtml`.                                         |
 | `max_age`           | number                   | -              | Tuổi cache tối đa (ms). `0` bỏ đọc cache; bỏ trống: mặc định máy chủ                                                                    |
 | `store_in_cache`    | boolean                  | `true`         | Có ghi Page Cache cho mỗi lần scrape kết quả hay không                                                                                           |
+| `template_id`       | string                   | -              | ID template **scrape** cho bước theo sau (giống `/v1/scrape`). URL ngoài `allowedDomains` bị bỏ qua. |
+| `variables`         | object                   | -              | Biến của template scrape đó (khi có `template_id`). |
 
 ### Công cụ tìm kiếm được hỗ trợ
 
@@ -462,10 +464,18 @@ console.log(`Completed ${results.length} searches simultaneously`);
 
 ## Giới hạn tốc độ và credit
 
-- Mỗi request tìm kiếm tiêu credit theo số trang yêu cầu
-- Tiêu thụ credit = số trang (ví dụ `pages: 3` = 3 credit)
-- **Không giới hạn tốc độ cho request đồng thời** — API hỗ trợ đồng thời cao gốc
-- Theo dõi credit qua header phản hồi API
+- **Không giới hạn tốc độ cho request đồng thời** — API hỗ trợ đồng thời cao gốc.
+- Theo dõi qua header và `BillingChargeDetails`.
+
+### Mô hình credit (tìm kiếm + scrape theo sau tùy chọn)
+
+1. **`search_pages`** — tương ứng **`pages`** (thường 1 credit mỗi trang mặc định).
+2. **`template_per_call`** — với **`template_id`** cấp cao nhất (template **search**): `pricing.perCall` một lần mỗi request.
+3. Có **`scrape_options`** và follow-up thành công:
+   - **`search_result_scrape`** — `completed_scrape_count ×` đơn vị engine (`calculateScrapeCredits`).
+   - **`search_result_scrape_template`** — với **`scrape_options.template_id`**: `pricing.perCall` của template scrape mỗi lần thành công. **Chỉ template search:** `metadata.charge_scrape_template_credits: false` tắt dòng này (dòng engine vẫn tính).
+
+Đặc tả đầy đủ: kho **`docs/api/search-scrape-credits-and-templates.md`**.
 
 ## Câu hỏi thường gặp
 

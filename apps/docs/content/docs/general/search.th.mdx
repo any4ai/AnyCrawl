@@ -297,6 +297,8 @@ print(response.json())
 | `ocr_options`       | boolean                  | `false`        | เปิด OCR เสริมสำหรับรูปใน markdown เท่านั้น มีผลกับ markdown ไม่กับ `html`/`rawHtml`                                         |
 | `max_age`           | number                   | -              | อายุแคชสูงสุด (ms) ใช้ `0` เพื่อข้ามการอ่านแคช ไม่ระบุใช้ค่าเริ่มต้นของเซิร์ฟเวอร์                                                                    |
 | `store_in_cache`    | boolean                  | `true`         | เขียน Page Cache สำหรับการดึงแต่ละผลหรือไม่                                                                                           |
+| `template_id`       | string                   | -              | ID เทมเพลต **scrape** สำหรับดึงตามผลลัพธ์ (เหมือน `/v1/scrape`) URL นอก `allowedDomains` จะถูกข้าม |
+| `variables`         | object                   | -              | ตัวแปรของเทมเพลต scrape นั้น (เมื่อมี `template_id`) |
 
 ### เครื่องมือค้นหาที่รองรับ
 
@@ -462,10 +464,18 @@ console.log(`Completed ${results.length} searches simultaneously`);
 
 ## ขีดจำกัดอัตราและเครดิต
 
-- แต่ละคำขอค้นหาใช้เครดิตตามจำนวนหน้าที่ขอ
-- การใช้เครดิต = จำนวนหน้า (เช่น `pages: 3` = 3 เครดิต)
-- **ไม่มี rate limit สำหรับคำขอพร้อมกัน** — API รองรับ concurrency สูง
-- ติดตามการใช้เครดิตผ่านหัวข้อการตอบกลับของ API
+- **ไม่มี rate limit สำหรับคำขอพร้อมกัน** — API รองรับ concurrency สูงแบบ native
+- ตรวจการใช้งานผ่าน response headers และ `BillingChargeDetails`
+
+### โมเดลเครดิต (การค้นหา + การดึงตามผลลัพธ์แบบเลือกได้)
+
+1. **`search_pages`** — ตรงกับ **`pages`** (โดยมาก 1 เครดิตต่อหน้าเป็นค่าเริ่มต้น)
+2. **`template_per_call`** — เมื่อมี **`template_id`** ระดับบนสุด (เทมเพลต **search**) เรียกเก็บ `pricing.perCall` หนึ่งครั้งต่อคำขอ
+3. เมื่อมี **`scrape_options`** และดึงตามสำเร็จ:
+   - **`search_result_scrape`** — `completed_scrape_count ×` หน่วยเอนจิน (`calculateScrapeCredits`)
+   - **`search_result_scrape_template`** — เมื่อมี **`scrape_options.template_id`** คิด `pricing.perCall` ของเทมเพลต scrape ต่อครั้งที่สำเร็จ **เฉพาะเทมเพลต search:** `metadata.charge_scrape_template_credits: false` ปิดบรรทัดนี้ (บรรทัดเอนจินยังคิด)
+
+สเปกเต็ม: ที่เก็บ **`docs/api/search-scrape-credits-and-templates.md`**
 
 ## คำถามที่พบบ่อย
 

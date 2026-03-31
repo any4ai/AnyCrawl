@@ -35,9 +35,9 @@ export class Template {
         const templateData = {
             templateId: params.templateId,
             name: params.name,
-            description: params.description || '',
+            description: params.description || "",
             tags: params.tags,
-            version: '1.0.0',
+            version: "1.0.0",
             templateType: params.templateType,
             pricing: params.pricing,
             reqOptions: params.reqOptions,
@@ -47,9 +47,9 @@ export class Template {
             createdBy: params.createdBy,
             publishedBy: params.publishedBy || null,
             reviewedBy: params.reviewedBy || null,
-            status: params.status || 'draft',
-            reviewStatus: params.reviewStatus || 'pending',
-            reviewNotes: params.reviewNotes || '',
+            status: params.status || "draft",
+            reviewStatus: params.reviewStatus || "pending",
+            reviewNotes: params.reviewNotes || "",
             trusted: params.trusted || false,
             createdAt: new Date(),
             updatedAt: new Date(),
@@ -80,6 +80,24 @@ export class Template {
     }
 
     /**
+     * Get template by UUID (primary key)
+     */
+    static async getByUuid(uuid: string): Promise<TemplateConfig | null> {
+        const db = await getDB();
+        const result = await db
+            .select()
+            .from(schemas.templates)
+            .where(eq(schemas.templates.uuid, uuid))
+            .limit(1);
+
+        if (result.length === 0) {
+            return null;
+        }
+
+        return Template.mapDbToTemplate(result[0]);
+    }
+
+    /**
      * Update template
      */
     static async update(
@@ -98,7 +116,8 @@ export class Template {
         if (updates.templateType !== undefined) updateData.templateType = updates.templateType;
         if (updates.pricing !== undefined) updateData.pricing = updates.pricing;
         if (updates.reqOptions !== undefined) updateData.reqOptions = updates.reqOptions;
-        if (updates.customHandlers !== undefined) updateData.customHandlers = updates.customHandlers || null;
+        if (updates.customHandlers !== undefined)
+            updateData.customHandlers = updates.customHandlers || null;
         if (updates.metadata !== undefined) updateData.metadata = updates.metadata;
         if (updates.variables !== undefined) updateData.variables = updates.variables || null;
         if (updates.status !== undefined) updateData.status = updates.status;
@@ -162,9 +181,7 @@ export class Template {
      */
     static async deleteIfExists(templateId: string): Promise<void> {
         const db = await getDB();
-        await db
-            .delete(schemas.templates)
-            .where(eq(schemas.templates.templateId, templateId));
+        await db.delete(schemas.templates).where(eq(schemas.templates.templateId, templateId));
     }
 
     /**

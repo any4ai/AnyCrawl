@@ -297,6 +297,8 @@ Si fourni, chaque URL de résultat peut être scrapée avec ces options (mêmes 
 | `ocr_options`       | boolean                  | `false`        | OCR pour images markdown uniquement.                                                                                                         |
 | `max_age`           | number                   | -              | Cache max (ms). `0` ignore la lecture du cache.                                                                                                                                    |
 | `store_in_cache`    | boolean                  | `true`         | Écrire le cache de page pour les scrapes par résultat                                                                                           |
+| `template_id`       | string                   | -              | ID de modèle **scrape** pour les suivis (comme `/v1/scrape`). Les URL hors `allowedDomains` sont ignorées. |
+| `variables`         | object                   | -              | Variables du modèle scrape (avec `template_id`). |
 
 ### Moteurs pris en charge
 
@@ -462,10 +464,18 @@ console.log(`Completed ${results.length} searches simultaneously`);
 
 ## Limites de débit et crédits
 
-- Chaque recherche consomme des crédits selon le nombre de pages demandées
-- Consommation = nombre de pages (ex. `pages: 3` → 3 crédits)
-- **Pas de limitation de débit pour les requêtes concurrentes** — concurrence native
-- Surveillez l’usage via les en-têtes de réponse
+- **Pas de limitation de débit pour les requêtes concurrentes** — l’API gère nativement la concurrence.
+- Suivez la consommation via les en-têtes et `BillingChargeDetails`.
+
+### Modèle de crédits (recherche + scrapes de suivi optionnels)
+
+1. **`search_pages`** — correspond à **`pages`** (souvent 1 crédit par page par défaut).
+2. **`template_per_call`** — avec **`template_id`** au niveau racine (modèle **search**) : `pricing.perCall` une fois par requête.
+3. Avec **`scrape_options`** et suivis réussis :
+   - **`search_result_scrape`** — `completed_scrape_count ×` unité moteur (`calculateScrapeCredits`).
+   - **`search_result_scrape_template`** — avec **`scrape_options.template_id`** : `pricing.perCall` du modèle scrape par succès. **Modèles search uniquement :** `metadata.charge_scrape_template_credits: false` désactive cette ligne (la ligne moteur reste).
+
+Spécification complète : dépôt **`docs/api/search-scrape-credits-and-templates.md`**.
 
 ## Questions fréquentes
 

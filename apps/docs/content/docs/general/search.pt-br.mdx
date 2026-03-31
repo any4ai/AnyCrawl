@@ -297,6 +297,8 @@ Se informado, cada URL de resultado pode ser raspada com as mesmas opções de `
 | `ocr_options`       | boolean                  | `false`        | OCR só em imagens markdown; não altera `html`/`rawHtml`.                                         |
 | `max_age`           | number                   | -              | Idade do cache (ms). `0` pula leitura; omita para o padrão                                                                    |
 | `store_in_cache`    | boolean                  | `true`         | Gravar Page Cache por resultado raspado                                                                                           |
+| `template_id`       | string                   | -              | ID de template **scrape** para acompanhamentos (como `/v1/scrape`). URLs fora de `allowedDomains` são ignoradas. |
+| `variables`         | object                   | -              | Variáveis desse template scrape (com `template_id`). |
 
 ### Motor de busca suportado
 
@@ -462,10 +464,18 @@ console.log(`Completed ${results.length} searches simultaneously`);
 
 ## Limites de taxa e créditos
 
-- Cada busca consome créditos conforme o número de páginas solicitadas
-- Consumo = número de páginas (ex.: `pages: 3` = 3 créditos)
-- **Sem limite de taxa para concorrência** — alta concorrência nativa
-- Monitore créditos pelos cabeçalhos da resposta
+- **Sem limite de taxa para concorrência** — a API suporta alta concorrência nativamente.
+- Acompanhe o uso pelos cabeçalhos e `BillingChargeDetails`.
+
+### Modelo de créditos (busca + raspagens de acompanhamento opcionais)
+
+1. **`search_pages`** — corresponde a **`pages`** (geralmente 1 crédito por página por padrão).
+2. **`template_per_call`** — com **`template_id`** no corpo (template **search**): `pricing.perCall` uma vez por requisição.
+3. Com **`scrape_options`** e acompanhamentos bem-sucedidos:
+   - **`search_result_scrape`** — `completed_scrape_count ×` unidade de motor (`calculateScrapeCredits`).
+   - **`search_result_scrape_template`** — com **`scrape_options.template_id`**: `pricing.perCall` do template scrape por sucesso. **Apenas templates search:** `metadata.charge_scrape_template_credits: false` desativa esta linha (a linha de motor continua).
+
+Especificação completa: repositório **`docs/api/search-scrape-credits-and-templates.md`**.
 
 ## Perguntas frequentes
 

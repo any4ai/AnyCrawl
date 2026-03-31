@@ -41,6 +41,10 @@ export interface SearchCreditsOptions {
     pages?: number;
     scrape_options?: ScrapeCreditsOptions & { engine?: string };
     completedScrapeCount?: number;
+    /** Top-level search template per-call credits (once per request), if applicable */
+    searchTemplateCredits?: number;
+    /** Scrape template perCall × completedScrapeCount when follow-up uses scrape_options.template_id */
+    scrapeFollowTemplatePerCall?: number;
 }
 
 /**
@@ -203,7 +207,7 @@ export class CreditCalculator {
      */
     static buildSearchChargeDetails(
         options: SearchCreditsOptions = {},
-        config: { templateCredits?: number } = {}
+        config: { templateCredits?: number; scrapeFollowTemplatePerCall?: number } = {}
     ): BillingChargeDetailsV1 {
         const pageCredits = Number(options.pages ?? 1);
         const completedScrapeCount = Number(options.completedScrapeCount ?? 0);
@@ -213,6 +217,11 @@ export class CreditCalculator {
             : 0;
         const scrapeCredits = shouldChargeScrapes ? (completedScrapeCount * perScrapeCredits) : 0;
         const templateCredits = Number(config.templateCredits ?? 0);
+        const perFollowTemplate = Number(config.scrapeFollowTemplatePerCall ?? 0);
+        const scrapeTemplateCredits =
+            shouldChargeScrapes && perFollowTemplate > 0
+                ? completedScrapeCount * perFollowTemplate
+                : 0;
 
         return this.buildChargeDetails("search_v1", [
             this.normalizeChargeItem("template_per_call", templateCredits),
@@ -220,6 +229,11 @@ export class CreditCalculator {
             this.normalizeChargeItem("search_result_scrape", scrapeCredits, {
                 completed_scrape_count: completedScrapeCount,
                 per_result_credits: perScrapeCredits,
+                per_result_engine_credits: perScrapeCredits,
+            }),
+            this.normalizeChargeItem("search_result_scrape_template", scrapeTemplateCredits, {
+                completed_scrape_count: completedScrapeCount,
+                per_result_template_credits: perFollowTemplate,
             }),
         ]);
     }
@@ -267,20 +281,23 @@ export class CreditCalculator {
     }
 
     /**
-     * Calculate total credits for a search operation
-     * Formula: page credits + (scrape credits per result * completed scrapes)
+     * Calculate total credits for a search operation (aligned with `buildSearchChargeDetails` sum
+     * when optional template fields are supplied).
+     * Formula: searchTemplateCredits + page credits + (engine per result + scrape-template per result) × completed scrapes
      */
     static calculateSearchCredits(options: SearchCreditsOptions = {}): number {
         const pageCredits = options.pages ?? 1;
+        const searchTpl = Number(options.searchTemplateCredits ?? 0);
+        let total = searchTpl + pageCredits;
 
         if (!options.scrape_options || !options.completedScrapeCount || options.completedScrapeCount <= 0) {
-            return pageCredits;
+            return total;
         }
 
+        const n = options.completedScrapeCount;
         const perScrapeCredits = this.calculateScrapeCredits(options.scrape_options);
-        const scrapeCredits = options.completedScrapeCount * perScrapeCredits;
-
-        return pageCredits + scrapeCredits;
+        const perFollowTpl = Number(options.scrapeFollowTemplatePerCall ?? 0);
+        return total + n * perScrapeCredits + n * perFollowTpl;
     }
 
     /**
@@ -316,6 +333,8 @@ export function estimateTaskCredits(
     taskPayload: any,
     options?: {
         template?: any;
+        /** Scrape template pricing.perCall (credits) per successful search follow-up scrape */
+        scrapeFollowTemplatePerCall?: number;
     }
 ): number {
     try {
@@ -346,6 +365,7 @@ export function estimateTaskCredits(
         if (actualTaskType === "search") {
             const pages = actualPayload.pages || 1;
             let scrapeCredits = 0;
+            let scrapeFollowTemplateCredits = 0;
 
             if (actualPayload.scrape_options) {
                 const perScrapeCredits = CreditCalculator.calculateScrapeCredits({
@@ -356,9 +376,13 @@ export function estimateTaskCredits(
                 });
                 const limit = actualPayload.limit || 10;
                 scrapeCredits = perScrapeCredits * limit;
+                const tpl = Number(options?.scrapeFollowTemplatePerCall ?? 0);
+                if (tpl > 0) {
+                    scrapeFollowTemplateCredits = tpl * limit;
+                }
             }
 
-            return templateCredits + pages + scrapeCredits;
+            return templateCredits + pages + scrapeCredits + scrapeFollowTemplateCredits;
         }
 
         if (actualTaskType === "crawl") {

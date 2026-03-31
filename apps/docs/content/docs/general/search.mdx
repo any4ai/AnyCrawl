@@ -297,6 +297,8 @@ When provided, each search result URL can be scraped with the given options (sam
 | `ocr_options`       | boolean                  | `false`        | Enable OCR enhancement for markdown images only. Affects markdown generation, not `html`/`rawHtml`.                                         |
 | `max_age`           | number                   | -              | Cache max age (ms). Use `0` to skip cache read; omit to use server default                                                                    |
 | `store_in_cache`    | boolean                  | `true`         | Whether to write Page Cache for per-result scrapes                                                                                           |
+| `template_id`       | string                   | -              | **Scrape**-type template ID for follow-up scrapes (merged like `/v1/scrape`). URLs not allowed by the template’s `allowedDomains` are skipped. |
+| `variables`         | object                   | -              | Variables for that scrape template (when `template_id` is set).                                                                              |
 
 ### Supported Search Engines
 
@@ -462,10 +464,24 @@ console.log(`Completed ${results.length} searches simultaneously`);
 
 ## Rate Limits and Credits
 
-- Each search request consumes credits based on the number of pages requested
-- Credit consumption = number of pages (e.g., `pages: 3` = 3 credits)
-- **No rate limiting for concurrent requests** - the API natively supports high concurrency
-- Monitor your credit usage through the API response headers
+- **No rate limiting for concurrent requests** — the API supports high concurrency.
+- Monitor usage via API response headers and billing payloads.
+
+### Credit model (search + optional follow-up scrapes)
+
+Credits are itemized (see `BillingChargeDetails` / deduct-credits middleware). For each **`POST /v1/search`**:
+
+1. **`search_pages`** — **`pages`** credits (default **1** page = **1** credit if `pages` is omitted).
+2. **`template_per_call`** — if you pass top-level **`template_id`** (a **search** template), its **`pricing.perCall`** in credits is charged **once per request** (e.g. **1** credit).
+3. If **`scrape_options`** is set and follow-ups **complete successfully**:
+   - **`search_result_scrape`** — **`completed_scrape_count × per_result_engine_credits`**, where **`per_result_engine_credits`** = `CreditCalculator.calculateScrapeCredits` on the merged options (base **1** + stealth proxy / JSON extract / summary add-ons when applicable).
+   - **`search_result_scrape_template`** — if **`scrape_options.template_id`** is set, **`completed_scrape_count ×`** that **scrape** template’s **`pricing.perCall`** (e.g. **1** credit **per successful** follow-up). **Search templates only:** set **`metadata.charge_scrape_template_credits`** to **`false`** on the **search** template to disable this line while still using a scrape template for execution (you still pay **`search_result_scrape`** engine credits).
+
+**Example (templates only, for intuition):** search template **1** credit + scrape template **1** credit per result × **10** completed follow-ups ⇒ **1 + 10 = 11** credits from **templates alone**. The full bill also adds **`pages`** and **`10 ×`** engine scrape credits (often at least **10** more when `per_result_engine_credits` is **1**).
+
+**Domain rule:** with `scrape_options.template_id`, only result URLs allowed by the template’s **`allowedDomains`** are scraped; others are left as SERP-only rows (no charge for skipped URLs).
+
+Authoritative billing specification (formulas, `BillingChargeDetails` codes, dashboard fields): repository **`docs/api/search-scrape-credits-and-templates.md`**.
 
 ## Frequently Asked Questions
 

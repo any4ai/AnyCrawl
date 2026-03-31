@@ -297,6 +297,8 @@ print(response.json())
 | `ocr_options`       | boolean                  | `false`        | 마크다운 이미지 OCR만. 마크다운 생성에만 영향.                                         |
 | `max_age`           | number                   | -              | 캐시 최대 수명(ms). `0`이면 캐시 읽기 생략                                                                    |
 | `store_in_cache`    | boolean                  | `true`         | 결과별 스크래핑에 페이지 캐시 쓰기 여부                                                                                           |
+| `template_id`       | string                   | -              | 후속 스크래핑용 **scrape** 템플릿 ID(`/v1/scrape`와 동일). `allowedDomains` 밖 URL은 건너뜀. |
+| `variables`         | object                   | -              | 해당 scrape 템플릿 변수(`template_id` 사용 시). |
 
 ### 지원 검색 엔진
 
@@ -457,10 +459,18 @@ console.log(`Completed ${results.length} searches simultaneously`);
 
 ## 속도 제한 및 크레딧
 
-- 검색 요청은 요청한 페이지 수만큼 크레딧을 소비합니다.
-- 크레딧 = 페이지 수(예: `pages: 3` → 3 크레딧)
-- **동시 요청에 별도 속도 제한 없음** — API가 고동시성 지원
-- API 응답 헤더로 크레딧 사용량 확인
+- **동시 요청에 별도 속도 제한 없음** — API가 고동시성을 네이티브로 지원합니다.
+- 사용량은 응답 헤더와 `BillingChargeDetails`로 확인하세요.
+
+### 크레딧 모델(검색 + 선택적 후속 스크래핑)
+
+1. **`search_pages`** — **`pages`**에 해당(기본은 보통 페이지당 1 크레딧).
+2. **`template_per_call`** — 최상위 **`template_id`(**search** 템플릿)가 있으면 요청당 한 번 `pricing.perCall`.
+3. **`scrape_options`**가 있고 후속이 성공한 경우:
+   - **`search_result_scrape`** — `completed_scrape_count ×` 엔진 단가(`calculateScrapeCredits`).
+   - **`search_result_scrape_template`** — **`scrape_options.template_id`**가 있으면 성공마다 scrape 템플릿 `pricing.perCall`. **search 템플릿만:** `metadata.charge_scrape_template_credits: false`이면 이 항목은 과금하지 않음(엔진 항목은 과금).
+
+전체 사양: 저장소 **`docs/api/search-scrape-credits-and-templates.md`**.
 
 ## 자주 묻는 질문
 

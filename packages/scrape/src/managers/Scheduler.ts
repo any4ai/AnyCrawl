@@ -930,10 +930,30 @@ export class SchedulerManager {
             };
         }
 
+        // Normalize crawl payload: ensure options.scrape_options exists
+        const normalizedPayload = { ...payload };
+        if (actualTaskType === "crawl") {
+            // Ensure options exists
+            if (!normalizedPayload.options) {
+                normalizedPayload.options = {};
+                log.debug(`[SCHEDULER] Normalized crawl payload: added missing options object`);
+            }
+            // If scrape_options is at root level, move to options.scrape_options
+            if (normalizedPayload.scrape_options && !normalizedPayload.options.scrape_options) {
+                normalizedPayload.options.scrape_options = normalizedPayload.scrape_options;
+                delete normalizedPayload.scrape_options;
+                log.debug(`[SCHEDULER] Normalized crawl payload: moved scrape_options to options`);
+            }
+            // Ensure scrape_options has a default value
+            if (!normalizedPayload.options.scrape_options) {
+                normalizedPayload.options.scrape_options = {};
+            }
+        }
+
         // For scrape/crawl tasks, add to queue for async processing
         // Prepare job data - also fix URL in payload
         const jobData = {
-            ...payload,
+            ...normalizedPayload,
             // When the payload only carried template_uuid, inject the canonical template_id
             // so downstream engine workers (Base.ts options?.template_id) can resolve it.
             ...(resolvedTemplateId && !payload.template_id

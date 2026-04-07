@@ -65,13 +65,18 @@ export class SchedulerManager {
     private redis: IORedis.Redis | null = null;
     private readonly SCHEDULER_QUEUE_NAME = "scheduler";
     private syncInterval: NodeJS.Timeout | null = null;
-    private lastSyncTime: Date = new Date();
+    private lastAuditAt = 0;
     private readonly SYNC_INTERVAL_MS: number;
+    private readonly AUDIT_INTERVAL_MS: number;
     private readonly POLL_LOCK_KEY = "scheduler:poll:lock";
 
     private constructor() {
         // Default to 10 seconds, configurable via environment variable
         this.SYNC_INTERVAL_MS = config.scheduler.syncIntervalMs;
+        // Keep audit low-frequency to avoid scanning all tasks too often in large deployments.
+        // A 30s floor keeps cross-process convergence reasonably fast without returning to
+        // the previous 10s full-sync behavior.
+        this.AUDIT_INTERVAL_MS = Math.max(this.SYNC_INTERVAL_MS, 30_000);
     }
 
     public static getInstance(): SchedulerManager {
@@ -96,15 +101,15 @@ export class SchedulerManager {
         const queueManager = QueueManager.getInstance();
         this.schedulerQueue = queueManager.getQueue(this.SCHEDULER_QUEUE_NAME);
 
-        // Initial sync: Sync all database tasks to BullMQ
+        // Initial sync: reconcile database tasks to BullMQ scheduler state
         await this.syncScheduledTasks();
-        this.lastSyncTime = new Date();
+        this.lastAuditAt = Date.now();
 
-        // Start periodic polling to detect new/updated tasks
+        // Start periodic maintenance and low-frequency scheduler audit
         this.startPolling();
 
         log.info(
-            `[SCHEDULER] ✅ Scheduler Manager started successfully (polling every ${this.SYNC_INTERVAL_MS / 1000}s)`
+            `[SCHEDULER] ✅ Scheduler Manager started successfully (maintenance every ${this.SYNC_INTERVAL_MS / 1000}s, audit every ${this.AUDIT_INTERVAL_MS / 1000}s)`
         );
     }
 
@@ -126,19 +131,48 @@ export class SchedulerManager {
 
             log.info(`[SCHEDULER] Syncing ${activeTasks.length} active tasks to BullMQ`);
 
-            // First, remove ALL existing job schedulers to ensure clean state
-            // This handles paused/deleted tasks that may still have schedulers
-            await this.removeAllJobSchedulers();
+            const jobSchedulers = this.schedulerQueue
+                ? await this.schedulerQueue.getJobSchedulers()
+                : [];
+            const desiredSchedulerIds = new Set(
+                activeTasks.map((task: any) => this.buildSchedulerId(task.uuid))
+            );
 
-            // Add only active tasks
+            let removed = 0;
+            for (const scheduler of jobSchedulers) {
+                const schedulerId = this.getSchedulerIdentifier(scheduler);
+                if (!schedulerId || desiredSchedulerIds.has(schedulerId)) {
+                    continue;
+                }
+
+                await this.schedulerQueue!.removeJobScheduler(schedulerId);
+                removed++;
+            }
+
             for (const task of activeTasks) {
                 await this.addScheduledTask(task);
             }
 
-            log.info(`[SCHEDULER] ✅ Synced ${activeTasks.length} tasks to BullMQ`);
+            log.info(
+                `[SCHEDULER] ✅ Synced ${activeTasks.length} tasks to BullMQ${removed > 0 ? ` (removed ${removed} stale schedulers)` : ""}`
+            );
         } catch (error) {
             log.error(`[SCHEDULER] Error syncing scheduled tasks: ${error}`);
         }
+    }
+
+    private buildSchedulerId(taskUuid: string): string {
+        return `scheduled:${taskUuid}`;
+    }
+
+    private getSchedulerIdentifier(
+        scheduler: { id?: string | null; key?: string | null } | undefined
+    ): string | null {
+        if (!scheduler) {
+            return null;
+        }
+
+        return scheduler.id || scheduler.key || null;
     }
 
     /**
@@ -182,23 +216,24 @@ export class SchedulerManager {
         }
 
         try {
-            // Add as repeatable job
-            await this.schedulerQueue.add(
-                "scheduled-task",
+            await this.schedulerQueue.upsertJobScheduler(
+                this.buildSchedulerId(task.uuid),
                 {
-                    taskUuid: task.uuid,
-                    taskName: task.name,
-                    taskType: task.taskType,
-                    taskPayload: task.taskPayload,
+                    pattern: task.cronExpression,
+                    tz: task.timezone || "UTC",
                 },
                 {
-                    jobId: `scheduled:${task.uuid}`,
-                    repeat: {
-                        pattern: task.cronExpression,
-                        tz: task.timezone || "UTC",
+                    name: "scheduled-task",
+                    data: {
+                        taskUuid: task.uuid,
+                        taskName: task.name,
+                        taskType: task.taskType,
+                        taskPayload: task.taskPayload,
                     },
-                    removeOnComplete: 100, // Keep last 100 completed jobs for debugging
-                    removeOnFail: 100,
+                    opts: {
+                        removeOnComplete: 100,
+                        removeOnFail: 100,
+                    },
                 }
             );
 
@@ -221,20 +256,9 @@ export class SchedulerManager {
         }
 
         try {
-            // Get all job schedulers and find the one for this task
-            const jobSchedulers = await this.schedulerQueue.getJobSchedulers();
-
-            for (const scheduler of jobSchedulers) {
-                // Get the next job for this scheduler to check its data
-                const nextJob = await this.schedulerQueue.getJob(`repeat:${scheduler.key}`);
-                if (nextJob?.data?.taskUuid === taskUuid) {
-                    await this.schedulerQueue.removeJobScheduler(scheduler.key);
-                    log.debug(`[SCHEDULER] Removed job scheduler for task ${taskUuid}`);
-                    return;
-                }
-            }
-
-            log.debug(`[SCHEDULER] No scheduler found for task: ${taskUuid}`);
+            const schedulerId = this.buildSchedulerId(taskUuid);
+            await this.schedulerQueue.removeJobScheduler(schedulerId);
+            log.debug(`[SCHEDULER] Removed job scheduler for task ${taskUuid}`);
         } catch (error) {
             log.error(`[SCHEDULER] Failed to remove scheduled task ${taskUuid}: ${error}`);
         }
@@ -930,10 +954,30 @@ export class SchedulerManager {
             };
         }
 
+        // Normalize crawl payload: ensure options.scrape_options exists
+        const normalizedPayload = { ...payload };
+        if (actualTaskType === "crawl") {
+            // Ensure options exists
+            if (!normalizedPayload.options) {
+                normalizedPayload.options = {};
+                log.debug(`[SCHEDULER] Normalized crawl payload: added missing options object`);
+            }
+            // If scrape_options is at root level, move to options.scrape_options
+            if (normalizedPayload.scrape_options && !normalizedPayload.options.scrape_options) {
+                normalizedPayload.options.scrape_options = normalizedPayload.scrape_options;
+                delete normalizedPayload.scrape_options;
+                log.debug(`[SCHEDULER] Normalized crawl payload: moved scrape_options to options`);
+            }
+            // Ensure scrape_options has a default value
+            if (!normalizedPayload.options.scrape_options) {
+                normalizedPayload.options.scrape_options = {};
+            }
+        }
+
         // For scrape/crawl tasks, add to queue for async processing
         // Prepare job data - also fix URL in payload
         const jobData = {
-            ...payload,
+            ...normalizedPayload,
             // When the payload only carried template_uuid, inject the canonical template_id
             // so downstream engine workers (Base.ts options?.template_id) can resolve it.
             ...(resolvedTemplateId && !payload.template_id
@@ -1329,7 +1373,7 @@ export class SchedulerManager {
         }
 
         log.info(
-            `[SCHEDULER] Starting periodic task sync (every ${this.SYNC_INTERVAL_MS / 1000}s)`
+            `[SCHEDULER] Starting periodic maintenance (every ${this.SYNC_INTERVAL_MS / 1000}s, audit every ${this.AUDIT_INTERVAL_MS / 1000}s)`
         );
 
         this.syncInterval = setInterval(async () => {
@@ -1397,11 +1441,10 @@ export class SchedulerManager {
     }
 
     /**
-     * Poll database for new or updated tasks since last sync
-     * This method detects:
-     * 1. New tasks that need to be added to BullMQ
-     * 2. Updated tasks that need to be re-synced
-     * 3. Paused tasks that need to be removed
+     * Run periodic maintenance and low-frequency scheduler audit.
+     *
+     * Scheduler state changes are applied immediately via BullMQ upsert/remove when possible,
+     * and this audit loop reconciles any drift across processes or older scheduler artifacts.
      */
     private async pollDatabaseChanges(): Promise<void> {
         // Try to acquire distributed lock - skip if another instance is polling
@@ -1413,39 +1456,9 @@ export class SchedulerManager {
         try {
             const db = await getDB();
 
-            // Capture query time BEFORE the query to avoid race condition
-            // Tasks updated between query and lastSyncTime update would be missed otherwise
-            const queryTime = new Date();
-
-            // Query tasks updated since last sync
-            const updatedTasks = await db
-                .select()
-                .from(schemas.scheduledTasks)
-                .where(
-                    sql`${schemas.scheduledTasks.isActive} = true
-                        AND ${schemas.scheduledTasks.updatedAt} >= ${this.lastSyncTime}`
-                );
-
-            if (updatedTasks.length > 0) {
-                log.info(
-                    `[SCHEDULER] 📋 Detected ${updatedTasks.length} new/updated tasks, syncing to BullMQ...`
-                );
-
-                for (const task of updatedTasks) {
-                    if (task.isPaused) {
-                        // Remove paused tasks from BullMQ
-                        await this.removeScheduledTask(task.uuid);
-                        log.debug(`[SCHEDULER] Removed paused task: ${task.name}`);
-                    } else {
-                        // Add or update active tasks
-                        await this.addScheduledTask(task);
-                        log.debug(`[SCHEDULER] Synced task: ${task.name}`);
-                    }
-                }
-
-                log.info(`[SCHEDULER] ✅ Synced ${updatedTasks.length} tasks to BullMQ`);
-            } else {
-                log.debug("[SCHEDULER] No new tasks detected since last sync");
+            if (Date.now() - this.lastAuditAt >= this.AUDIT_INTERVAL_MS) {
+                await this.syncScheduledTasks();
+                this.lastAuditAt = Date.now();
             }
 
             // Cleanup stale pending executions (stuck for more than 5 minutes without starting)
@@ -1453,9 +1466,6 @@ export class SchedulerManager {
 
             // Enforce subscription tier limits (auto-pause excess tasks on downgrade)
             await this.enforceSubscriptionLimits(db);
-
-            // Update last sync time to query time (not current time) to avoid missing updates
-            this.lastSyncTime = queryTime;
         } catch (error) {
             log.error(`[SCHEDULER] Error polling database changes: ${error}`);
         } finally {

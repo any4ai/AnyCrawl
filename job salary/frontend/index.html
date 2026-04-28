@@ -1,0 +1,376 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>薪资查询系统 - 数据采集平台</title>
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+    <div class="container">
+        <header class="header">
+            <h1>薪资查询系统</h1>
+            <p class="subtitle">智能分析薪资数据，助您做出明智决策</p>
+        </header>
+
+        <nav class="nav-tabs">
+            <button class="nav-tab active" data-tab="query">薪资查询</button>
+            <button class="nav-tab" data-tab="crawl">数据采集</button>
+            <button class="nav-tab" data-tab="schedules">定时任务</button>
+            <button class="nav-tab" data-tab="data">数据管理</button>
+        </nav>
+
+        <main class="main-content">
+            <section class="tab-content active" id="tab-query">
+                <div class="query-section">
+                    <h2 class="section-title">查询条件</h2>
+                    <form id="queryForm" class="query-form">
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label for="position">岗位 <span class="required">*</span></label>
+                                <input type="text" id="position" name="position" placeholder="例如：前端开发工程师" autocomplete="off">
+                            </div>
+                            <div class="form-group">
+                                <label for="industry">行业 <span class="required">*</span></label>
+                                <input type="text" id="industry" name="industry" placeholder="例如：互联网" autocomplete="off">
+                            </div>
+                        </div>
+
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label for="gender">性别</label>
+                                <select id="gender" name="gender">
+                                    <option value="">不限</option>
+                                    <option value="male">男</option>
+                                    <option value="female">女</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label>年龄范围</label>
+                                <div class="age-inputs">
+                                    <input type="number" id="ageMin" name="ageMin" placeholder="最小" min="18" max="65">
+                                    <span class="separator">-</span>
+                                    <input type="number" id="ageMax" name="ageMax" placeholder="最大" min="18" max="65">
+                                    <span class="unit">岁</span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label>从业年限范围</label>
+                                <div class="experience-inputs">
+                                    <input type="number" id="experienceMin" name="experienceMin" placeholder="最小" min="0" max="40" step="0.5">
+                                    <span class="separator">-</span>
+                                    <input type="number" id="experienceMax" name="experienceMax" placeholder="最大" min="0" max="40" step="0.5">
+                                    <span class="unit">年</span>
+                                </div>
+                            </div>
+                            <div class="form-group">
+                                <label for="location">工作地点 <span class="required">*</span></label>
+                                <input type="text" id="location" name="location" placeholder="例如：北京" autocomplete="off">
+                            </div>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="timePeriod">查询时间段</label>
+                            <select id="timePeriod" name="timePeriod">
+                                <option value="week">一周内</option>
+                                <option value="month" selected>30天内</option>
+                                <option value="half_year">半年内</option>
+                                <option value="year">一年内</option>
+                            </select>
+                        </div>
+
+                        <div class="form-actions">
+                            <button type="submit" class="btn btn-primary" id="submitBtn">
+                                <span class="btn-text">开始查询</span>
+                                <span class="btn-loading" style="display: none;">
+                                    <span class="spinner"></span>
+                                    查询中...
+                                </span>
+                            </button>
+                            <button type="reset" class="btn btn-secondary">重置条件</button>
+                        </div>
+                    </form>
+                </div>
+
+                <section class="result-section" id="resultSection" style="display: none;">
+                    <h2 class="section-title">查询结果</h2>
+                    
+                    <div class="time-period-info">
+                        <span id="timePeriodLabel">30天内</span> 薪资统计
+                    </div>
+
+                    <div class="statistics-grid">
+                        <div class="stat-card stat-max">
+                            <div class="stat-icon">↑</div>
+                            <div class="stat-content">
+                                <div class="stat-label">最高薪资</div>
+                                <div class="stat-value" id="maxSalary">¥0</div>
+                            </div>
+                        </div>
+                        <div class="stat-card stat-min">
+                            <div class="stat-icon">↓</div>
+                            <div class="stat-content">
+                                <div class="stat-label">最低薪资</div>
+                                <div class="stat-value" id="minSalary">¥0</div>
+                            </div>
+                        </div>
+                        <div class="stat-card stat-mean">
+                            <div class="stat-icon">≈</div>
+                            <div class="stat-content">
+                                <div class="stat-label">加权平均薪资</div>
+                                <div class="stat-value" id="meanSalary">¥0</div>
+                            </div>
+                        </div>
+                        <div class="stat-card stat-median">
+                            <div class="stat-icon">◆</div>
+                            <div class="stat-content">
+                                <div class="stat-label">薪资中位数</div>
+                                <div class="stat-value" id="medianSalary">¥0</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="sample-count">
+                        基于 <span id="sampleCount">0</span> 条有效薪资记录计算
+                    </div>
+
+                    <div class="sample-records" id="sampleRecords" style="display: none;">
+                        <h3>部分参考数据</h3>
+                        <div class="records-table-container">
+                            <table class="records-table">
+                                <thead>
+                                    <tr>
+                                        <th>岗位</th>
+                                        <th>行业</th>
+                                        <th>性别</th>
+                                        <th>年龄</th>
+                                        <th>从业年限</th>
+                                        <th>工作地点</th>
+                                        <th>薪资</th>
+                                        <th>来源</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="recordsTableBody">
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </section>
+
+                <section class="error-section" id="errorSection" style="display: none;">
+                    <div class="error-card">
+                        <div class="error-icon">!</div>
+                        <h3 class="error-title">查询失败</h3>
+                        <p class="error-message" id="errorMessage"></p>
+                        <button class="btn btn-primary" onclick="retryQuery()">重新查询</button>
+                    </div>
+                </section>
+            </section>
+
+            <section class="tab-content" id="tab-crawl">
+                <div class="query-section">
+                    <h2 class="section-title">新建采集任务</h2>
+                    <form id="crawlForm" class="query-form">
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label for="crawlTaskName">任务名称 <span class="required">*</span></label>
+                                <input type="text" id="crawlTaskName" name="taskName" placeholder="例如：前端工程师薪资采集" autocomplete="off" value="薪资数据采集">
+                            </div>
+                            <div class="form-group">
+                                <label for="crawlJobType">采集类型 <span class="required">*</span></label>
+                                <select id="crawlJobType" name="jobType">
+                                    <option value="search">搜索采集</option>
+                                    <option value="scrape_urls">指定URL采集</option>
+                                </select>
+                            </div>
+                        </div>
+
+                        <div class="form-group" id="searchKeywordGroup">
+                            <label for="searchKeyword">搜索关键词 <span class="required">*</span></label>
+                            <input type="text" id="searchKeyword" name="searchKeyword" placeholder="例如：前端开发工程师 薪资 招聘" autocomplete="off">
+                            <div class="form-hint">输入关键词搜索相关招聘或薪资分享页面</div>
+                        </div>
+
+                        <div class="form-group" id="targetUrlsGroup" style="display: none;">
+                            <label for="targetUrls">目标URL列表 <span class="required">*</span></label>
+                            <textarea id="targetUrls" name="targetUrls" rows="4" placeholder="每行一个URL，例如：&#10;https://www.example.com/job/1&#10;https://www.example.com/job/2"></textarea>
+                            <div class="form-hint">输入要采集的具体页面URL，每行一个</div>
+                        </div>
+
+                        <div class="form-actions">
+                            <button type="submit" class="btn btn-primary" id="crawlSubmitBtn">
+                                <span class="btn-text">开始采集</span>
+                                <span class="btn-loading" style="display: none;">
+                                    <span class="spinner"></span>
+                                    启动中...
+                                </span>
+                            </button>
+                            <button type="button" class="btn btn-secondary" onclick="loadCrawlTasks()">刷新任务列表</button>
+                        </div>
+                    </form>
+                </div>
+
+                <div class="query-section">
+                    <h2 class="section-title">采集任务列表</h2>
+                    <div class="tasks-list" id="tasksList">
+                        <div class="empty-state">
+                            <p>暂无采集任务</p>
+                            <p class="hint">创建新任务开始数据采集</p>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="query-section" id="taskDetailSection" style="display: none;">
+                    <div class="section-header">
+                        <h2 class="section-title">任务详情</h2>
+                        <button class="btn btn-secondary" onclick="closeTaskDetail()">返回列表</button>
+                    </div>
+                    <div id="taskDetailContent">
+                    </div>
+                </div>
+
+                <div class="query-section" id="crawlResultsSection" style="display: none;">
+                    <div class="section-header">
+                        <h2 class="section-title">采集结果</h2>
+                        <div class="section-actions">
+                            <button class="btn btn-primary" id="importAllBtn" onclick="importAllResults()">
+                                全部导入薪资库
+                            </button>
+                        </div>
+                    </div>
+                    <div id="crawlResultsContent">
+                    </div>
+                </div>
+            </section>
+
+            <section class="tab-content" id="tab-schedules">
+                <div class="query-section">
+                    <h2 class="section-title">新建定时任务</h2>
+                    <form id="scheduleForm" class="query-form">
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label for="scheduleName">任务名称 <span class="required">*</span></label>
+                                <input type="text" id="scheduleName" name="scheduleName" placeholder="例如：每日薪资数据更新" autocomplete="off">
+                            </div>
+                            <div class="form-group">
+                                <label for="cronExpression">执行周期 <span class="required">*</span></label>
+                                <select id="cronExpression" name="cronExpression">
+                                    <option value="0 0 * * *">每天 00:00</option>
+                                    <option value="0 12 * * *">每天 12:00</option>
+                                    <option value="0 0 * * 0">每周日 00:00</option>
+                                    <option value="0 0 1 * *">每月1号 00:00</option>
+                                    <option value="custom">自定义</option>
+                                </select>
+                            </div>
+                        </div>
+
+                        <div class="form-group" id="customCronGroup" style="display: none;">
+                            <label for="customCron">Cron 表达式</label>
+                            <input type="text" id="customCron" name="customCron" placeholder="例如：0 0 * * *" autocomplete="off">
+                            <div class="form-hint">Cron 格式：分 时 日 月 周</div>
+                        </div>
+
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label for="scheduleJobType">采集类型 <span class="required">*</span></label>
+                                <select id="scheduleJobType" name="scheduleJobType">
+                                    <option value="search">搜索采集</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label for="scheduleKeyword">搜索关键词 <span class="required">*</span></label>
+                                <input type="text" id="scheduleKeyword" name="scheduleKeyword" placeholder="例如：前端开发工程师 薪资" autocomplete="off">
+                            </div>
+                        </div>
+
+                        <div class="form-actions">
+                            <button type="submit" class="btn btn-primary">创建定时任务</button>
+                            <button type="button" class="btn btn-secondary" onclick="loadSchedules()">刷新列表</button>
+                        </div>
+                    </form>
+                </div>
+
+                <div class="query-section">
+                    <h2 class="section-title">定时任务列表</h2>
+                    <div class="tasks-list" id="schedulesList">
+                        <div class="empty-state">
+                            <p>暂无定时任务</p>
+                            <p class="hint">创建定时任务自动采集数据</p>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <section class="tab-content" id="tab-data">
+                <div class="query-section">
+                    <h2 class="section-title">数据概览</h2>
+                    <div id="dataOverview">
+                        <div class="loading">加载中...</div>
+                    </div>
+                </div>
+
+                <div class="query-section">
+                    <div class="section-header">
+                        <h2 class="section-title">薪资记录列表</h2>
+                        <div class="section-actions">
+                            <button class="btn btn-secondary" onclick="initTestData()">初始化测试数据</button>
+                        </div>
+                    </div>
+                    <div class="records-table-container">
+                        <table class="records-table">
+                            <thead>
+                                <tr>
+                                    <th>ID</th>
+                                    <th>岗位</th>
+                                    <th>行业</th>
+                                    <th>工作地点</th>
+                                    <th>薪资</th>
+                                    <th>从业年限</th>
+                                    <th>来源</th>
+                                    <th>创建时间</th>
+                                </tr>
+                            </thead>
+                            <tbody id="dataTableBody">
+                            </tbody>
+                        </table>
+                    </div>
+                    <div class="pagination" id="dataPagination">
+                    </div>
+                </div>
+            </section>
+
+            <section class="error-section" id="globalErrorSection" style="display: none;">
+                <div class="error-card">
+                    <div class="error-icon">!</div>
+                    <h3 class="error-title" id="globalErrorTitle">操作失败</h3>
+                    <p class="error-message" id="globalErrorMessage"></p>
+                    <button class="btn btn-primary" onclick="hideGlobalError()">确定</button>
+                </div>
+            </section>
+        </main>
+
+        <footer class="footer">
+            <p>薪资查询系统 &copy; 2026 | 数据仅供参考 | 集成 AnyCrawl 数据采集</p>
+        </footer>
+    </div>
+
+    <div class="modal-overlay" id="modalOverlay" style="display: none;">
+        <div class="modal">
+            <div class="modal-header">
+                <h3 id="modalTitle">提示</h3>
+                <button class="modal-close" onclick="closeModal()">&times;</button>
+            </div>
+            <div class="modal-body" id="modalBody">
+            </div>
+            <div class="modal-footer" id="modalFooter">
+                <button class="btn btn-secondary" onclick="closeModal()">关闭</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="js/app.js"></script>
+</body>
+</html>

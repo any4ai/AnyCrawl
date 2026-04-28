@@ -1,0 +1,6 @@
+Flask>=3.0.0
+Flask-CORS>=4.0.0
+SQLAlchemy>=2.0.30
+python-dateutil>=2.8.2
+requests>=2.31.0
+apscheduler>=3.10.0

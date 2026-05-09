@@ -12,6 +12,11 @@ import { mergeOptionsWithTemplate } from "../../utils/optionMerger.js";
 import { DomainValidator } from "@anycrawl/template-client";
 import { renderTextTemplate } from "../../utils/urlTemplate.js";
 import { triggerWebhookEvent } from "../../utils/webhookHelper.js";
+import {
+    SEARCH_SCRAPE_PARTIAL_TIMEOUT_MS,
+    collectSettledWithinTimeout,
+    resolveSearchFollowUpWaitMs,
+} from "../../utils/searchFollowUpTiming.js";
 
 const SEARCH_FOLLOW_UP_SCRAPE_OPTION_KEYS = new Set([
     "template_id",
@@ -47,6 +52,10 @@ function pickSearchFollowUpScrapeOptions(options: Record<string, unknown> | unde
     return picked;
 }
 
+function elapsedMs(startTime: number): number {
+    return Date.now() - startTime;
+}
+
 export class SearchController {
     private searchService: SearchService;
 
@@ -59,6 +68,7 @@ export class SearchController {
         let searchJobId: string | null = null;
         let engineName: string | null = null;
         let defaultPrice: number = 0;
+        const searchStartedAt = Date.now();
         /** Search-template metadata: when false, do not bill scrape template perCall for follow-up scrapes. */
         let chargeScrapeTemplateCreditsForFollowup = true;
         try {
@@ -254,6 +264,11 @@ export class SearchController {
             let scrapeJobIds: string[] = [];
             const scrapeJobCreationPromises: Promise<void>[] = [];
             const scrapeCompletionPromises: Promise<{ url: string; data: any }>[] = [];
+            const pendingFollowUpScrapes = new Map<string, { queueName: string; url: string }>();
+            const autoEnginePromises = new Map<string, Promise<EngineType>>();
+            const followUpEngineCounts: Record<string, number> = {};
+            const followUpCreationStartedAt = Date.now();
+            let followUpFirstEnqueueMs: number | undefined;
             let completedScrapeCount = 0;
             let totalScrapeCount = 0; // Track total scrape tasks
             // Global scrape limit control (if limit provided)
@@ -262,6 +277,21 @@ export class SearchController {
             const cachedScrapes: { url: string; data: any }[] = [];
             const cacheConfig = getCacheConfig();
             const cacheManager = CacheManager.getInstance();
+            const getAutoEngineForUrl = (url: string, proxy: string | undefined): Promise<EngineType> => {
+                let domain: string;
+                try {
+                    domain = new URL(url).hostname;
+                } catch {
+                    domain = url;
+                }
+                const cacheKey = `${proxy ?? ""}:${domain}`;
+                let promise = autoEnginePromises.get(cacheKey);
+                if (!promise) {
+                    promise = resolveAutoEngine(url, proxy).then((engine) => engine as EngineType);
+                    autoEnginePromises.set(cacheKey, promise);
+                }
+                return promise;
+            };
 
             const results = await this.searchService.search(engineName, {
                 query: validatedData.query,
@@ -313,8 +343,9 @@ export class SearchController {
                                     try {
                                         const requestedScrapeEngine = scrapeOptions.engine ?? "auto";
                                         const engineForScrape = (requestedScrapeEngine === "auto"
-                                            ? await resolveAutoEngine(resultUrl, scrapeOptions.proxy)
+                                            ? await getAutoEngineForUrl(resultUrl, scrapeOptions.proxy)
                                             : requestedScrapeEngine) as EngineType;
+                                        followUpEngineCounts[engineForScrape] = (followUpEngineCounts[engineForScrape] ?? 0) + 1;
                                         if (requestedScrapeEngine === "auto") {
                                             log.info(`[SEARCH] Resolved follow-up scrape engine for ${resultUrl}: ${engineForScrape}`);
                                         }
@@ -378,6 +409,9 @@ export class SearchController {
                                             `[SEARCH] Enqueue follow-up scrape url=${resultUrl} queue=scrape-${engineForScrape} requestedEngine=${requestedScrapeEngine} parentJob=${searchJobId}`
                                         );
                                         const scrapeJobId = await QueueManager.getInstance().addJob(`scrape-${engineForScrape}`, jobPayload);
+                                        followUpFirstEnqueueMs ??= elapsedMs(followUpCreationStartedAt);
+                                        const followUpQueueName = `scrape-${engineForScrape}`;
+                                        pendingFollowUpScrapes.set(scrapeJobId, { queueName: followUpQueueName, url: resultUrl });
                                         log.info(`[SEARCH] Enqueued follow-up scrape jobId=${scrapeJobId} queue=scrape-${engineForScrape} url=${resultUrl}`);
                                         // Don't create a separate job in the jobs table
                                         // The scrape engine will record results directly to the search job
@@ -386,12 +420,13 @@ export class SearchController {
                                         // prepare wait-for-completion promise for this job
                                         scrapeCompletionPromises.push((async () => {
                                             try {
-                                                const waitTimeout = scrapeOptions.timeout;
+                                                const waitTimeout = resolveSearchFollowUpWaitMs(scrapeOptions.timeout);
                                                 const job = await QueueManager.getInstance().waitJobDone(
-                                                    `scrape-${engineForScrape}`,
+                                                    followUpQueueName,
                                                     scrapeJobId,
                                                     waitTimeout
                                                 );
+                                                pendingFollowUpScrapes.delete(scrapeJobId);
                                                 // only merge when status is completed
                                                 if (!job || job.status !== 'completed' || job.error) {
                                                     return { url: resultUrl, data: null };
@@ -403,10 +438,11 @@ export class SearchController {
                                                 log.warning(`[SEARCH] Follow-up scrape did not complete for ${resultUrl}: ${message}`);
                                                 try {
                                                     await QueueManager.getInstance().markJobCancelled(
-                                                        `scrape-${engineForScrape}`,
+                                                        followUpQueueName,
                                                         scrapeJobId,
                                                         message
                                                     );
+                                                    pendingFollowUpScrapes.delete(scrapeJobId);
                                                 } catch (cancelError) {
                                                     log.warning(`[SEARCH] Failed to mark follow-up scrape cancelled for ${resultUrl}: ${cancelError instanceof Error ? cancelError.message : String(cancelError)}`);
                                                 }
@@ -449,7 +485,30 @@ export class SearchController {
                 let successfulScrapes: { url: string; data: any }[] = [];
                 if (scrapeCompletionPromises.length > 0) {
                     log.info(`Waiting for ${scrapeCompletionPromises.length} scrape jobs to complete, ${scrapeJobIds.join(", ")}`);
-                    const completedScrapes = await Promise.all(scrapeCompletionPromises);
+                    const waitStartedAt = Date.now();
+                    const { settled: completedScrapes, timedOut } = await collectSettledWithinTimeout(
+                        scrapeCompletionPromises,
+                        SEARCH_SCRAPE_PARTIAL_TIMEOUT_MS,
+                        (error) => log.warning(`[SEARCH] Follow-up scrape wait failed: ${error instanceof Error ? error.message : String(error)}`)
+                    );
+                    if (timedOut) {
+                        log.warning(
+                            `[SEARCH] Returning partial follow-up scrape results: ${completedScrapes.length}/${scrapeCompletionPromises.length} settled within ${SEARCH_SCRAPE_PARTIAL_TIMEOUT_MS}ms`
+                        );
+                        await Promise.all([...pendingFollowUpScrapes.entries()].map(async ([jobId, pending]) => {
+                            try {
+                                await QueueManager.getInstance().markJobCancelled(
+                                    pending.queueName,
+                                    jobId,
+                                    `Search enrichment window timed out after ${SEARCH_SCRAPE_PARTIAL_TIMEOUT_MS}ms`
+                                );
+                            } catch (cancelError) {
+                                log.warning(`[SEARCH] Failed to mark timed-out follow-up scrape cancelled for ${pending.url}: ${cancelError instanceof Error ? cancelError.message : String(cancelError)}`);
+                            }
+                        }));
+                        pendingFollowUpScrapes.clear();
+                    }
+                    log.info(`[SEARCH] Follow-up scrape wait completed in ${elapsedMs(waitStartedAt)}ms timedOut=${timedOut}`);
                     successfulScrapes = completedScrapes.filter(({ data }) => Boolean(data));
                 }
                 const allScrapes = [...cachedScrapes, ...successfulScrapes];
@@ -480,6 +539,12 @@ export class SearchController {
                     }
                 }
             }
+            log.info(
+                `[SEARCH] Performance job_id=${searchJobId} search_ms=${elapsedMs(searchStartedAt)} pages_processed=${pagesProcessed}/${expectedPages} ` +
+                `followups=${completedScrapeCount}/${totalScrapeCount} cache_hits=${cachedScrapes.length} ` +
+                `first_enqueue_ms=${followUpFirstEnqueueMs ?? "n/a"} auto_domains=${autoEnginePromises.size} ` +
+                `per_engine=${JSON.stringify(followUpEngineCounts)}`
+            );
             // Calculate credits using CreditCalculator
             req.billingChargeDetails = CreditCalculator.buildSearchChargeDetails({
                 pages: expectedPages,

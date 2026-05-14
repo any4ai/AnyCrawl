@@ -129,7 +129,19 @@ export const config = {
             return process.env.ANYCRAWL_STORAGE === "s3";
         },
         get pageCacheEnabled(): boolean {
-            return this.storageIsS3 && this.enabled;
+            return this.enabled && (this.artifactsEnabled || this.storageIsS3);
+        },
+        get artifactsEnabled(): boolean {
+            return process.env.ANYCRAWL_CACHE_ARTIFACTS_ENABLED !== "false";
+        },
+        get legacyFallbackEnabled(): boolean {
+            return process.env.ANYCRAWL_CACHE_LEGACY_FALLBACK_ENABLED !== "false";
+        },
+        get legacyWriteEnabled(): boolean {
+            return process.env.ANYCRAWL_CACHE_LEGACY_WRITE_ENABLED === "true";
+        },
+        get dbArtifactMaxBytes(): number {
+            return parseIntEnv('ANYCRAWL_CACHE_DB_ARTIFACT_MAX_BYTES', 1024 * 1024);
         },
         get mapCacheEnabled(): boolean {
             return this.enabled;

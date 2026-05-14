@@ -390,6 +390,49 @@ export const pageCache = p.sqliteTable("page_cache", {
     createdAt: p.integer("created_at", { mode: "timestamp" }).notNull().$defaultFn(() => new Date()),
 });
 
+export const pageCacheEntries = p.sqliteTable("page_cache_entries", {
+    uuid: p
+        .text("uuid")
+        .primaryKey()
+        .$defaultFn(() => randomUUID()),
+    url: p.text("url").notNull(),
+    urlHash: p.text("url_hash").notNull(),
+    normalizedUrl: p.text("normalized_url").notNull(),
+    snapshotHash: p.text("snapshot_hash").notNull(),
+    domain: p.text("domain").notNull(),
+    engine: p.text("engine"),
+    proxyMode: p.text("proxy_mode"),
+    statusCode: p.integer("status_code").notNull(),
+    contentType: p.text("content_type"),
+    contentLength: p.integer("content_length"),
+    title: p.text("title"),
+    description: p.text("description"),
+    hasScreenshot: p.integer("has_screenshot", { mode: "boolean" }).default(false),
+    scrapedAt: p.integer("scraped_at", { mode: "timestamp" }).notNull(),
+    lastAccessedAt: p.integer("last_accessed_at", { mode: "timestamp" }),
+    createdAt: p.integer("created_at", { mode: "timestamp" }).notNull().$defaultFn(() => new Date()),
+    updatedAt: p.integer("updated_at", { mode: "timestamp" }).notNull().$defaultFn(() => new Date()),
+});
+
+export const pageCacheArtifacts = p.sqliteTable("page_cache_artifacts", {
+    uuid: p
+        .text("uuid")
+        .primaryKey()
+        .$defaultFn(() => randomUUID()),
+    entryUuid: p.text("entry_uuid").notNull().references(() => pageCacheEntries.uuid, { onDelete: "cascade" }),
+    artifactType: p.text("artifact_type").notNull(),
+    artifactOptionsHash: p.text("artifact_options_hash").notNull(),
+    storageMode: p.text("storage_mode").notNull(),
+    contentText: p.text("content_text"),
+    contentJson: p.text("content_json", { mode: "json" }).$type<unknown>(),
+    s3Key: p.text("s3_key"),
+    contentHash: p.text("content_hash"),
+    contentBytes: p.integer("content_bytes").notNull().default(0),
+    scrapedAt: p.integer("scraped_at", { mode: "timestamp" }).notNull(),
+    createdAt: p.integer("created_at", { mode: "timestamp" }).notNull().$defaultFn(() => new Date()),
+    updatedAt: p.integer("updated_at", { mode: "timestamp" }).notNull().$defaultFn(() => new Date()),
+});
+
 export const mapCache = p.sqliteTable("map_cache", {
     uuid: p
         .text("uuid")

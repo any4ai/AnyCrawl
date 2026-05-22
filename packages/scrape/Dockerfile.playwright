@@ -25,7 +25,8 @@ COPY packages/db/package.json ./packages/db/package.json
 COPY packages/ai/package.json ./packages/ai/package.json
 COPY packages/template-client/package.json ./packages/template-client/package.json
 COPY packages/typescript-config/package.json ./packages/typescript-config/package.json
-RUN --mount=type=cache,id=pnpm,target=/pnpm/store pnpm install --frozen-lockfile --prod=false
+RUN --mount=type=cache,id=pnpm-playwright-glibc,target=/pnpm/store \
+    npm_config_build_from_source=true pnpm install --frozen-lockfile --prod=false
 COPY . .
 RUN pnpm build --filter=@anycrawl/libs --filter=@anycrawl/db --filter=@anycrawl/template-client --filter=@anycrawl/ai --filter=@anycrawl/scrape
 RUN rm -rf node_modules
@@ -53,9 +54,11 @@ COPY --from=build /usr/src/app/packages/db/package.json /usr/src/app/packages/db
 COPY --from=build /usr/src/app/packages/ai/package.json /usr/src/app/packages/ai/package.json
 COPY --from=build /usr/src/app/packages/template-client/package.json /usr/src/app/packages/template-client/package.json
 
-RUN --mount=type=cache,id=pnpm,target=/pnpm/store pnpm install --prod --frozen-lockfile
-# Ensure native modules rebuilt for current platform
-RUN pnpm rebuild better-sqlite3
+RUN --mount=type=cache,id=pnpm-playwright-glibc,target=/pnpm/store \
+    npm_config_build_from_source=true pnpm install --prod --frozen-lockfile
+# Ensure better-sqlite3 is compiled inside this glibc image (avoid musl prebuild artifacts)
+RUN cd /usr/src/app/node_modules/.pnpm/better-sqlite3@11.10.0/node_modules/better-sqlite3 && \
+    npm run build-release
 ENV ANYCRAWL_AVAILABLE_ENGINES=playwright
 
 RUN npx -y playwright install chromium

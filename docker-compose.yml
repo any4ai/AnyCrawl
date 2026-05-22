@@ -5,6 +5,7 @@ x-common-service: &common-service
         - anycrawl-network
     volumes:
         - ./storage:/usr/src/app/storage
+        - ./db:/usr/src/app/db
 
 x-common-env: &common-env
     NODE_ENV: ${NODE_ENV:-production}

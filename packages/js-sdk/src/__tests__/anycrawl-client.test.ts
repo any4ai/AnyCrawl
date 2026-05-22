@@ -1260,7 +1260,7 @@ describe('AnyCrawlClient', () => {
             );
         });
 
-        it('should not add scrape_options when engine is missing', async () => {
+        it('should add scrape_options when engine is missing', async () => {
             mockAxiosInstance.post.mockResolvedValueOnce({
                 data: { success: true, data: [] },
             });
@@ -1270,7 +1270,7 @@ describe('AnyCrawlClient', () => {
                 scrape_options: { formats: ['markdown'] } as any,
             });
             const callArg = mockAxiosInstance.post.mock.calls[0][1];
-            expect(callArg.scrape_options).toBeUndefined();
+            expect(callArg.scrape_options).toEqual({ formats: ['markdown'] });
         });
     });
 

@@ -1,5 +1,6 @@
 import { DomainCache } from "./DomainCache.js";
 import { log } from "@anycrawl/libs";
+import { getPerformanceTuning } from "../core/PerformanceTuner.js";
 
 const cache = new DomainCache<{ avgMs: number; samples: number }>("ac:swait");
 
@@ -16,7 +17,7 @@ export async function smartWaitForDOMStable(
     opts: SmartWaitOptions = {},
 ): Promise<void> {
     const {
-        maxWaitMs = 5000,
+        maxWaitMs = getPerformanceTuning().smartWaitMaxMs,
         stableMs = 300,
         useCache = true,
         label = "smartWait",

@@ -367,10 +367,11 @@ export class ScrapeController {
             } else {
                 const message = error instanceof Error ? error.message : "Unknown error occurred";
                 if (jobId) {
-                    // Best-effort cancel; do not block failed marking if cancel throws
+                    // Best-effort cancellation marker; the Crawlee request may already be dispatched,
+                    // so engines check this marker before any late persistence.
                     try {
                         if (engineName) {
-                            await QueueManager.getInstance().cancelJob(`scrape-${engineName}`, jobId);
+                            await QueueManager.getInstance().markJobCancelled(`scrape-${engineName}`, jobId, message);
                         }
                     } catch { /* ignore cancel errors */ }
                     try {

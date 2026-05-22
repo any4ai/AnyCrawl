@@ -4,35 +4,48 @@ import { Job } from "bullmq";
 import { Utils } from "./Utils.js";
 // Removed unused imports to keep startup lean
 import { ProgressManager } from "./managers/Progress.js";
-import { ALLOWED_ENGINES, JOB_TYPE_CRAWL, JOB_TYPE_SCRAPE, log, appConfig, config } from "@anycrawl/libs";
+import {
+    ALLOWED_ENGINES,
+    JOB_TYPE_CRAWL,
+    JOB_TYPE_SCRAPE,
+    log,
+    appConfig,
+    config,
+} from "@anycrawl/libs";
 import { ensureAIConfigLoaded } from "@anycrawl/ai/utils/config.js";
-import { refreshAIConfig, getDefaultLLModelId, getEnabledProviderModels } from "@anycrawl/ai/utils/helper.js";
+import {
+    refreshAIConfig,
+    getDefaultLLModelId,
+    getEnabledProviderModels,
+} from "@anycrawl/ai/utils/helper.js";
 import { getDB, schemas, eq } from "@anycrawl/db";
 import { finalizeExecution } from "./managers/ExecutionLifecycle.js";
+import { formatPerformanceTuningSummary } from "./core/PerformanceTuner.js";
 
 // Helper function to update execution status
 // Note: Metrics (credits_used, items_processed, etc.) are stored in jobs table
 // and should be retrieved via JOIN when querying executions
 async function updateExecutionStatus(
     executionUuid: string,
-    status: 'completed' | 'failed',
+    status: "completed" | "failed",
     _job: Job,
     error?: Error
 ): Promise<void> {
     try {
         log.info(`[EXECUTION] Updating execution ${executionUuid} to ${status}`);
 
-        const errorMessage = status === "failed" ? (error?.message || "Execution failed") : undefined;
-        const errorCode = status === "failed" ? (error?.name || "EXECUTION_ERROR") : undefined;
-        const errorDetails = status === "failed"
-            ? {
-                name: error?.name || "Error",
-                message: errorMessage,
-                stack: error?.stack,
-                timestamp: new Date().toISOString(),
-                source: "worker",
-            }
-            : undefined;
+        const errorMessage = status === "failed" ? error?.message || "Execution failed" : undefined;
+        const errorCode = status === "failed" ? error?.name || "EXECUTION_ERROR" : undefined;
+        const errorDetails =
+            status === "failed"
+                ? {
+                      name: error?.name || "Error",
+                      message: errorMessage,
+                      stack: error?.stack,
+                      timestamp: new Date().toISOString(),
+                      source: "worker",
+                  }
+                : undefined;
 
         const result = await finalizeExecution({
             executionUuid,
@@ -44,7 +57,9 @@ async function updateExecutionStatus(
         });
 
         if (!result.transitioned) {
-            log.warning(`[EXECUTION] Execution ${executionUuid} was already finalized, skipping duplicate ${status}`);
+            log.warning(
+                `[EXECUTION] Execution ${executionUuid} was already finalized, skipping duplicate ${status}`
+            );
         }
 
         log.info(`[EXECUTION] Updated execution ${executionUuid} successfully`);
@@ -74,24 +89,27 @@ async function markExecutionStarted(executionUuid: string): Promise<void> {
 }
 
 // Parse command-line arguments for queue selection
-function parseQueueArgs(): { queues: string[], schedulerOnly: boolean } {
+function parseQueueArgs(): { queues: string[]; schedulerOnly: boolean } {
     const args = process.argv.slice(2);
-    const queueArg = args.find(arg => arg.startsWith('--queues='));
+    const queueArg = args.find((arg) => arg.startsWith("--queues="));
 
     if (!queueArg) {
         // Default: start all queues
         return { queues: [], schedulerOnly: false };
     }
 
-    const queuesValue = queueArg.split('=')[1];
+    const queuesValue = queueArg.split("=")[1];
     if (!queuesValue) {
         return { queues: [], schedulerOnly: false };
     }
 
-    const queues = queuesValue.split(',').map(q => q.trim()).filter(q => q);
+    const queues = queuesValue
+        .split(",")
+        .map((q) => q.trim())
+        .filter((q) => q);
 
     // Check if only scheduler is requested
-    const schedulerOnly = queues.length === 1 && queues[0] === 'scheduler';
+    const schedulerOnly = queues.length === 1 && queues[0] === "scheduler";
 
     return { queues, schedulerOnly };
 }
@@ -107,9 +125,9 @@ await utils.initializeKeyValueStore();
 try {
     await ensureAIConfigLoaded();
     refreshAIConfig();
-    const providers = Array.from(new Set(getEnabledProviderModels().map(p => p.provider)));
+    const providers = Array.from(new Set(getEnabledProviderModels().map((p) => p.provider)));
     const defaultModel = getDefaultLLModelId();
-    log.info(`[ai] providers ready: ${providers.length > 0 ? providers.join(', ') : 'none'}`);
+    log.info(`[ai] providers ready: ${providers.length > 0 ? providers.join(", ") : "none"}`);
     if (defaultModel) log.info(`[ai] default model: ${defaultModel}`);
     // Validate extract model provider is actually registered
     try {
@@ -118,11 +136,14 @@ try {
         getLLM(extractId);
     } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
-        log.warning(`[ai] validation: ${msg}. Check provider credentials (apiKey/baseURL) for the configured provider.`);
+        log.warning(
+            `[ai] validation: ${msg}. Check provider credentials (apiKey/baseURL) for the configured provider.`
+        );
     }
-} catch { }
+} catch {}
 log.info(`🔐 Auth enabled: ${appConfig.authEnabled}`);
 log.info(`💳 Credits deduction enabled: ${appConfig.creditsEnabled}`);
+log.info(`[performance] ${formatPerformanceTuningSummary()}`);
 
 // Determine which engines to initialize based on requested queues
 let AVAILABLE_ENGINES: string[] = [];
@@ -131,20 +152,24 @@ let engineQueueManager: any;
 if (!schedulerOnly) {
     log.info("Initializing queues and engines...");
     // Dynamically import after AI config is ready to ensure @anycrawl/ai is initialized with config
-    const { EngineQueueManager, AVAILABLE_ENGINES: ALL_ENGINES } = await import("./managers/EngineQueue.js");
+    const { EngineQueueManager, AVAILABLE_ENGINES: ALL_ENGINES } = await import(
+        "./managers/EngineQueue.js"
+    );
 
     // Filter engines based on requested queues
     if (requestedQueues.length > 0) {
         // Extract engine names from queue names (e.g., "playwright", "puppeteer", "cheerio")
         const requestedEngines = new Set(
             requestedQueues
-                .filter(q => q !== 'scheduler')
-                .map(q => q.replace(/^(scrape-|crawl-)/, ''))
+                .filter((q) => q !== "scheduler")
+                .map((q) => q.replace(/^(scrape-|crawl-)/, ""))
         );
-        AVAILABLE_ENGINES = [...ALL_ENGINES].filter((engine: string) => engine !== 'auto' && requestedEngines.has(engine));
-        log.info(`🎯 Starting selected queues: ${Array.from(requestedEngines).join(', ')}`);
+        AVAILABLE_ENGINES = [...ALL_ENGINES].filter(
+            (engine: string) => engine !== "auto" && requestedEngines.has(engine)
+        );
+        log.info(`🎯 Starting selected queues: ${Array.from(requestedEngines).join(", ")}`);
     } else {
-        AVAILABLE_ENGINES = [...ALL_ENGINES].filter((engine: string) => engine !== 'auto');
+        AVAILABLE_ENGINES = [...ALL_ENGINES].filter((engine: string) => engine !== "auto");
         log.info("🚀 Starting all available queues");
     }
 
@@ -160,8 +185,9 @@ if (!schedulerOnly) {
 }
 
 // Initialize Scheduler Manager (if enabled and requested)
-const shouldStartScheduler = config.scheduler.enabled &&
-    (requestedQueues.length === 0 || requestedQueues.includes('scheduler'));
+const shouldStartScheduler =
+    config.scheduler.enabled &&
+    (requestedQueues.length === 0 || requestedQueues.includes("scheduler"));
 
 if (shouldStartScheduler) {
     const { SchedulerManager } = await import("./managers/Scheduler.js");
@@ -177,12 +203,18 @@ if (config.webhooks.enabled) {
 }
 
 async function runJob(job: Job) {
+    if (job.data.status === "cancelled") {
+        log.warning(`[WORKER] Skipping cancelled job before dispatch: jobId=${job.id} queue=${job.data.queueName}`);
+        return;
+    }
+
     // Resolve "auto" to the actual engine from _autoResolvedEngine or queue name
     let engineType = job.data.engine || "cheerio";
     if (engineType === "auto") {
-        engineType = job.data._autoResolvedEngine
-            || job.data.queueName?.replace(/^scrape-|^crawl-/, "")
-            || "playwright";
+        engineType =
+            job.data._autoResolvedEngine ||
+            job.data.queueName?.replace(/^scrape-|^crawl-/, "") ||
+            "playwright";
     }
     if (!ALLOWED_ENGINES.includes(engineType)) {
         throw new Error(`Unsupported engine type: ${engineType}`);
@@ -194,44 +226,66 @@ async function runJob(job: Job) {
     let options = job.data.options;
     // if jobType is crawl, transform options
     if (jobType === JOB_TYPE_CRAWL) {
-        options = { ...job.data.options.scrape_options };
+        // Support multiple payload structures:
+        // - options.scrape_options (documented standard)
+        // - root scrape_options (legacy fallback)
+        // - missing options (exceptional)
+        const crawlOpts = job.data.options;
+        if (crawlOpts?.scrape_options) {
+            options = { ...crawlOpts.scrape_options };
+        } else if (job.data.scrape_options) {
+            // Fallback: root-level scrape_options
+            options = { ...job.data.scrape_options };
+            log.warning(`[WORKER] Crawl job ${job.id} using legacy scrape_options shape`);
+        } else {
+            // Safe default
+            options = {};
+            log.warning(`[WORKER] Crawl job ${job.id} missing scrape_options, using empty default`);
+        }
     }
     // Use queue job ID for status updates, but pass parentId for result recording
     const currentJobId = job.id as string;
     const parentId = job.data.parentId || currentJobId; // Use provided parentId for result recording
-    const uniqueKey = await engineQueueManager.addRequest(engineType, job.data.url,
-        {
-            jobId: currentJobId, // Use queue job ID for status updates
-            parentId: parentId, // Use parent job ID for result recording
-            engine: engineType,
-            queueName: job.data.queueName,
-            type: jobType,
-            // Ensure template variables are available to the engine context
-            templateVariables: job.data.templateVariables,
-            options: options || {},
-            crawl_options: jobType === JOB_TYPE_CRAWL ? job.data.options : null,
-            // Set original_url to initial URL for proxy rule matching
-            // This ensures proxy rules can match correctly for both initial and subsequent requests
-            original_url: job.data.url,
-            // Pass scheduled task info for credit deduction
-            scheduled_task_id: job.data.scheduled_task_id,
-            scheduled_execution_id: job.data.scheduled_execution_id,
-            scheduled_template_credits: job.data.scheduled_template_credits,
-        }
+    log.info(
+        `[WORKER] Dispatching ${jobType} job to ${engineType} request queue: jobId=${currentJobId} parentId=${parentId} bullQueue=${job.data.queueName}`
     );
+    const uniqueKey = await engineQueueManager.addRequest(engineType, job.data.url, {
+        jobId: currentJobId, // Use queue job ID for status updates
+        parentId: parentId, // Use parent job ID for result recording
+        engine: engineType,
+        queueName: job.data.queueName,
+        type: jobType,
+        // Ensure template variables are available to the engine context
+        templateVariables: job.data.templateVariables,
+        options: options || {},
+        crawl_options: jobType === JOB_TYPE_CRAWL ? job.data.options : null,
+        // Set original_url to initial URL for proxy rule matching
+        // This ensures proxy rules can match correctly for both initial and subsequent requests
+        original_url: job.data.url,
+        // Pass scheduled task info for credit deduction
+        scheduled_task_id: job.data.scheduled_task_id,
+        scheduled_execution_id: job.data.scheduled_execution_id,
+        scheduled_template_credits: job.data.scheduled_template_credits,
+    });
     // Seed enqueued counter for crawl jobs (the initial URL itself)
     if (jobType === JOB_TYPE_CRAWL) {
         await ProgressManager.getInstance().incrementEnqueued(currentJobId, 1);
     }
-    job.updateData({
+    const latestJobState = await QueueManager.getInstance().getJobStatus(job.data.queueName, currentJobId);
+    if (latestJobState?.task_status === "cancelled") {
+        log.warning(`[WORKER] Job ${currentJobId} was cancelled after request enqueue; preserving cancelled state`);
+        return;
+    }
+    await job.updateData({
         ...job.data,
         uniqueKey,
         status: "processing",
     });
+    log.info(`[WORKER] Dispatched job ${currentJobId} to ${engineType} request queue with uniqueKey=${uniqueKey}`);
 }
 
 // Initialize the application
-(async () => {
+const startWorker = async () => {
     try {
         // check redis
         const redisClient = Utils.getInstance().getRedisConnection();
@@ -244,7 +298,7 @@ async function runJob(job: Job) {
         // Worker for scheduler queue (BullMQ repeatable jobs)
         if (shouldStartScheduler) {
             workers.push(
-                WorkerManager.getInstance().getWorker('scheduler', async (job: Job) => {
+                WorkerManager.getInstance().getWorker("scheduler", async (job: Job) => {
                     const { SchedulerManager } = await import("./managers/Scheduler.js");
                     await SchedulerManager.getInstance().processScheduledTaskJob(job);
                 })
@@ -256,36 +310,55 @@ async function runJob(job: Job) {
             // Workers for scrape jobs
             const scrapeWorkers = await Promise.all(
                 AVAILABLE_ENGINES.map(async (engineType: any) => {
-                    const worker = await WorkerManager.getInstance().getWorker(`scrape-${engineType}`, async (job: Job) => {
-                        log.info(`[WORKER] Processing scrape job: ${job.id}`);
-                        log.info(`[WORKER]   Queue: scrape-${engineType}`);
-                        log.info(`[WORKER]   URL: ${job.data.url}`);
-                        log.info(`[WORKER]   Engine: ${job.data.engine}`);
-                        log.info(`[WORKER]   QueueName: ${job.data.queueName}`);
-                        log.info(`[WORKER]   Scheduled Task: ${job.data.scheduled_task_id || 'N/A'}`);
+                    const worker = await WorkerManager.getInstance().getWorker(
+                        `scrape-${engineType}`,
+                        async (job: Job) => {
+                            log.info(`[WORKER] Processing scrape job: ${job.id}`);
+                            log.info(`[WORKER]   Queue: scrape-${engineType}`);
+                            log.info(`[WORKER]   URL: ${job.data.url}`);
+                            log.info(`[WORKER]   Engine: ${job.data.engine}`);
+                            log.info(`[WORKER]   QueueName: ${job.data.queueName}`);
+                            log.info(
+                                `[WORKER]   Scheduled Task: ${job.data.scheduled_task_id || "N/A"}`
+                            );
 
-                        // Mark execution as started when job actually begins processing
-                        if (job.data.scheduled_execution_id) {
-                            await markExecutionStarted(job.data.scheduled_execution_id);
+                            if (job.data.status === "cancelled") {
+                                log.warning(`[WORKER] Scrape job ${job.id} was cancelled before processing; skipping dispatch`);
+                                return;
+                            }
+
+                            // Mark execution as started when job actually begins processing
+                            if (job.data.scheduled_execution_id) {
+                                await markExecutionStarted(job.data.scheduled_execution_id);
+                            }
+
+                            await job.updateData({
+                                ...job.data,
+                                type: JOB_TYPE_SCRAPE,
+                            });
+                            await runJob(job);
                         }
-
-                        job.updateData({
-                            ...job.data,
-                            type: JOB_TYPE_SCRAPE,
-                        });
-                        await runJob(job);
-                    });
+                    );
 
                     // Add event listeners for scheduled task executions
-                    worker.on('completed', async (job: Job) => {
+                    worker.on("completed", async (job: Job) => {
                         if (job.data.scheduled_execution_id) {
-                            await updateExecutionStatus(job.data.scheduled_execution_id, 'completed', job);
+                            await updateExecutionStatus(
+                                job.data.scheduled_execution_id,
+                                "completed",
+                                job
+                            );
                         }
                     });
 
-                    worker.on('failed', async (job: Job | undefined, error: Error) => {
+                    worker.on("failed", async (job: Job | undefined, error: Error) => {
                         if (job?.data.scheduled_execution_id) {
-                            await updateExecutionStatus(job.data.scheduled_execution_id, 'failed', job, error);
+                            await updateExecutionStatus(
+                                job.data.scheduled_execution_id,
+                                "failed",
+                                job,
+                                error
+                            );
                         }
                     });
 
@@ -297,29 +370,46 @@ async function runJob(job: Job) {
             // Workers for crawl jobs
             const crawlWorkers = await Promise.all(
                 AVAILABLE_ENGINES.map(async (engineType: any) => {
-                    const worker = await WorkerManager.getInstance().getWorker(`crawl-${engineType}`, async (job: Job) => {
-                        // Mark execution as started when job actually begins processing
-                        if (job.data.scheduled_execution_id) {
-                            await markExecutionStarted(job.data.scheduled_execution_id);
-                        }
+                    const worker = await WorkerManager.getInstance().getWorker(
+                        `crawl-${engineType}`,
+                        async (job: Job) => {
+                            if (job.data.status === "cancelled") {
+                                log.warning(`[WORKER] Crawl job ${job.id} was cancelled before processing; skipping dispatch`);
+                                return;
+                            }
 
-                        job.updateData({
-                            ...job.data,
-                            type: JOB_TYPE_CRAWL,
-                        });
-                        await runJob(job);
-                    });
+                            // Mark execution as started when job actually begins processing
+                            if (job.data.scheduled_execution_id) {
+                                await markExecutionStarted(job.data.scheduled_execution_id);
+                            }
+
+                            await job.updateData({
+                                ...job.data,
+                                type: JOB_TYPE_CRAWL,
+                            });
+                            await runJob(job);
+                        }
+                    );
 
                     // Add event listeners for scheduled task executions
-                    worker.on('completed', async (job: Job) => {
+                    worker.on("completed", async (job: Job) => {
                         if (job.data.scheduled_execution_id) {
-                            await updateExecutionStatus(job.data.scheduled_execution_id, 'completed', job);
+                            await updateExecutionStatus(
+                                job.data.scheduled_execution_id,
+                                "completed",
+                                job
+                            );
                         }
                     });
 
-                    worker.on('failed', async (job: Job | undefined, error: Error) => {
+                    worker.on("failed", async (job: Job | undefined, error: Error) => {
                         if (job?.data.scheduled_execution_id) {
-                            await updateExecutionStatus(job.data.scheduled_execution_id, 'failed', job, error);
+                            await updateExecutionStatus(
+                                job.data.scheduled_execution_id,
+                                "failed",
+                                job,
+                                error
+                            );
                         }
                     });
 
@@ -358,15 +448,20 @@ async function runJob(job: Job) {
                 for (const engineType of AVAILABLE_ENGINES) {
                     try {
                         const engine = await engineQueueManager.getEngine(engineType);
-                        const crawler: any = (engine as any).getEngine ? (engine as any).getEngine() : undefined;
-                        const isBrowserEngine = engineType === 'playwright' || engineType === 'puppeteer';
-                        let browserCount: number | string = isBrowserEngine ? 0 : 'n/a';
-                        let desiredConcurrency: number | string = 'n/a';
-                        let currentConcurrency: number | string = 'n/a';
+                        const crawler: any = (engine as any).getEngine
+                            ? (engine as any).getEngine()
+                            : undefined;
+                        const isBrowserEngine =
+                            engineType === "playwright" || engineType === "puppeteer";
+                        let browserCount: number | string = isBrowserEngine ? 0 : "n/a";
+                        let desiredConcurrency: number | string = "n/a";
+                        let currentConcurrency: number | string = "n/a";
 
                         if (crawler) {
-                            const browserPool: any = (crawler as any).browserPool ?? (crawler as any)._browserPool;
-                            const autoscaledPool: any = (crawler as any).autoscaledPool ?? (crawler as any)._autoscaledPool;
+                            const browserPool: any =
+                                (crawler as any).browserPool ?? (crawler as any)._browserPool;
+                            const autoscaledPool: any =
+                                (crawler as any).autoscaledPool ?? (crawler as any)._autoscaledPool;
 
                             // Fixed single source of truth for browser count
                             if (browserPool && isBrowserEngine) {
@@ -374,12 +469,20 @@ async function runJob(job: Job) {
                             }
 
                             if (autoscaledPool) {
-                                desiredConcurrency = autoscaledPool.desiredConcurrency ?? autoscaledPool._desiredConcurrency ?? 'n/a';
-                                currentConcurrency = autoscaledPool.currentConcurrency ?? autoscaledPool._currentConcurrency ?? 'n/a';
+                                desiredConcurrency =
+                                    autoscaledPool.desiredConcurrency ??
+                                    autoscaledPool._desiredConcurrency ??
+                                    "n/a";
+                                currentConcurrency =
+                                    autoscaledPool.currentConcurrency ??
+                                    autoscaledPool._currentConcurrency ??
+                                    "n/a";
                             }
                         }
 
-                        log.info(`[BROWSER] ${engineType} - count: ${browserCount} (desired=${desiredConcurrency}, current=${currentConcurrency})`);
+                        log.info(
+                            `[BROWSER] ${engineType} - count: ${browserCount} (desired=${desiredConcurrency}, current=${currentConcurrency})`
+                        );
                     } catch (error) {
                         log.error(`[BROWSER] Error checking status for ${engineType}: ${error}`);
                     }
@@ -408,19 +511,29 @@ async function runJob(job: Job) {
                 for (const { jobId, queueName, limit } of jobsToCheck) {
                     try {
                         if (limit && limit > 0) {
-                            const wasFinalized = await pm.checkAndFinalizeByLimit(jobId, queueName, limit);
+                            const wasFinalized = await pm.checkAndFinalizeByLimit(
+                                jobId,
+                                queueName,
+                                limit
+                            );
                             if (wasFinalized) {
                                 finalizedJobs++;
-                                log.info(`[FINALIZE] Job ${jobId} was finalized due to reaching limit ${limit}`);
+                                log.info(
+                                    `[FINALIZE] Job ${jobId} was finalized due to reaching limit ${limit}`
+                                );
                             }
                         }
                     } catch (error) {
-                        log.error(`[FINALIZE] Error checking job ${jobId} for finalization: ${error}`);
+                        log.error(
+                            `[FINALIZE] Error checking job ${jobId} for finalization: ${error}`
+                        );
                     }
                 }
 
                 if (finalizedJobs > 0) {
-                    log.info(`[FINALIZE] Finalization check completed: ${jobsToCheck.length} jobs checked, ${finalizedJobs} finalized`);
+                    log.info(
+                        `[FINALIZE] Finalization check completed: ${jobsToCheck.length} jobs checked, ${finalizedJobs} finalized`
+                    );
                 }
             } catch (error) {
                 log.error(`[FINALIZE] Error in periodic finalization check: ${error}`);
@@ -442,7 +555,7 @@ async function runJob(job: Job) {
                         jobType: schemas.jobs.jobType,
                         jobQueueName: schemas.jobs.jobQueueName,
                         jobExpireAt: schemas.jobs.jobExpireAt,
-                        status: schemas.jobs.status
+                        status: schemas.jobs.status,
                     })
                     .from(schemas.jobs)
                     .limit(1000)
@@ -451,7 +564,9 @@ async function runJob(job: Job) {
                     );
 
                 if (expiredJobs.length > 0) {
-                    log.info(`[CLEANUP] Found ${expiredJobs.length} expired pending jobs to clean up`);
+                    log.info(
+                        `[CLEANUP] Found ${expiredJobs.length} expired pending jobs to clean up`
+                    );
 
                     let cleanedJobs = 0;
                     for (const job of expiredJobs) {
@@ -466,7 +581,9 @@ async function runJob(job: Job) {
 
                                 if (isFinalized) {
                                     // Job is already finalized by ProgressManager
-                                    log.info(`[CLEANUP] Expired job ${job.jobId} already finalized by ProgressManager, skipping`);
+                                    log.info(
+                                        `[CLEANUP] Expired job ${job.jobId} already finalized by ProgressManager, skipping`
+                                    );
                                     continue;
                                 }
 
@@ -478,7 +595,7 @@ async function runJob(job: Job) {
                                 const totalFailed = jobFailed;
 
                                 shouldMarkAsCompleted = totalFailed <= totalCompleted;
-                                finalStatus = shouldMarkAsCompleted ? 'completed' : 'failed';
+                                finalStatus = shouldMarkAsCompleted ? "completed" : "failed";
                                 finalMessage = shouldMarkAsCompleted
                                     ? `Job completed with timeout (failed: ${totalFailed} <= completed: ${totalCompleted})`
                                     : `Job failed due to timeout (failed: ${totalFailed} > completed: ${totalCompleted})`;
@@ -488,7 +605,7 @@ async function runJob(job: Job) {
                                 const jobFailed = job.failed || 0;
 
                                 shouldMarkAsCompleted = jobFailed <= jobCompleted;
-                                finalStatus = shouldMarkAsCompleted ? 'completed' : 'failed';
+                                finalStatus = shouldMarkAsCompleted ? "completed" : "failed";
                                 finalMessage = shouldMarkAsCompleted
                                     ? `Job completed with timeout (failed: ${jobFailed} <= completed: ${jobCompleted}) - PM failed`
                                     : `Job failed due to timeout (failed: ${jobFailed} > completed: ${jobCompleted}) - PM failed`;
@@ -506,13 +623,19 @@ async function runJob(job: Job) {
                                 .where(eq(schemas.jobs.jobId, job.jobId));
 
                             cleanedJobs++;
-                            log.info(`[CLEANUP] Cleaned up expired job ${job.jobId} (type: ${job.jobType}, expired at: ${job.jobExpireAt}) -> ${finalStatus}`);
+                            log.info(
+                                `[CLEANUP] Cleaned up expired job ${job.jobId} (type: ${job.jobType}, expired at: ${job.jobExpireAt}) -> ${finalStatus}`
+                            );
                         } catch (error) {
-                            log.error(`[CLEANUP] Error cleaning up expired job ${job.jobId}: ${error}`);
+                            log.error(
+                                `[CLEANUP] Error cleaning up expired job ${job.jobId}: ${error}`
+                            );
                         }
                     }
 
-                    log.info(`[CLEANUP] Expired job cleanup completed: ${cleanedJobs} jobs cleaned up`);
+                    log.info(
+                        `[CLEANUP] Expired job cleanup completed: ${cleanedJobs} jobs cleaned up`
+                    );
                 } else {
                     log.debug("[CLEANUP] No expired jobs found for cleanup");
                 }
@@ -526,7 +649,7 @@ async function runJob(job: Job) {
             log.warning("Received SIGINT signal, stopping all services...");
             // Temporarily disable console.warn to prevent the pause message
             const originalWarn = console.warn;
-            console.warn = () => { };
+            console.warn = () => {};
 
             // Stop Scheduler Manager (if enabled)
             if (config.scheduler.enabled) {
@@ -567,7 +690,9 @@ async function runJob(job: Job) {
         log.error(`Failed to start scraping worker: ${error}`);
         process.exit(1);
     }
-})();
+};
+
+await startWorker();
 // Start engines (only if not scheduler-only)
 if (!schedulerOnly) {
     await engineQueueManager.startEngines();

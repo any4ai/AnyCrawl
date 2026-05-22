@@ -371,7 +371,7 @@ export class ProgressManager {
             const { QueueManager } = await import("./Queue.js");
             const job = await QueueManager.getInstance().getJob(queueName as QueueName, jobId);
             if (job) {
-                job.updateData({
+                await job.updateData({
                     ...job.data,
                     status: "completed",
                     ...finalSummary,

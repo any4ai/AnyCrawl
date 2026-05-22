@@ -82,6 +82,56 @@ describe('EngineFactory Tests', () => {
             expect(factoryModule.PlaywrightEngineFactory).toBeDefined();
             expect(factoryModule.PuppeteerEngineFactory).toBeDefined();
             expect(factoryModule.EngineFactoryRegistry).toBeDefined();
+            expect(factoryModule.buildEngineOptions).toBeDefined();
+        });
+
+        test('should preserve explicit autoscaled and browser pool options', async () => {
+            const factoryModule = await import('../../engines/EngineFactory.js');
+            const passedOptions = factoryModule.buildEngineOptions({
+                baseOptions: {
+                    keepAlive: true,
+                    useSessionPool: true,
+                },
+                performanceOptions: {
+                    minConcurrency: 2,
+                    maxConcurrency: 10,
+                    autoscaledPoolOptions: {
+                        desiredConcurrency: 5,
+                        scaleUpStepRatio: 0.5,
+                    },
+                    browserPoolOptions: {
+                        useFingerprints: true,
+                    },
+                },
+                engineSpecificOptions: {
+                    browserPoolOptions: {
+                        maxOpenPagesPerBrowser: 3,
+                    },
+                },
+                options: {
+                    maxConcurrency: 99,
+                    autoscaledPoolOptions: {
+                        desiredConcurrency: 42,
+                        scaleUpStepRatio: 0.9,
+                    },
+                    browserPoolOptions: {
+                        useFingerprints: false,
+                        maxOpenPagesPerBrowser: 7,
+                    },
+                } as any,
+                proxyConfiguration: {} as any,
+                requestQueue: {} as any,
+            });
+
+            expect(passedOptions.maxConcurrency).toBe(99);
+            expect(passedOptions.autoscaledPoolOptions).toMatchObject({
+                desiredConcurrency: 42,
+                scaleUpStepRatio: 0.9,
+            });
+            expect(passedOptions.browserPoolOptions).toMatchObject({
+                useFingerprints: false,
+                maxOpenPagesPerBrowser: 7,
+            });
         });
     });
 

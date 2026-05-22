@@ -1,6 +1,11 @@
 import { RequestQueueV2, LaunchContext } from "crawlee";
 import { config } from "@anycrawl/libs";
 import type { EngineOptions } from "../types/engine.js";
+import {
+    getBrowserEnginePerformanceOptions,
+    getHttpEnginePerformanceOptions,
+    getPerformanceTuning,
+} from "../core/PerformanceTuner.js";
 
 // Use type-only reference to avoid runtime import of Base and engines
 export type Engine = import("./Base.js").BaseEngine;
@@ -84,7 +89,7 @@ const defaultHttpOptions: Record<string, any> = {
     ignoreSslErrors: config.engine.ignoreSSLError,
 };
 
-function mergeLaunchContexts(
+export function mergeLaunchContexts(
     baseLaunchContext: EngineOptions["launchContext"] | undefined,
     overrideLaunchContext: EngineOptions["launchContext"] | undefined
 ): EngineOptions["launchContext"] | undefined {
@@ -102,6 +107,50 @@ function mergeLaunchContexts(
             ...(overrideLaunchContext?.launchOptions || {}),
             ...(mergedArgs.length > 0 ? { args: mergedArgs } : {}),
         },
+    };
+}
+
+export function buildEngineOptions(params: {
+    baseOptions: EngineOptions;
+    performanceOptions: Partial<EngineOptions>;
+    engineSpecificOptions: Record<string, any>;
+    options?: EngineOptions;
+    proxyConfiguration: any;
+    requestQueue: RequestQueueV2;
+}): EngineOptions {
+    const {
+        baseOptions,
+        performanceOptions,
+        engineSpecificOptions,
+        options,
+        proxyConfiguration,
+        requestQueue,
+    } = params;
+    const mergedLaunchContext = mergeLaunchContexts(
+        engineSpecificOptions.launchContext as EngineOptions["launchContext"] | undefined,
+        options?.launchContext
+    );
+    const autoscaledPoolOptions = {
+        ...(performanceOptions.autoscaledPoolOptions || {}),
+        ...(engineSpecificOptions.autoscaledPoolOptions || {}),
+        ...(options?.autoscaledPoolOptions || {}),
+    };
+    const browserPoolOptions = {
+        ...(performanceOptions.browserPoolOptions || {}),
+        ...(engineSpecificOptions.browserPoolOptions || {}),
+        ...(options?.browserPoolOptions || {}),
+    };
+
+    return {
+        ...baseOptions,
+        ...performanceOptions,
+        proxyConfiguration,
+        requestQueue,
+        ...engineSpecificOptions,
+        ...options,
+        ...(Object.keys(autoscaledPoolOptions).length > 0 ? { autoscaledPoolOptions } : {}),
+        ...(Object.keys(browserPoolOptions).length > 0 ? { browserPoolOptions } : {}),
+        ...(mergedLaunchContext ? { launchContext: mergedLaunchContext } : {}),
     };
 }
 
@@ -125,22 +174,23 @@ abstract class BaseEngineFactory implements IEngineFactory {
         const EngineClass = mod[this.engineClass];
         const proxyConfiguration = await getProxyConfiguration();
         const engineSpecificOptions = this.getEngineSpecificOptions();
-        const mergedLaunchContext = mergeLaunchContexts(
-            engineSpecificOptions.launchContext as EngineOptions["launchContext"] | undefined,
-            options?.launchContext
-        );
+        const performanceOptions = this.getPerformanceOptions();
 
-        return new EngineClass({
-            ...defaultOptions,
+        return new EngineClass(buildEngineOptions({
+            baseOptions: defaultOptions,
+            performanceOptions,
+            engineSpecificOptions,
+            options,
             proxyConfiguration,
             requestQueue: queue,
-            ...engineSpecificOptions,
-            ...options,
-            ...(mergedLaunchContext ? { launchContext: mergedLaunchContext } : {}),
-        });
+        }));
     }
 
     protected abstract getEngineSpecificOptions(): Record<string, any>;
+
+    protected getPerformanceOptions(): Partial<EngineOptions> {
+        return {};
+    }
 }
 
 // Concrete factory implementations
@@ -154,6 +204,10 @@ export class CheerioEngineFactory extends BaseEngineFactory {
             ...defaultHttpOptions,
         };
     }
+
+    protected getPerformanceOptions(): Partial<EngineOptions> {
+        return getHttpEnginePerformanceOptions();
+    }
 }
 
 export class PlaywrightEngineFactory extends BaseEngineFactory {
@@ -161,9 +215,18 @@ export class PlaywrightEngineFactory extends BaseEngineFactory {
     protected engineClass = "PlaywrightEngine";
 
     protected getEngineSpecificOptions(): Record<string, any> {
+        const tuning = getPerformanceTuning();
         return {
-            launchContext: defaultLaunchContext,
+            launchContext: mergeLaunchContexts(defaultLaunchContext, {
+                launchOptions: {
+                    defaultViewport: tuning.viewport,
+                },
+            }),
         };
+    }
+
+    protected getPerformanceOptions(): Partial<EngineOptions> {
+        return getBrowserEnginePerformanceOptions();
     }
 }
 
@@ -172,9 +235,18 @@ export class PuppeteerEngineFactory extends BaseEngineFactory {
     protected engineClass = "PuppeteerEngine";
 
     protected getEngineSpecificOptions(): Record<string, any> {
+        const tuning = getPerformanceTuning();
         return {
-            launchContext: defaultLaunchContext,
+            launchContext: mergeLaunchContexts(defaultLaunchContext, {
+                launchOptions: {
+                    defaultViewport: tuning.viewport,
+                },
+            }),
         };
+    }
+
+    protected getPerformanceOptions(): Partial<EngineOptions> {
+        return getBrowserEnginePerformanceOptions();
     }
 }
 

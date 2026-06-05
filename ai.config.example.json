@@ -14,6 +14,11 @@
             "apiKey": "ATLASCLOUD_API_KEY",
             "baseURL": "https://api.atlascloud.ai/v1"
         },
+        "evolink": {
+            "enabled": false,
+            "apiKey": "EVOLINK_API_KEY",
+            "baseURL": "https://direct.evolink.ai/v1"
+        },
         "custom": {
             "enabled": false,
             "apiKey": "CUSTOM_API_KEY",
@@ -45,6 +50,10 @@
                 { "provider": "atlascloud", "modelId": "deepseek-v3" },
                 { "provider": "openrouter", "modelId": "deepseek/deepseek-v3" }
             ]
+        },
+        "gpt-5.2": {
+            "displayName": "GPT-5.2",
+            "providers": [{ "provider": "evolink", "modelId": "gpt-5.2" }]
         }
     },
     "defaults": {

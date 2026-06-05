@@ -25,6 +25,8 @@ describe('ProviderRegistry', () => {
         delete process.env.OPENROUTER_BASE_URL;
         delete process.env.ATLASCLOUD_API_KEY;
         delete process.env.ATLASCLOUD_BASE_URL;
+        delete process.env.EVOLINK_API_KEY;
+        delete process.env.EVOLINK_BASE_URL;
         delete process.env.CUSTOM_API_KEY;
         delete process.env.CUSTOM_BASE_URL;
         delete process.env.DEFAULT_LLM_MODEL;
@@ -41,6 +43,14 @@ describe('ProviderRegistry', () => {
         const { getLLM } = await import('../ProviderRegistry.js');
 
         expect(getLLM('atlascloud/deepseek-v3')).toBeDefined();
+    });
+
+    test('registers Evolink in env mode', async () => {
+        process.env.EVOLINK_API_KEY = 'test-evolink-key';
+
+        const { getLLM } = await import('../ProviderRegistry.js');
+
+        expect(getLLM('evolink/gpt-5.2')).toBeDefined();
     });
 
     test('keeps OpenAI and OpenRouter env registrations working', async () => {
@@ -113,6 +123,49 @@ describe('ProviderRegistry', () => {
             const { getLLM } = await import('../ProviderRegistry.js');
 
             expect(getLLM('atlascloud/deepseek-v3')).toBeDefined();
+        } finally {
+            rmSync(tmpDir, { recursive: true, force: true });
+        }
+    });
+
+    test('uses the default Evolink base URL in config mode', async () => {
+        const tmpDir = mkdtempSync(join(tmpdir(), 'anycrawl-evolink-'));
+        const configPath = join(tmpDir, 'ai.config.json');
+
+        try {
+            writeFileSync(configPath, JSON.stringify({
+                providers: {
+                    evolink: {
+                        enabled: true,
+                        apiKeyEnv: 'EVOLINK_API_KEY',
+                    },
+                },
+                modelMapping: {
+                    'gpt-5.2': {
+                        displayName: 'GPT-5.2',
+                        providers: [
+                            { provider: 'evolink', modelId: 'gpt-5.2' },
+                        ],
+                    },
+                },
+                defaults: {
+                    DEFAULT_LLM_MODEL: 'gpt-5.2',
+                    DEFAULT_EXTRACT_MODEL: 'gpt-5.2',
+                },
+            }));
+
+            process.env.ANYCRAWL_AI_CONFIG_PATH = configPath;
+            process.env.EVOLINK_API_KEY = 'test-evolink-key';
+
+            const { ensureAIConfigLoaded } = await import('../utils/config.js');
+            await ensureAIConfigLoaded();
+
+            const { refreshAIConfig } = await import('../utils/helper.js');
+            refreshAIConfig();
+
+            const { getLLM } = await import('../ProviderRegistry.js');
+
+            expect(getLLM('evolink/gpt-5.2')).toBeDefined();
         } finally {
             rmSync(tmpDir, { recursive: true, force: true });
         }

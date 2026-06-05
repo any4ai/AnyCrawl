@@ -176,6 +176,24 @@ DEFAULT_EXTRACT_MODEL=atlascloud/deepseek-v3
 
 If you prefer file-based AI config, add an `atlascloud` provider entry in `ai.config.json` and map it to any Atlas Cloud model exposed through the OpenAI-compatible chat API.
 
+#### Evolink Provider
+
+AnyCrawl supports Evolink as an OpenAI-compatible LLM provider for extraction and summarization workloads.
+
+- Official site: [Evolink](https://evolink.ai)
+- API keys: [Evolink Dashboard](https://evolink.ai/dashboard/keys)
+- LLM base URL: `https://direct.evolink.ai/v1`
+- Recommended env model format: `evolink/gpt-5.2`
+
+```bash
+EVOLINK_BASE_URL=https://direct.evolink.ai/v1
+EVOLINK_API_KEY=your-evolink-api-key
+DEFAULT_LLM_MODEL=evolink/gpt-5.2
+DEFAULT_EXTRACT_MODEL=evolink/gpt-5.2
+```
+
+If you prefer file-based AI config, add an `evolink` provider entry in `ai.config.json` and map it to any Evolink model exposed through the OpenAI-compatible chat API.
+
 ### Site Crawling (Crawl)
 
 #### Example

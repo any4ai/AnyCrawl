@@ -8,6 +8,7 @@ type ProviderRegistry = ReturnType<typeof createProviderRegistry>;
 
 const separator = '/';
 const atlasCloudBaseURL = 'https://api.atlascloud.ai/v1';
+const evolinkBaseURL = 'https://direct.evolink.ai/v1';
 let providerRegistry: ProviderRegistry;
 
 // Extra headers for providers that support custom headers (e.g., OpenRouter)
@@ -36,7 +37,7 @@ if (aiConfig) {
         const apiKey = typedProvider.apiKey ?? (typedProvider.apiKeyEnv ? process.env[typedProvider.apiKeyEnv] : null);
         const baseURL = typedProvider.baseURL
             ?? (typedProvider.baseURLEnv ? process.env[typedProvider.baseURLEnv] : null)
-            ?? (key === 'atlascloud' ? atlasCloudBaseURL : null);
+            ?? (key === 'atlascloud' ? atlasCloudBaseURL : key === 'evolink' ? evolinkBaseURL : null);
 
         if (apiKey && baseURL) {
             if (key === 'openai') {
@@ -83,6 +84,13 @@ if (aiConfig) {
             name: 'atlascloud',
             baseURL: process.env.ATLASCLOUD_BASE_URL ?? atlasCloudBaseURL,
             apiKey: process.env.ATLASCLOUD_API_KEY,
+        });
+    }
+    if (process.env.EVOLINK_API_KEY) {
+        providerInstances['evolink'] = createOpenAICompatible({
+            name: 'evolink',
+            baseURL: process.env.EVOLINK_BASE_URL ?? evolinkBaseURL,
+            apiKey: process.env.EVOLINK_API_KEY,
         });
     }
     if (process.env.CUSTOM_API_KEY && process.env.CUSTOM_BASE_URL) {

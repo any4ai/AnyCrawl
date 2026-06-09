@@ -23,6 +23,31 @@ type TriggerJobResult = {
     dispatchCommitted: boolean;
 };
 
+export function resolveScheduledFor(
+    nextExecutionAt: unknown,
+    fallback: Date = new Date()
+): Date {
+    if (nextExecutionAt instanceof Date && !Number.isNaN(nextExecutionAt.getTime())) {
+        return nextExecutionAt;
+    }
+
+    if (typeof nextExecutionAt === "string" || typeof nextExecutionAt === "number") {
+        const parsed = new Date(nextExecutionAt);
+        if (!Number.isNaN(parsed.getTime())) {
+            return parsed;
+        }
+    }
+
+    return fallback;
+}
+
+export function buildScheduledExecutionIdempotencyKey(
+    taskUuid: string,
+    scheduledFor: Date
+): string {
+    return `${taskUuid}-${scheduledFor.toISOString()}`;
+}
+
 export function resolveDispatchStateFromError(
     executionDispatched: boolean,
     jobUuid: string | undefined,
@@ -511,9 +536,22 @@ export class SchedulerManager {
                 }
             }
 
-            // Generate idempotency key
-            idempotencyKey = `${task.uuid}-${Date.now()}`;
             const executionCreatedAt = new Date();
+            const scheduledFor = resolveScheduledFor(task.nextExecutionAt, executionCreatedAt);
+            idempotencyKey = buildScheduledExecutionIdempotencyKey(task.uuid, scheduledFor);
+            const existingExecution = await db
+                .select({ uuid: schemas.taskExecutions.uuid })
+                .from(schemas.taskExecutions)
+                .where(eq(schemas.taskExecutions.idempotencyKey, idempotencyKey))
+                .limit(1);
+
+            if (existingExecution.length > 0) {
+                log.info(
+                    `[SCHEDULER] Execution already exists for task ${task.uuid} at ${scheduledFor.toISOString()}, skipping duplicate`
+                );
+                await this.updateNextExecutionTime(task);
+                return;
+            }
 
             // Persist execution attempt first (no external side effects in this transaction)
             // This guarantees every attempt has a durable execution record.
@@ -545,9 +583,9 @@ export class SchedulerManager {
                     executionNumber: executionNumber!,
                     idempotencyKey: idempotencyKey!,
                     status: "pending",
-                    scheduledFor: new Date(),
+                    scheduledFor,
                     triggeredBy: "scheduler",
-                    createdAt: new Date(),
+                    createdAt: executionCreatedAt,
                 });
             });
 
@@ -583,18 +621,7 @@ export class SchedulerManager {
             }
 
             // Calculate next execution time
-            let nextExecutionAt: Date | null = null;
-            try {
-                const interval = CronExpressionParser.parse(task.cronExpression, {
-                    tz: task.timezone || "UTC",
-                    currentDate: new Date(),
-                });
-                nextExecutionAt = interval.next().toDate();
-            } catch (error) {
-                log.error(
-                    `[SCHEDULER] Failed to calculate next execution for task ${task.name}: ${error}`
-                );
-            }
+            const nextExecutionAt = await this.calculateNextExecutionOrPause(task);
 
             // Update task statistics
             try {
@@ -716,26 +743,14 @@ export class SchedulerManager {
 
                 // Update failure statistics and next execution time
                 // Always update nextExecutionAt regardless of success/failure
-                let nextExecutionAt: Date | null = null;
-                try {
-                    const taskForCron = await db
-                        .select()
-                        .from(schemas.scheduledTasks)
-                        .where(eq(schemas.scheduledTasks.uuid, taskUuid))
-                        .limit(1);
-
-                    if (taskForCron[0]) {
-                        const interval = CronExpressionParser.parse(taskForCron[0].cronExpression, {
-                            tz: taskForCron[0].timezone || "UTC",
-                            currentDate: new Date(),
-                        });
-                        nextExecutionAt = interval.next().toDate();
-                    }
-                } catch (cronError) {
-                    log.error(
-                        `[SCHEDULER] Failed to calculate next execution for failed task ${taskUuid}: ${cronError}`
-                    );
-                }
+                const taskForCron = await db
+                    .select()
+                    .from(schemas.scheduledTasks)
+                    .where(eq(schemas.scheduledTasks.uuid, taskUuid))
+                    .limit(1);
+                const nextExecutionAt = taskForCron[0]
+                    ? await this.calculateNextExecutionOrPause(taskForCron[0])
+                    : null;
 
                 await db
                     .update(schemas.scheduledTasks)
@@ -789,11 +804,7 @@ export class SchedulerManager {
     private async updateNextExecutionTime(task: any): Promise<void> {
         try {
             const db = await getDB();
-            const interval = CronExpressionParser.parse(task.cronExpression, {
-                tz: task.timezone || "UTC",
-                currentDate: new Date(),
-            });
-            const nextExecutionAt = interval.next().toDate();
+            const nextExecutionAt = await this.calculateNextExecutionOrPause(task);
 
             await db
                 .update(schemas.scheduledTasks)
@@ -810,6 +821,36 @@ export class SchedulerManager {
             log.error(
                 `[SCHEDULER] Failed to update next execution time for task ${task.name}: ${error}`
             );
+        }
+    }
+
+    private async calculateNextExecutionOrPause(task: any): Promise<Date | null> {
+        try {
+            const interval = CronExpressionParser.parse(task.cronExpression, {
+                tz: task.timezone || "UTC",
+                currentDate: new Date(),
+            });
+            return interval.next().toDate();
+        } catch (error) {
+            const db = await getDB();
+            const pauseReason = `Auto-paused: Failed to calculate next execution (${error instanceof Error ? error.message : String(error)})`;
+
+            log.error(
+                `[SCHEDULER] Failed to calculate next execution for task ${task.name}: ${error}`
+            );
+
+            await db
+                .update(schemas.scheduledTasks)
+                .set({
+                    isPaused: true,
+                    pauseReason,
+                    nextExecutionAt: null,
+                    updatedAt: new Date(),
+                })
+                .where(eq(schemas.scheduledTasks.uuid, task.uuid));
+
+            await this.removeScheduledTask(task.uuid);
+            return null;
         }
     }
 
@@ -1448,6 +1489,12 @@ export class SchedulerManager {
                 log.debug("[SCHEDULER] No new tasks detected since last sync");
             }
 
+            // BullMQ repeatable jobs can miss a persisted nextExecutionAt after downtime
+            // or scheduler restarts. Treat due database rows as the source of truth and
+            // trigger one catch-up execution; processScheduledTaskJob advances the next
+            // execution time after dispatch.
+            await this.processOverdueTasks(db, queryTime);
+
             // Cleanup stale pending executions (stuck for more than 5 minutes without starting)
             await this.cleanupStaleExecutions(db);
 
@@ -1461,6 +1508,57 @@ export class SchedulerManager {
         } finally {
             // Always release the lock after polling completes
             await this.releasePollLock();
+        }
+    }
+
+    private async processOverdueTasks(
+        db: Awaited<ReturnType<typeof getDB>>,
+        now: Date
+    ): Promise<void> {
+        const overdueTasks = await db
+            .select({
+                uuid: schemas.scheduledTasks.uuid,
+                name: schemas.scheduledTasks.name,
+                cronExpression: schemas.scheduledTasks.cronExpression,
+                timezone: schemas.scheduledTasks.timezone,
+                nextExecutionAt: schemas.scheduledTasks.nextExecutionAt,
+            })
+            .from(schemas.scheduledTasks)
+            .where(
+                sql`${schemas.scheduledTasks.isActive} = true
+                    AND ${schemas.scheduledTasks.isPaused} = false
+                    AND ${schemas.scheduledTasks.nextExecutionAt} IS NOT NULL
+                    AND ${schemas.scheduledTasks.nextExecutionAt} <= ${now}`
+            );
+
+        if (overdueTasks.length === 0) {
+            return;
+        }
+
+        log.info(
+            `[SCHEDULER] ⏰ Found ${overdueTasks.length} overdue scheduled task(s), catching up once`
+        );
+
+        for (const task of overdueTasks) {
+            const scheduledFor = resolveScheduledFor(task.nextExecutionAt, now);
+            const idempotencyKey = buildScheduledExecutionIdempotencyKey(task.uuid, scheduledFor);
+            const existingExecution = await db
+                .select({ uuid: schemas.taskExecutions.uuid })
+                .from(schemas.taskExecutions)
+                .where(eq(schemas.taskExecutions.idempotencyKey, idempotencyKey))
+                .limit(1);
+
+            if (existingExecution.length > 0) {
+                log.debug(
+                    `[SCHEDULER] Overdue execution already exists for task ${task.uuid} at ${scheduledFor.toISOString()}`
+                );
+                await this.updateNextExecutionTime(task);
+                continue;
+            }
+
+            await this.processScheduledTaskJob({
+                data: { taskUuid: task.uuid },
+            } as Job);
         }
     }
 

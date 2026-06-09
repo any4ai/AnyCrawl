@@ -710,9 +710,15 @@ export class EngineConfigurator {
 
     private static configurePuppeteer(options: any): void {
         options.browserPoolOptions = {
+            ...options.browserPoolOptions,
+            maxOpenPagesPerBrowser: options.browserPoolOptions?.maxOpenPagesPerBrowser ?? config.engine.browserMaxOpenPagesPerBrowser,
+            retireBrowserAfterPageCount: options.browserPoolOptions?.retireBrowserAfterPageCount ?? config.engine.browserMaxPagesPerBrowser,
+            retireInactiveBrowserAfterSecs: options.browserPoolOptions?.retireInactiveBrowserAfterSecs ?? config.engine.browserIdleRetireSecs,
             useFingerprints: true,
             fingerprintOptions: {
+                ...options.browserPoolOptions?.fingerprintOptions,
                 fingerprintGeneratorOptions: {
+                    ...(options.browserPoolOptions?.fingerprintOptions as any)?.fingerprintGeneratorOptions,
                     browsers: [{ name: BrowserName.chrome, minVersion: 120 }],
                 },
             },
@@ -721,9 +727,15 @@ export class EngineConfigurator {
 
     private static configurePlaywright(options: any): void {
         options.browserPoolOptions = {
+            ...options.browserPoolOptions,
+            maxOpenPagesPerBrowser: options.browserPoolOptions?.maxOpenPagesPerBrowser ?? config.engine.browserMaxOpenPagesPerBrowser,
+            retireBrowserAfterPageCount: options.browserPoolOptions?.retireBrowserAfterPageCount ?? config.engine.browserMaxPagesPerBrowser,
+            retireInactiveBrowserAfterSecs: options.browserPoolOptions?.retireInactiveBrowserAfterSecs ?? config.engine.browserIdleRetireSecs,
             useFingerprints: true,
             fingerprintOptions: {
+                ...options.browserPoolOptions?.fingerprintOptions,
                 fingerprintGeneratorOptions: {
+                    ...(options.browserPoolOptions?.fingerprintOptions as any)?.fingerprintGeneratorOptions,
                     browsers: [{ name: BrowserName.chrome, minVersion: 120 }],
                 },
             },

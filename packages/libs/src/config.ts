@@ -12,6 +12,11 @@ const parseIntEnv = (key: string, fallback: number): number => {
     return Number.isFinite(n) ? n : fallback;
 };
 
+const parsePositiveIntEnv = (key: string, fallback: number): number => {
+    const n = parseIntEnv(key, fallback);
+    return n > 0 ? n : fallback;
+};
+
 const parseMsEnv = (key: string, fallback: number): number => {
     const raw = process.env[key];
     if (raw === undefined || raw === '') return fallback;
@@ -102,10 +107,23 @@ export const config = {
             return process.env.ANYCRAWL_LIGHT_MODE !== "false";
         },
         get keepAlive(): boolean {
-            return process.env.ANYCRAWL_KEEP_ALIVE !== "false";
+            const raw = process.env.ANYCRAWL_KEEP_ALIVE ?? process.env.ANYCRAWL_KEEPALIVE;
+            return raw !== "false";
         },
         get userAgent(): string | undefined {
             return process.env.ANYCRAWL_USER_AGENT;
+        },
+        get browserIdleRetireSecs(): number {
+            return parsePositiveIntEnv('ANYCRAWL_BROWSER_IDLE_RETIRE_SECS', 3600);
+        },
+        get browserMaxPagesPerBrowser(): number {
+            return parsePositiveIntEnv('ANYCRAWL_BROWSER_MAX_PAGES_PER_BROWSER', 500);
+        },
+        get browserMaxOpenPagesPerBrowser(): number {
+            return parsePositiveIntEnv('ANYCRAWL_BROWSER_MAX_OPEN_PAGES_PER_BROWSER', 20);
+        },
+        get browserIsolateContexts(): boolean {
+            return process.env.ANYCRAWL_BROWSER_ISOLATE_CONTEXTS !== "false";
         },
         get minConcurrency(): number | undefined {
             const raw = process.env.ANYCRAWL_MIN_CONCURRENCY;

@@ -79,6 +79,7 @@ const defaultLaunchContext: Partial<LaunchContext> = {
         },
         ignoreHTTPSErrors: config.engine.ignoreSSLError,
     },
+    useIncognitoPages: config.engine.browserIsolateContexts,
     ...(config.engine.userAgent ? {
         userAgent: config.engine.userAgent
     } : {}),

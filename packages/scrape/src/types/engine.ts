@@ -34,13 +34,28 @@ export interface EngineOptions {
     };
     launchContext?: {
         launcher?: unknown;
+        useIncognitoPages?: boolean;
+        userAgent?: string;
+        userDataDir?: string;
         launchOptions?: {
             args?: string[];
             defaultViewport?: {
                 width: number;
                 height: number;
             };
+            ignoreHTTPSErrors?: boolean;
+            [key: string]: unknown;
         };
+    };
+    browserPoolOptions?: {
+        maxOpenPagesPerBrowser?: number;
+        retireBrowserAfterPageCount?: number;
+        operationTimeoutSecs?: number;
+        closeInactiveBrowserAfterSecs?: number;
+        retireInactiveBrowserAfterSecs?: number;
+        useFingerprints?: boolean;
+        fingerprintOptions?: Record<string, unknown>;
+        [key: string]: unknown;
     };
     preNavigationHooks?: ((context: CrawlingContext) => Promise<any>)[];
     additionalMimeTypes?: string[];

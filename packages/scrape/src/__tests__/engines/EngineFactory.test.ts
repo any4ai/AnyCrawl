@@ -107,8 +107,10 @@ describe('EngineFactory Tests', () => {
             expect(playwrightOptions.launchContext.launcher.name()).toBe('chromium');
             expect(typeof playwrightOptions.launchContext.launcher.launchPersistentContext).toBe('function');
             expect(playwrightOptions.launchContext.launcher.__anycrawlBrowserRuntime).toBe('cloakbrowser');
+            expect(playwrightOptions.launchContext.useIncognitoPages).toBe(true);
             expect(puppeteerOptions.launchContext.launcher.launch).toBe(puppeteerLauncher);
             expect(puppeteerOptions.launchContext.launcher.__anycrawlBrowserRuntime).toBe('cloakbrowser');
+            expect(puppeteerOptions.launchContext.useIncognitoPages).toBe(true);
         });
 
         test('should preserve the CloakBrowser launcher when custom launchContext is supplied', async () => {

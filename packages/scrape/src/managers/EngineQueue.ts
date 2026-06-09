@@ -37,6 +37,7 @@ export class EngineQueueManager {
     private static instance: EngineQueueManager;
     private queues: Map<string, RequestQueueV2> = new Map();
     private engines: Map<string, Engine> = new Map();
+    private engineRuns: Map<string, Promise<void>> = new Map();
 
     private constructor() { }
 
@@ -92,9 +93,24 @@ export class EngineQueueManager {
     async startEngines(): Promise<void> {
         // Start all engines
         for (const [engineType, engine] of this.engines) {
+            if (this.engineRuns.has(engineType)) {
+                log.info(`Crawler for ${engineType} is already running`);
+                continue;
+            }
+
             try {
                 log.info(`Starting crawler for ${engineType}...`);
-                engine.run().then(() => { });
+                const runPromise = engine.run()
+                    .then(() => {
+                        log.warning(`Crawler for ${engineType} exited`);
+                    })
+                    .catch((error) => {
+                        log.error(`Crawler for ${engineType} failed: ${error}`);
+                    })
+                    .finally(() => {
+                        this.engineRuns.delete(engineType);
+                    });
+                this.engineRuns.set(engineType, runPromise);
             } catch (error) {
                 log.error(`Error starting crawler for ${engineType}: ${error}`);
                 throw error;
@@ -114,6 +130,7 @@ export class EngineQueueManager {
         // Stop all engines
         for (const [engineType, engine] of this.engines) {
             await engine.stop();
+            this.engineRuns.delete(engineType);
         }
     }
 

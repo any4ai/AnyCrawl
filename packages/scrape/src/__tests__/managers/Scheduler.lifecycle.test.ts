@@ -1,5 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, jest } from "@jest/globals";
-import { SchedulerManager, resolveDispatchStateFromError } from "../../managers/Scheduler.js";
+import {
+    SchedulerManager,
+    buildScheduledExecutionIdempotencyKey,
+    resolveDispatchStateFromError,
+    resolveScheduledFor,
+} from "../../managers/Scheduler.js";
 
 function createCleanupDbStub(
     runningExecutions: Array<Record<string, unknown>>,
@@ -64,6 +69,22 @@ describe("Scheduler lifecycle guards", () => {
         const state = resolveDispatchStateFromError(false, undefined, error);
         expect(state.executionDispatched).toBe(true);
         expect(state.jobUuid).toBe("job-from-error");
+    });
+
+    it("uses nextExecutionAt as scheduledFor when it is available", () => {
+        const scheduledFor = new Date("2026-05-28T01:00:00.000Z");
+        const fallback = new Date("2026-05-28T02:00:00.000Z");
+
+        expect(resolveScheduledFor(scheduledFor, fallback)).toBe(scheduledFor);
+        expect(resolveScheduledFor(scheduledFor.toISOString(), fallback)).toEqual(scheduledFor);
+    });
+
+    it("builds stable idempotency keys from task UUID and scheduled time", () => {
+        const scheduledFor = new Date("2026-05-28T01:00:00.000Z");
+
+        expect(buildScheduledExecutionIdempotencyKey("task-1", scheduledFor)).toBe(
+            "task-1-2026-05-28T01:00:00.000Z"
+        );
     });
 
     it("skips timed-out job status update when finalizeExecution does not transition", async () => {

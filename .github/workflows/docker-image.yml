@@ -36,4 +36,4 @@ jobs:
                   multiPlatform: true
                   platform: linux/amd64,linux/arm64
                   dockerfile: ./apps/api/Dockerfile
-                  tags: latest,${GITHUB_REF#refs/tags/}
+                  tags: latest,${{ github.ref_name }}

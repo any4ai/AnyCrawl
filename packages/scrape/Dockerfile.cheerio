@@ -28,6 +28,7 @@ RUN rm -rf node_modules
 FROM base AS scrape-cheerio
 WORKDIR /usr/src/app/packages/scrape
 # 1. copy packages and root
+COPY --from=build /usr/src/app/package.json /usr/src/app/package.json
 COPY --from=build /usr/src/app/pnpm-lock.yaml /usr/src/app/pnpm-lock.yaml
 COPY --from=build /usr/src/app/pnpm-workspace.yaml /usr/src/app/pnpm-workspace.yaml
 COPY --from=build /usr/src/app/packages/eslint-config/package.json /usr/src/app/packages/eslint-config/package.json
@@ -52,4 +53,3 @@ RUN pnpm rebuild better-sqlite3
 ENV ANYCRAWL_AVAILABLE_ENGINES=cheerio
 
 CMD [ "node", "dist/Worker.js" ]
-

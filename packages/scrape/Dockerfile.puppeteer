@@ -10,6 +10,7 @@ ENV PNPM_HOME="/pnpm"
 ENV PATH="$PNPM_HOME:$PATH"
 ENV NODE_ENV=production
 ENV CLOAKBROWSER_CACHE_DIR=/home/myuser/.cache/cloakbrowser
+ENV PUPPETEER_CACHE_DIR=/home/myuser/.cache/puppeteer
 ENV CLOAKBROWSER_AUTO_UPDATE=false
 RUN corepack enable pnpm
 
@@ -38,7 +39,8 @@ RUN rm -rf node_modules
 FROM base AS scrape-puppeteer
 
 WORKDIR /usr/src/app/packages/scrape
-RUN chown -R myuser:myuser /usr/src/app
+RUN mkdir -p "$CLOAKBROWSER_CACHE_DIR" "$PUPPETEER_CACHE_DIR" \
+    && chown -R myuser:myuser /usr/src/app /home/myuser/.cache
 
 # 1. copy packages and root
 COPY --chown=myuser:myuser --from=build /usr/src/app/package.json /usr/src/app/package.json
@@ -71,7 +73,6 @@ RUN pnpm rebuild better-sqlite3
 RUN npx puppeteer browsers install chrome
 
 # Set puppeteer environment variables
-ENV PUPPETEER_CACHE_DIR=/home/myuser/.cache/puppeteer
 ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=false
 ENV ANYCRAWL_AVAILABLE_ENGINES=puppeteer
 

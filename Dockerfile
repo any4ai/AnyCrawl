@@ -85,6 +85,8 @@ ENV ANYCRAWL_API_DB_CONNECTION=/usr/src/app/storage/anycrawl.db
 ENV ANYCRAWL_API_PORT=8080
 ENV ANYCRAWL_API_AUTH_ENABLED=false
 ENV REDIS_URL=redis://localhost:6379
+ENV CLOAKBROWSER_CACHE_DIR=/usr/src/app/.cache/cloakbrowser
+ENV CLOAKBROWSER_AUTO_UPDATE=false
 
 # Create engine configuration script (disable puppeteer on non-amd64)
 RUN if [ "$ENABLE_PUPPETEER" = "true" ] && [ "$TARGETARCH" = "amd64" ]; then \
@@ -133,6 +135,7 @@ COPY --from=build /usr/src/app/apps/api/scripts/run-generate-api-key.mjs ./apps/
 RUN --mount=type=cache,id=pnpm-glibc,target=/pnpm/store pnpm install --prod --frozen-lockfile
 # Ensure native modules rebuilt for current platform (in case scripts were skipped earlier due to cache)
 RUN pnpm rebuild better-sqlite3
+RUN cd /usr/src/app/packages/scrape && npx cloakbrowser install
 
 # Bring in dev tooling (drizzle-kit) from migration stage so we can run migrations without npx
 COPY --from=migration /usr/src/app/node_modules ./node_modules

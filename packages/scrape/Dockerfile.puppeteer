@@ -9,6 +9,8 @@ USER root
 ENV PNPM_HOME="/pnpm"
 ENV PATH="$PNPM_HOME:$PATH"
 ENV NODE_ENV=production
+ENV CLOAKBROWSER_CACHE_DIR=/home/myuser/.cache/cloakbrowser
+ENV CLOAKBROWSER_AUTO_UPDATE=false
 RUN corepack enable pnpm
 
 # Build toolchain for native modules (e.g., better-sqlite3)
@@ -39,6 +41,7 @@ WORKDIR /usr/src/app/packages/scrape
 RUN chown -R myuser:myuser /usr/src/app
 
 # 1. copy packages and root
+COPY --chown=myuser:myuser --from=build /usr/src/app/package.json /usr/src/app/package.json
 COPY --chown=myuser:myuser --from=build /usr/src/app/pnpm-lock.yaml /usr/src/app/pnpm-lock.yaml
 COPY --chown=myuser:myuser --from=build /usr/src/app/pnpm-workspace.yaml /usr/src/app/pnpm-workspace.yaml
 COPY --chown=myuser:myuser --from=build /usr/src/app/packages/eslint-config/package.json /usr/src/app/packages/eslint-config/package.json
@@ -60,6 +63,7 @@ COPY --chown=myuser:myuser --from=build /usr/src/app/packages/template-client/pa
 
 USER myuser
 RUN --mount=type=cache,id=pnpm,target=/pnpm/store pnpm install --prod --frozen-lockfile
+RUN npx cloakbrowser install
 # Ensure native modules rebuilt for current platform
 RUN pnpm rebuild better-sqlite3
 
@@ -72,4 +76,3 @@ ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=false
 ENV ANYCRAWL_AVAILABLE_ENGINES=puppeteer
 
 CMD [ "node", "dist/Worker.js" ]
-

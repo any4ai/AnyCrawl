@@ -137,6 +137,12 @@ More parameters: see [Request Parameters](https://docs.anycrawl.dev/en/general/s
 
 Cache details (self-host / S3 / map index): see `docs/cache.md`.
 
+#### Browser Runtime
+
+The public scrape and crawl engine values remain `cheerio`, `playwright`, and `puppeteer`. For self-hosted browser engines, `playwright` and `puppeteer` are launched through CloakBrowser by default; callers should not send a `cloakbrowser` engine value.
+
+CloakBrowser requires Node.js 20 or newer. Docker images pre-install its browser binary during image build. For local or custom deployments, set `CLOAKBROWSER_CACHE_DIR` to a stable writable path and `CLOAKBROWSER_AUTO_UPDATE=false` to avoid browser downloads during worker startup. If you manage the binary yourself, set `CLOAKBROWSER_BINARY_PATH`.
+
 #### LLM Extraction
 
 ```bash

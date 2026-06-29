@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.0-beta.32] - 2026-06-30
+
+### Fixed
+
+- Repaired Docker release builds by pinning runtime installs to the workspace `pnpm@10.12.4` metadata in the Cheerio image.
+- Fixed Puppeteer image browser installation permissions by using the writable user cache directory before installing Chrome.
+- Corrected single-image Docker workflows to tag GHCR images with the actual release tag instead of a literal shell expression.
+
 ## [1.0.0-beta.31] - 2026-06-30
 
 ### Added

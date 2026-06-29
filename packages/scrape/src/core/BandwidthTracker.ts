@@ -7,11 +7,17 @@ type CdpClient = {
     on(event: string, handler: (params: any) => void): void;
 };
 
+type PageCdpSessionState = {
+    client: CdpClient;
+    networkEnabled: boolean;
+};
+
 type TrackerHandle = {
     setJobContext(jobId: string): void;
 };
 
 const trackers = new WeakMap<object, TrackerHandle>();
+const cdpSessions = new WeakMap<object, PageCdpSessionState>();
 
 const createSessionId = () => `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 
@@ -32,13 +38,48 @@ const estimateRequestBytes = (params: any): number => {
 };
 
 const attachCdpClient = async (page: any, engineType: ConfigurableEngineType): Promise<CdpClient> => {
+    const existing = cdpSessions.get(page as object);
+    if (existing) return existing.client;
+
+    let client: CdpClient;
     if (engineType === ConfigurableEngineType.PLAYWRIGHT) {
-        return (await page.context().newCDPSession(page)) as CdpClient;
+        client = (await page.context().newCDPSession(page)) as CdpClient;
+    } else if (engineType === ConfigurableEngineType.PUPPETEER) {
+        client = (await page.target().createCDPSession()) as CdpClient;
+    } else {
+        throw new Error(`Unsupported engine type for CDP tracker: ${engineType}`);
     }
-    if (engineType === ConfigurableEngineType.PUPPETEER) {
-        return (await page.target().createCDPSession()) as CdpClient;
+
+    cdpSessions.set(page as object, {
+        client,
+        networkEnabled: false,
+    });
+    return client;
+};
+
+export const getOrCreatePageCdpSession = async (
+    page: any,
+    engineType: ConfigurableEngineType
+): Promise<CdpClient | null> => {
+    if (!page || (engineType !== ConfigurableEngineType.PLAYWRIGHT && engineType !== ConfigurableEngineType.PUPPETEER)) {
+        return null;
     }
-    throw new Error(`Unsupported engine type for CDP tracker: ${engineType}`);
+    return attachCdpClient(page, engineType);
+};
+
+export const ensureNetworkEnabled = async (
+    page: any,
+    engineType: ConfigurableEngineType
+): Promise<CdpClient | null> => {
+    const client = await getOrCreatePageCdpSession(page, engineType);
+    if (!client) return null;
+
+    const state = cdpSessions.get(page as object);
+    if (state && !state.networkEnabled) {
+        await client.send("Network.enable");
+        state.networkEnabled = true;
+    }
+    return client;
 };
 
 export const getOrCreateBandwidthTracker = async (
@@ -52,8 +93,8 @@ export const getOrCreateBandwidthTracker = async (
     const existing = trackers.get(page as object);
     if (existing) return existing;
 
-    const client = await attachCdpClient(page, engineType);
-    await client.send("Network.enable");
+    const client = await ensureNetworkEnabled(page, engineType);
+    if (!client) return null;
 
     const engine = engineType as unknown as RequestEngine;
     const sessionId = createSessionId();
@@ -158,4 +199,3 @@ export const getOrCreateBandwidthTracker = async (
     trackers.set(page as object, handle);
     return handle;
 };
-

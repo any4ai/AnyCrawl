@@ -137,6 +137,29 @@ export class QueueManager {
     }
 
     /**
+     * Mark a job as cancelled without removing the BullMQ job record.
+     *
+     * Crawlee RequestQueue entries cannot be removed reliably once dispatched,
+     * so engines use this marker to skip late persistence after API timeouts.
+     */
+    public async markJobCancelled(queueName: QueueName, jobId: string, reason?: string): Promise<boolean> {
+        const job = await this.getJob(queueName, jobId);
+        if (!job) {
+            log.warning(`[${queueName}] Unable to mark job ${jobId} as cancelled: job not found`);
+            return false;
+        }
+
+        await job.updateData({
+            ...job.data,
+            status: "cancelled",
+            cancelledAt: new Date().toISOString(),
+            cancelReason: reason,
+        });
+        log.warning(`[${queueName}] Marked job ${jobId} as cancelled${reason ? `: ${reason}` : ""}`);
+        return true;
+    }
+
+    /**
      * Get the number of jobs in a specific queue
      * @param queueName Name of the queue
      * @returns Number of jobs in the queue
@@ -197,7 +220,7 @@ export class QueueManager {
         // Some engines may mark failures via task_status while keeping BullMQ state as completed;
         // both cases should resolve the waiter.
         if (state?.status === "completed" &&
-            (state?.task_status === "completed" || state?.task_status === "failed")) {
+            (state?.task_status === "completed" || state?.task_status === "failed" || state?.task_status === "cancelled")) {
             return true;
         }
         return false;
@@ -227,25 +250,48 @@ export class QueueManager {
         timeout: number = 30000
     ): Promise<any> {
         return new Promise((resolve, reject) => {
+            let settled = false;
+            let pollTimeoutId: NodeJS.Timeout | undefined;
             const timeoutId = setTimeout(() => {
+                if (settled) {
+                    return;
+                }
+                settled = true;
+                if (pollTimeoutId) {
+                    clearTimeout(pollTimeoutId);
+                }
                 log.error(`[${queueName}] checkJob: ${jobId} timed out after ${timeout}ms`);
                 reject(new Error(`Job ${jobId} timed out after ${timeout}ms`));
             }, timeout);
 
             const checkJob = async () => {
+                if (settled) {
+                    return;
+                }
                 try {
                     const isJobDone = await QueueManager.getInstance().isJobDone(queueName, jobId);
+                    if (settled) {
+                        return;
+                    }
                     if (isJobDone) {
+                        settled = true;
                         clearTimeout(timeoutId);
                         const data = await QueueManager.getInstance().getJobData(queueName, jobId);
                         log.info(`[${queueName}] checkJob: ${jobId} done`);
                         resolve(data);
                     } else {
                         // Add delay between checks to reduce CPU usage
-                        setTimeout(checkJob, 100); // Check every 100ms
+                        pollTimeoutId = setTimeout(checkJob, 100); // Check every 100ms
                     }
                 } catch (error) {
+                    if (settled) {
+                        return;
+                    }
+                    settled = true;
                     clearTimeout(timeoutId);
+                    if (pollTimeoutId) {
+                        clearTimeout(pollTimeoutId);
+                    }
                     log.error(`[${queueName}] checkJob: ${jobId} failed: ${error}`);
                     reject(error);
                 }

@@ -180,7 +180,7 @@ export type SearchRequest = {
     /** Search source: web | images | news (SearXNG) */
     sources?: 'web' | 'images' | 'news';
     scrape_options?: (Omit<ScrapeOptionsInput, 'retry'> & {
-        engine: Engine;
+        engine?: Engine;
         /** Scrape-type template for search result follow-up fetches */
         template_id?: string;
         variables?: Record<string, any>;

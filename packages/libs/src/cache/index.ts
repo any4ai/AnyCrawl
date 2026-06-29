@@ -12,6 +12,10 @@ export function getCacheConfig() {
         enabled: config.cache.enabled,
         pageCacheEnabled: config.cache.pageCacheEnabled,
         mapCacheEnabled: config.cache.mapCacheEnabled,
+        artifactsEnabled: config.cache.artifactsEnabled,
+        legacyFallbackEnabled: config.cache.legacyFallbackEnabled,
+        legacyWriteEnabled: config.cache.legacyWriteEnabled,
+        dbArtifactMaxBytes: config.cache.dbArtifactMaxBytes,
         defaultMaxAge: config.cache.defaultMaxAgeMs,
         sitemapMaxAge: config.cache.sitemapMaxAgeMs,
     };
@@ -35,6 +39,23 @@ export interface CacheKeyParams {
     wait_for_selector?: unknown;
     template_id?: string;
     store_in_cache?: boolean;
+}
+
+export type CacheArtifactType =
+    | "base"
+    | "markdown"
+    | "html"
+    | "rawHtml"
+    | "text"
+    | "links"
+    | "json"
+    | "summary"
+    | "screenshot"
+    | "screenshot@fullPage";
+
+export interface ArtifactKeyParams extends CacheKeyParams {
+    artifactType: CacheArtifactType;
+    modelId?: string | null;
 }
 
 // Cached content structure stored in S3
@@ -164,6 +185,82 @@ function sortKeys(obj: any): any {
     return sorted;
 }
 
+function stableStringify(value: unknown): string {
+    return JSON.stringify(sortKeys(value));
+}
+
+export function normalizeProxyForCache(proxyValue: CacheKeyParams["proxy"]): string {
+    if (!proxyValue) return 'none';
+    if (proxyValue === true) return 'true';
+    if (typeof proxyValue !== 'string') return 'unknown';
+    const lowered = proxyValue.toLowerCase();
+    if (lowered === 'auto' || lowered === 'base' || lowered === 'stealth') return lowered;
+    const proxyHash = createHash('sha256').update(proxyValue).digest('hex').slice(0, 12);
+    return `custom:${proxyHash}`;
+}
+
+export function computeSnapshotKey(params: CacheKeyParams): { urlHash: string; snapshotHash: string } {
+    const normalizedUrl = normalizeUrl(params.url);
+    const urlHash = createHash('sha256').update(normalizedUrl).digest('hex');
+    const snapshotOptions = {
+        url: normalizedUrl,
+        engine: params.engine === 'auto' ? ((params as any)._autoResolvedEngine || 'cheerio') : (params.engine || 'cheerio'),
+        proxy: normalizeProxyForCache(params.proxy),
+        wait_for: params.wait_for ?? null,
+        wait_until: params.wait_until ?? null,
+        wait_for_selector: params.wait_for_selector ? stableStringify(params.wait_for_selector) : null,
+    };
+    const snapshotHash = createHash('sha256').update(stableStringify(snapshotOptions)).digest('hex');
+    return { urlHash, snapshotHash };
+}
+
+export function computeArtifactOptionsHash(params: ArtifactKeyParams): string {
+    const sharedTransformOptions = {
+        include_tags: params.include_tags ? [...params.include_tags].sort() : undefined,
+        exclude_tags: params.exclude_tags ? [...params.exclude_tags].sort() : undefined,
+        only_main_content: params.only_main_content ?? true,
+    };
+
+    const artifactOptions = (() => {
+        switch (params.artifactType) {
+            case "base":
+            case "rawHtml":
+            case "text":
+            case "links":
+            case "screenshot":
+            case "screenshot@fullPage":
+                return {};
+            case "html":
+                return sharedTransformOptions;
+            case "markdown":
+                return {
+                    ...sharedTransformOptions,
+                    ocr_options: params.ocr_options ?? false,
+                };
+            case "json":
+                return {
+                    ...sharedTransformOptions,
+                    json_options: params.json_options ? stableStringify(params.json_options) : null,
+                    extract_source: params.extract_source ?? 'markdown',
+                    ocr_options: params.ocr_options ?? false,
+                    model_id: params.modelId ?? null,
+                };
+            case "summary":
+                return {
+                    ...sharedTransformOptions,
+                    extract_source: params.extract_source ?? 'markdown',
+                    ocr_options: params.ocr_options ?? false,
+                    model_id: params.modelId ?? null,
+                };
+        }
+    })();
+
+    return createHash('sha256').update(stableStringify({
+        artifactType: params.artifactType,
+        options: artifactOptions,
+    })).digest('hex');
+}
+
 /**
  * Compute cache key from URL and options
  */
@@ -171,17 +268,6 @@ export function computeCacheKey(params: CacheKeyParams): { urlHash: string; opti
     // Normalize URL
     const normalizedUrl = normalizeUrl(params.url);
     const urlHash = createHash('sha256').update(normalizedUrl).digest('hex');
-
-    const proxyValue = params.proxy;
-    const normalizedProxy = (() => {
-        if (!proxyValue) return 'none';
-        if (proxyValue === true) return 'true';
-        if (typeof proxyValue !== 'string') return 'unknown';
-        const lowered = proxyValue.toLowerCase();
-        if (lowered === 'auto' || lowered === 'base' || lowered === 'stealth') return lowered;
-        const proxyHash = createHash('sha256').update(proxyValue).digest('hex').slice(0, 12);
-        return `custom:${proxyHash}`;
-    })();
 
     // Extract cacheable options (sorted for consistency)
     const cacheableOptions = {
@@ -203,7 +289,7 @@ export function computeCacheKey(params: CacheKeyParams): { urlHash: string; opti
         wait_for: params.wait_for ?? null,
         wait_until: params.wait_until ?? null,
         wait_for_selector: params.wait_for_selector ? JSON.stringify(sortKeys(params.wait_for_selector)) : null,
-        proxy: normalizedProxy,
+        proxy: normalizeProxyForCache(params.proxy),
     };
     const optionsHash = createHash('sha256').update(JSON.stringify(cacheableOptions)).digest('hex');
 

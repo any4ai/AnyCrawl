@@ -396,6 +396,61 @@ export const pageCache = p.pgTable("page_cache", {
     p.index("page_cache_scraped_at_idx").on(table.scrapedAt),
 ]);
 
+export const pageCacheEntries = p.pgTable("page_cache_entries", {
+    uuid: p
+        .uuid()
+        .primaryKey()
+        .$defaultFn(() => randomUUID()),
+    url: p.text("url").notNull(),
+    urlHash: p.text("url_hash").notNull(),
+    normalizedUrl: p.text("normalized_url").notNull(),
+    snapshotHash: p.text("snapshot_hash").notNull(),
+    domain: p.text("domain").notNull(),
+    engine: p.text("engine"),
+    proxyMode: p.text("proxy_mode"),
+    statusCode: p.integer("status_code").notNull(),
+    contentType: p.text("content_type"),
+    contentLength: p.integer("content_length"),
+    title: p.text("title"),
+    description: p.text("description"),
+    hasScreenshot: p.boolean("has_screenshot").default(false),
+    scrapedAt: p.timestamp("scraped_at", { withTimezone: true }).notNull(),
+    lastAccessedAt: p.timestamp("last_accessed_at", { withTimezone: true }),
+    createdAt: p.timestamp("created_at", { withTimezone: true }).default(sql`now()`).notNull(),
+    updatedAt: p.timestamp("updated_at", { withTimezone: true }).default(sql`now()`).notNull(),
+}, (table) => [
+    p.uniqueIndex("page_cache_entries_snapshot_idx").on(table.snapshotHash),
+    p.index("page_cache_entries_url_hash_idx").on(table.urlHash),
+    p.index("page_cache_entries_domain_idx").on(table.domain),
+    p.index("page_cache_entries_scraped_at_idx").on(table.scrapedAt),
+    p.index("page_cache_entries_last_accessed_at_idx").on(table.lastAccessedAt),
+]);
+
+export const pageCacheArtifacts = p.pgTable("page_cache_artifacts", {
+    uuid: p
+        .uuid()
+        .primaryKey()
+        .$defaultFn(() => randomUUID()),
+    entryUuid: p.uuid("entry_uuid").notNull().references(() => pageCacheEntries.uuid, { onDelete: "cascade" }),
+    artifactType: p.text("artifact_type").notNull(),
+    artifactOptionsHash: p.text("artifact_options_hash").notNull(),
+    storageMode: p.text("storage_mode").notNull(),
+    contentText: p.text("content_text"),
+    contentJson: p.jsonb("content_json").$type<unknown>(),
+    s3Key: p.text("s3_key"),
+    contentHash: p.text("content_hash"),
+    contentBytes: p.integer("content_bytes").default(0).notNull(),
+    scrapedAt: p.timestamp("scraped_at", { withTimezone: true }).notNull(),
+    createdAt: p.timestamp("created_at", { withTimezone: true }).default(sql`now()`).notNull(),
+    updatedAt: p.timestamp("updated_at", { withTimezone: true }).default(sql`now()`).notNull(),
+}, (table) => [
+    p.uniqueIndex("page_cache_artifacts_entry_type_options_idx").on(table.entryUuid, table.artifactType, table.artifactOptionsHash),
+    p.index("page_cache_artifacts_entry_idx").on(table.entryUuid),
+    p.index("page_cache_artifacts_type_idx").on(table.artifactType),
+    p.index("page_cache_artifacts_storage_mode_idx").on(table.storageMode),
+    p.index("page_cache_artifacts_scraped_at_idx").on(table.scrapedAt),
+]);
+
 export const mapCache = p.pgTable("map_cache", {
     uuid: p
         .uuid()

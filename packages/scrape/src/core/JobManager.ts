@@ -20,7 +20,7 @@ export class JobManager {
         }
 
         // Update job status to completed
-        job.updateData({
+        await job.updateData({
             ...job.data,
             status: "completed",
             ...data,
@@ -64,7 +64,7 @@ export class JobManager {
         }
 
         // Update job status to failed
-        job.updateData({
+        await job.updateData({
             ...job.data,
             status: "failed",
             ...data,
@@ -93,4 +93,4 @@ export class JobManager {
             log.warning(`[${queueName}] [${jobId}] Failed to trigger webhook: ${e}`);
         }
     }
-} 
+}

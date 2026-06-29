@@ -363,7 +363,7 @@ export function estimateTaskCredits(
         }
 
         if (actualTaskType === "search") {
-            const pages = actualPayload.pages || 1;
+            const pages = actualPayload.pages || Math.max(1, Math.ceil((actualPayload.limit || 10) / 10));
             let scrapeCredits = 0;
             let scrapeFollowTemplateCredits = 0;
 

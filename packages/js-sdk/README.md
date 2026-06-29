@@ -284,7 +284,7 @@ Notes:
 
 - Engine defaults to `auto` when omitted — the server automatically picks the best engine (`cheerio` for static pages, `playwright` for JS-heavy pages).
 - Scrape options live at top-level; crawl accepts nested `scrape_options` only; top-level only allows crawl strategy fields and optional `retry`.
-- search supports optional `scrape_options`; when provided without `engine`, it is omitted (no per-result scrape enrichment; API defaults to auto when enrichment is used).
+- search supports optional `scrape_options`; when provided without `engine`, the API defaults the follow-up scrape engine to `auto`.
 
 ## Running E2E tests
 

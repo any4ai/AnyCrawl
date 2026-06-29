@@ -30,7 +30,12 @@ export interface EngineOptions {
     requestQueueName?: string;
     requestQueue?: RequestQueue;
     autoscaledPoolOptions?: {
-        isFinishedFunction: () => Promise<boolean>;
+        isFinishedFunction?: () => Promise<boolean>;
+        desiredConcurrency?: number;
+        scaleUpStepRatio?: number;
+        scaleDownStepRatio?: number;
+        maybeRunIntervalSecs?: number;
+        autoscaleIntervalSecs?: number;
     };
     launchContext?: {
         launcher?: unknown;
@@ -44,8 +49,9 @@ export interface EngineOptions {
                 height: number;
             };
             ignoreHTTPSErrors?: boolean;
-            [key: string]: unknown;
+            [key: string]: any;
         };
+        [key: string]: any;
     };
     browserPoolOptions?: {
         maxOpenPagesPerBrowser?: number;
@@ -57,7 +63,9 @@ export interface EngineOptions {
         fingerprintOptions?: Record<string, unknown>;
         [key: string]: unknown;
     };
+    sessionPoolOptions?: Record<string, any>;
     preNavigationHooks?: ((context: CrawlingContext) => Promise<any>)[];
+    postNavigationHooks?: ((context: CrawlingContext) => Promise<any>)[];
     additionalMimeTypes?: string[];
     keepAlive?: boolean;
     proxyConfiguration?: ProxyConfiguration;

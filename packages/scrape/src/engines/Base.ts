@@ -27,6 +27,7 @@ import { ensureChallengeState, consumeProxyAction } from "../challenges/Challeng
 import { ProxyCacheManager } from "../managers/ProxyCacheManager.js";
 import { smartWaitForDOMStable } from "../utils/smartWait.js";
 import { CLOAKBROWSER_RUNTIME } from "../core/CloakBrowserLauncher.js";
+import { QueueManager } from "../managers/Queue.js";
 
 // Template system imports - directly use @anycrawl/template-client
 
@@ -80,6 +81,21 @@ export abstract class BaseEngine {
      */
     protected isSuccessfulResponse(status: ResponseStatus): boolean {
         return this.isStatusInCategory(status, HttpStatusCategory.SUCCESS);
+    }
+
+    protected async isScrapeJobCancelled(context: CrawlingContext): Promise<boolean> {
+        const { jobId, queueName, type } = context.request.userData;
+        if (!jobId || !queueName || type !== JOB_TYPE_SCRAPE) {
+            return false;
+        }
+
+        try {
+            const status = await QueueManager.getInstance().getJobStatus(queueName, jobId);
+            return status?.task_status === "cancelled";
+        } catch (error) {
+            log.warning(`[${queueName}] [${jobId}] Failed to check cancellation state: ${error}`);
+            return false;
+        }
     }
 
     /**
@@ -304,6 +320,10 @@ export abstract class BaseEngine {
 
         // For scrape jobs: update DB counters and mark failed
         if (jobId && context.request.userData.type === JOB_TYPE_SCRAPE) {
+            if (await this.isScrapeJobCancelled(context)) {
+                log.warning(`[${queueName}] [${jobId}] Skipping failed persistence for cancelled scrape ${context.request.url}`);
+                return;
+            }
             try {
                 await this.jobManager.markFailed(
                     jobId,
@@ -342,6 +362,10 @@ export abstract class BaseEngine {
 
 
         if (jobId && context.request.userData.type === JOB_TYPE_SCRAPE) {
+            if (await this.isScrapeJobCancelled(context)) {
+                log.warning(`[${queueName}] [${jobId}] Skipping extraction-error persistence for cancelled scrape ${context.request.url}`);
+                return;
+            }
             try {
                 await this.jobManager.markFailed(
                     jobId,
@@ -1196,6 +1220,10 @@ export abstract class BaseEngine {
 
                 // Only save result if shouldScrape is true
                 if (shouldScrape) {
+                    if (await this.isScrapeJobCancelled(context)) {
+                        log.warning(`[${context.request.userData.queueName}] [${context.request.userData.jobId}] Skipping result persistence for cancelled scrape ${context.request.url}`);
+                        return;
+                    }
                     const resultStatus = isHttpError ? JOB_RESULT_STATUS.FAILED : JOB_RESULT_STATUS.SUCCESS;
                     await insertJobResult(resultJobId, context.request.url, data, resultStatus);
 

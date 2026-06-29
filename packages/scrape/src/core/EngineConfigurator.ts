@@ -5,11 +5,16 @@ import { BrowserName } from "crawlee";
 import { ProgressManager } from "../managers/Progress.js";
 import { JOB_TYPE_CRAWL } from "@anycrawl/libs";
 import { CrawlLimitReachedError } from "../errors/index.js";
-import { getOrCreateBandwidthTracker } from "./BandwidthTracker.js";
+import {
+    ensureNetworkEnabled,
+    getOrCreateBandwidthTracker,
+    getOrCreatePageCdpSession,
+} from "./BandwidthTracker.js";
 import { CloudflareChallengeHandler } from "../challenges/cloudflare/CloudflareChallengeHandler.js";
 import { ChallengeOrchestrator } from "../challenges/ChallengeOrchestrator.js";
 import { ProxyCacheManager } from "../managers/ProxyCacheManager.js";
 import { smartWaitForDOMStable } from "../utils/smartWait.js";
+import { getPerformanceTuning } from "./PerformanceTuner.js";
 
 export enum ConfigurableEngineType {
     CHEERIO = 'cheerio',
@@ -31,6 +36,11 @@ export class EngineConfigurator {
         // Apply common autoscaled pool options
         if (!options.autoscaledPoolOptions) {
             options.autoscaledPoolOptions = {
+                isFinishedFunction: async () => false,
+            };
+        } else if (!options.autoscaledPoolOptions.isFinishedFunction) {
+            options.autoscaledPoolOptions = {
+                ...options.autoscaledPoolOptions,
                 isFinishedFunction: async () => false,
             };
         }
@@ -153,6 +163,8 @@ export class EngineConfigurator {
     }
 
     private static configureBrowserEngine(options: any, engineType: ConfigurableEngineType): void {
+        const tuning = getPerformanceTuning();
+
         // Enforce viewport for browser engines
         const viewportHook = async ({ page }: any) => {
             try {
@@ -160,9 +172,9 @@ export class EngineConfigurator {
                 if ((page as any).__viewportApplied) return;
                 (page as any).__viewportApplied = true;
                 if (engineType === ConfigurableEngineType.PLAYWRIGHT) {
-                    await page.setViewportSize({ width: 1920, height: 1080 });
+                    await page.setViewportSize(tuning.viewport);
                 } else if (engineType === ConfigurableEngineType.PUPPETEER) {
-                    try { await page.setViewport({ width: 1920, height: 1080 }); } catch { }
+                    try { await page.setViewport(tuning.viewport); } catch { }
                 }
             } catch { }
         };
@@ -184,11 +196,7 @@ export class EngineConfigurator {
 
             let cdp: any;
             try {
-                if (engineType === ConfigurableEngineType.PLAYWRIGHT) {
-                    cdp = await page.context().newCDPSession(page);
-                } else if (engineType === ConfigurableEngineType.PUPPETEER) {
-                    cdp = await page.target().createCDPSession();
-                }
+                cdp = await getOrCreatePageCdpSession(page, engineType);
             } catch { return; }
             if (!cdp) return;
             (page as any).__anycrawlCdpSession = cdp;
@@ -199,7 +207,7 @@ export class EngineConfigurator {
             );
 
             try {
-                await cdp.send("Network.enable");
+                await ensureNetworkEnabled(page, engineType);
                 await cdp.send("Network.setBlockedURLs", {
                     urls: AD_DOMAINS.map((d: string) => `*${d}*`),
                 });
@@ -557,7 +565,9 @@ export class EngineConfigurator {
         // Let 403 pages reach requestHandler; do not fail early in Crawlee blocked-page detection.
         options.retryOnBlocked = false;
 
-        options.maxRequestRetries = 3;
+        options.maxRequestRetries = typeof options.maxRequestRetries === "number"
+            ? options.maxRequestRetries
+            : tuning.maxRequestRetries;
 
         // Configure session pool
         if (options.useSessionPool !== false) {
@@ -708,38 +718,33 @@ export class EngineConfigurator {
         };
     }
 
-    private static configurePuppeteer(options: any): void {
+    private static applyBrowserPoolDefaults(options: any): void {
+        const existing = options.browserPoolOptions || {};
+        const existingFingerprintOptions = existing.fingerprintOptions || {};
+        const existingGeneratorOptions = existingFingerprintOptions.fingerprintGeneratorOptions || {};
+
         options.browserPoolOptions = {
-            ...options.browserPoolOptions,
-            maxOpenPagesPerBrowser: options.browserPoolOptions?.maxOpenPagesPerBrowser ?? config.engine.browserMaxOpenPagesPerBrowser,
-            retireBrowserAfterPageCount: options.browserPoolOptions?.retireBrowserAfterPageCount ?? config.engine.browserMaxPagesPerBrowser,
-            retireInactiveBrowserAfterSecs: options.browserPoolOptions?.retireInactiveBrowserAfterSecs ?? config.engine.browserIdleRetireSecs,
-            useFingerprints: true,
+            ...existing,
+            maxOpenPagesPerBrowser: existing.maxOpenPagesPerBrowser ?? config.engine.browserMaxOpenPagesPerBrowser,
+            retireBrowserAfterPageCount: existing.retireBrowserAfterPageCount ?? config.engine.browserMaxPagesPerBrowser,
+            retireInactiveBrowserAfterSecs: existing.retireInactiveBrowserAfterSecs ?? config.engine.browserIdleRetireSecs,
+            useFingerprints: existing.useFingerprints ?? true,
             fingerprintOptions: {
-                ...options.browserPoolOptions?.fingerprintOptions,
+                ...existingFingerprintOptions,
                 fingerprintGeneratorOptions: {
-                    ...(options.browserPoolOptions?.fingerprintOptions as any)?.fingerprintGeneratorOptions,
-                    browsers: [{ name: BrowserName.chrome, minVersion: 120 }],
+                    ...existingGeneratorOptions,
+                    browsers: existingGeneratorOptions.browsers ?? [{ name: BrowserName.chrome, minVersion: 120 }],
                 },
             },
         };
     }
 
+    private static configurePuppeteer(options: any): void {
+        this.applyBrowserPoolDefaults(options);
+    }
+
     private static configurePlaywright(options: any): void {
-        options.browserPoolOptions = {
-            ...options.browserPoolOptions,
-            maxOpenPagesPerBrowser: options.browserPoolOptions?.maxOpenPagesPerBrowser ?? config.engine.browserMaxOpenPagesPerBrowser,
-            retireBrowserAfterPageCount: options.browserPoolOptions?.retireBrowserAfterPageCount ?? config.engine.browserMaxPagesPerBrowser,
-            retireInactiveBrowserAfterSecs: options.browserPoolOptions?.retireInactiveBrowserAfterSecs ?? config.engine.browserIdleRetireSecs,
-            useFingerprints: true,
-            fingerprintOptions: {
-                ...options.browserPoolOptions?.fingerprintOptions,
-                fingerprintGeneratorOptions: {
-                    ...(options.browserPoolOptions?.fingerprintOptions as any)?.fingerprintGeneratorOptions,
-                    browsers: [{ name: BrowserName.chrome, minVersion: 120 }],
-                },
-            },
-        };
+        this.applyBrowserPoolDefaults(options);
     }
 
     private static configureCheerio(options: any): void {

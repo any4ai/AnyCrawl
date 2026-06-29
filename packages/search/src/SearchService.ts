@@ -196,6 +196,24 @@ export class SearchService {
         return engine;
     }
 
+    public resolveEffectivePages(engineName: string | undefined, options: SearchOptions): number {
+        const actualEngineName = this.resolveEngine(engineName);
+        const engine = this.getEngine(actualEngineName);
+        return this.resolveEffectivePagesForEngine(engine, options);
+    }
+
+    private resolveEffectivePagesForEngine(engine: SearchEngine, options: SearchOptions): number {
+        const perPage = 10; // Default page size per request for engines that do not support direct limit
+        if (typeof options.limit === 'number' && options.limit > 0) {
+            // If engine supports direct limit, one request is enough
+            if ((engine as any).supportsDirectLimit) {
+                return 1;
+            }
+            return Math.ceil(options.limit / perPage);
+        }
+        return options.pages ?? 1;
+    }
+
     /**
      * Execute search using HttpClient
      * @param engineName - The search engine name (optional, uses default if not provided)
@@ -206,27 +224,19 @@ export class SearchService {
     async search(
         engineName: string | undefined,
         options: SearchOptions,
-        onPage?: (page: number, results: SearchResult[], uniqueKey: string, success: boolean) => void,
+        onPage?: (page: number, results: SearchResult[], uniqueKey: string, success: boolean) => void | Promise<void>,
     ): Promise<SearchResult[]> {
         log.info("Search called with options:", options);
 
         try {
             // Use default engine if none provided
-            const actualEngineName = engineName || this.config.defaultEngine || 'default';
+            const actualEngineName = this.resolveEngine(engineName);
             const engine = this.getEngine(actualEngineName);
             const allResults: SearchResult[] = [];
 
             // Determine effective pages
+            const effectivePages = this.resolveEffectivePagesForEngine(engine, options);
             const perPage = 10; // Default page size per request for engines that do not support direct limit
-            let effectivePages = options.pages ?? 1;
-            if (typeof options.limit === 'number' && options.limit > 0) {
-                // If engine supports direct limit, one request is enough
-                if ((engine as any).supportsDirectLimit) {
-                    effectivePages = 1;
-                } else {
-                    effectivePages = Math.ceil(options.limit / perPage);
-                }
-            }
 
             log.info(`Executing search for: ${actualEngineName}, pages: ${effectivePages}, concurrent: ${options.concurrent ?? false}`);
 
@@ -282,7 +292,7 @@ export class SearchService {
                 pageResults.sort((a, b) => a.pageNum - b.pageNum);
                 for (const { pageNum, results, success } of pageResults) {
                     if (onPage) {
-                        onPage(pageNum, results, actualEngineName, success);
+                        await onPage(pageNum, results, actualEngineName, success);
                     }
                     allResults.push(...results);
                 }
@@ -293,7 +303,7 @@ export class SearchService {
                     const { results, success } = await fetchPage(pageNum);
 
                     if (onPage) {
-                        onPage(pageNum, results, actualEngineName, success);
+                        await onPage(pageNum, results, actualEngineName, success);
                     }
                     allResults.push(...results);
                 }
@@ -309,7 +319,7 @@ export class SearchService {
 
         } catch (error) {
             log.error(`Search execution error: ${error}`);
-            return [];
+            throw error;
         }
     }
 

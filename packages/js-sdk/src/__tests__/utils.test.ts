@@ -176,16 +176,16 @@ describe('buildSearchScrapeOptions', () => {
         expect(buildSearchScrapeOptions(null as any)).toBeUndefined();
     });
 
-    it('should return undefined when engine is missing', () => {
+    it('should include scrape fields when engine is missing', () => {
         expect(
             buildSearchScrapeOptions({ formats: ['markdown'] } as any)
-        ).toBeUndefined();
+        ).toEqual({ formats: ['markdown'] });
     });
 
     it('should return undefined when engine is null', () => {
         expect(
             buildSearchScrapeOptions({ engine: null } as any)
-        ).toBeUndefined();
+        ).toEqual({});
     });
 
     it('should return engine-only when only engine provided', () => {

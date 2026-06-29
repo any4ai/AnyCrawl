@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.0-beta.31] - 2026-06-30
+
+### Added
+
+- CloakBrowser-backed Playwright and Puppeteer engine launchers with Docker/runtime configuration updates.
+- Search follow-up scrape timing helpers, partial enrichment timeout handling, and improved cancellation marking.
+- Page cache artifact entries and migrations for PostgreSQL and SQLite.
+- Runtime performance tuning for browser and HTTP engines.
+
+### Changed
+
+- Merged `dev` beta.28-beta.30 search, scheduler, cache, and sandbox updates into the main release line.
+- Search follow-up scrapes now resolve `auto` engines per result URL while preserving browser runtime cache separation.
+- Updated project README and sponsorship/provider documentation from the main branch.
+
+### Fixed
+
+- Preserved CloakBrowser cache-key isolation while adopting artifact cache reuse.
+- Kept scheduler and worker synchronization updates aligned with the execution lifecycle constraints.
+
 ## [1.0.0-beta.23] - 2026-03-19
 
 ### Added

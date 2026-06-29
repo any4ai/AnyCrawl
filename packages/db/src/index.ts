@@ -55,6 +55,8 @@ export {
     webhookSubscriptions,
     webhookDeliveries,
     pageCache,
+    pageCacheEntries,
+    pageCacheArtifacts,
     mapCache,
 } from "./db/schemas/PostgreSQL.js";
 

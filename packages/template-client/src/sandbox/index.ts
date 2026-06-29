@@ -1,4 +1,5 @@
 import { log, type SandboxContext } from "@anycrawl/libs";
+import { htmlToMarkdown } from "@anycrawl/libs/html-to-markdown";
 import { SandboxError } from "../errors/index.js";
 import { runInNewContext } from "vm";
 import { DANGEROUS_PATTERNS, DEFAULT_ALLOWED_PAGE_METHODS } from "../constants/security.js";
@@ -136,6 +137,32 @@ export class QuickJSSandbox {
         }
 
         return html;
+    }
+
+    /**
+     * Resolve markdown from the HTML snapshot exposed to template code.
+     */
+    private resolveMarkdown(html?: string): string | undefined {
+        if (!html) return undefined;
+        return htmlToMarkdown(html);
+    }
+
+    private withMarkdownGetter<T extends object>(sandboxContext: T, html?: string): T {
+        let resolved = false;
+        let markdown: string | undefined;
+
+        Object.defineProperty(sandboxContext, 'markdown', {
+            enumerable: true,
+            get: () => {
+                if (!resolved) {
+                    markdown = this.resolveMarkdown(html);
+                    resolved = true;
+                }
+                return markdown;
+            }
+        });
+
+        return sandboxContext;
     }
 
     constructor(config?: Partial<SandboxConfig>) {
@@ -342,7 +369,7 @@ export class QuickJSSandbox {
         const { createHttpCrawlee } = await import('../libs/http-client.js');
         const paramValues = [
             // Unified context object
-            {
+            this.withMarkdownGetter({
                 data: context.executionContext,
                 page: securePage,
                 template: context.template,
@@ -362,7 +389,7 @@ export class QuickJSSandbox {
                         return [];
                     }
                 }
-            },
+            }, html),
             context.template,
             context.variables,
             securePage,
@@ -433,7 +460,7 @@ export class QuickJSSandbox {
         // Create VM sandbox with page object (passed by reference)
         const sandbox = {
             // Unified context object
-            context: {
+            context: this.withMarkdownGetter({
                 data: context.executionContext,
                 template: context.template,
                 variables: context.variables,
@@ -452,7 +479,7 @@ export class QuickJSSandbox {
                         return [];
                     }
                 }
-            },
+            }, html),
             // Direct access to common objects
             template: context.template,
             variables: context.variables,
@@ -483,7 +510,7 @@ export class QuickJSSandbox {
             });
 
             // Await result if it's a Promise
-            const result = resultPromise instanceof Promise ? await resultPromise : resultPromise;
+            const result = resultPromise && typeof resultPromise.then === 'function' ? await resultPromise : resultPromise;
 
             // Log execution stats
             const executionTime = Date.now() - startTime;

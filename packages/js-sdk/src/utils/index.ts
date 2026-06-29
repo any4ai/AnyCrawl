@@ -1,4 +1,4 @@
-import type { ApiResponse, CrawlRequest, SearchRequest, ScrapeOptionsInput, Engine } from '../types.js';
+import type { ApiResponse, CrawlRequest, SearchRequest, ScrapeOptionsInput } from '../types.js';
 
 /**
  * Type guard and unwrapper for ApiResponse. Throws with error message if success is false.
@@ -56,13 +56,14 @@ export function buildCrawlScrapeOptions(
 
 /**
  * Clean search scrape_options by removing undefined and disallowed keys.
- * When engine is missing, returns undefined (scrape_options not passed; no enrichment).
+ * The API defaults the follow-up scrape engine to auto when omitted.
  */
 export function buildSearchScrapeOptions(
     options: SearchRequest['scrape_options']
 ): SearchRequest['scrape_options'] | undefined {
-    if (!options || options.engine == null) return undefined;
-    const out: SearchRequest['scrape_options'] = { engine: options.engine as Engine };
+    if (!options) return undefined;
+    const out: SearchRequest['scrape_options'] = {};
+    if (options.engine != null) out.engine = options.engine;
     if (options.proxy != null) out.proxy = options.proxy;
     if (options.formats != null) out.formats = options.formats;
     if (options.timeout != null) out.timeout = options.timeout;

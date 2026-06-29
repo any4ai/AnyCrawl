@@ -43,3 +43,10 @@ export { resolveAutoEngine, analyzeHtmlForJSRequirement } from "./utils/autoEngi
 export { runAutoCrawl } from "./utils/crawlCoordinator.js";
 export { DomainCache } from "./utils/DomainCache.js";
 export { smartWaitForDOMStable } from "./utils/smartWait.js";
+export {
+    createPerformanceTuning,
+    detectRuntimeResources,
+    formatPerformanceTuningSummary,
+    getPerformanceTuning,
+} from "./core/PerformanceTuner.js";
+export type { PerformanceTuning, RuntimeResourceSnapshot } from "./core/PerformanceTuner.js";

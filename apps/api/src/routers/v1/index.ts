@@ -5,6 +5,7 @@ import { CrawlController } from "../../controllers/v1/CrawlController.js";
 import { MapController } from "../../controllers/v1/MapController.js";
 import { ScheduledTasksController } from "../../controllers/v1/ScheduledTasksController.js";
 import { WebhooksController } from "../../controllers/v1/WebhooksController.js";
+import { MonitorController } from "../../controllers/v1/MonitorController.js";
 import { controllerWrapper } from "../../utils/AsyncHandler.js";
 
 const router: express.Router = Router();
@@ -14,6 +15,7 @@ const crawlController = new CrawlController();
 const mapController = new MapController();
 const scheduledTasksController = new ScheduledTasksController();
 const webhooksController = new WebhooksController();
+const monitorController = new MonitorController();
 
 router.post("/scrape", controllerWrapper(scrapeController.handle));
 router.post("/search", controllerWrapper(searchController.handle));
@@ -48,6 +50,19 @@ router.put("/webhooks/:webhookId/activate", controllerWrapper(webhooksController
 router.put("/webhooks/:webhookId/deactivate", controllerWrapper(webhooksController.deactivate));
 router.post("/webhooks/:webhookId/deliveries/:deliveryId/replay", controllerWrapper(webhooksController.replayDelivery));
 router.get("/webhook-events", controllerWrapper(webhooksController.getEvents));
+
+// Monitor routes
+router.post("/monitors", controllerWrapper(monitorController.create));
+router.get("/monitors", controllerWrapper(monitorController.list));
+router.get("/monitors/:id", controllerWrapper(monitorController.get));
+router.patch("/monitors/:id", controllerWrapper(monitorController.update));
+router.delete("/monitors/:id", controllerWrapper(monitorController.delete));
+router.post("/monitors/:id/pause", controllerWrapper(monitorController.pause));
+router.post("/monitors/:id/resume", controllerWrapper(monitorController.resume));
+router.post("/monitors/:id/check", controllerWrapper(monitorController.check));
+router.get("/monitors/:id/snapshots", controllerWrapper(monitorController.snapshots));
+router.get("/monitors/:id/changes", controllerWrapper(monitorController.changes));
+router.get("/monitors/:id/changes/:changeId", controllerWrapper(monitorController.changeDetail));
 
 // Error handler
 router.use(((err, req, res, next) => {

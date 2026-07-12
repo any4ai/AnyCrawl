@@ -71,6 +71,13 @@
       "when": 1770710400000,
       "tag": "0009_billing_charge_details",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "6",
+      "when": 1783783436192,
+      "tag": "0010_sturdy_thunderbolt",
+      "breakpoints": true
     }
   ]
 }

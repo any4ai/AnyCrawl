@@ -5,6 +5,7 @@ export * from "./CrawlSchema.js";
 export * from "./SearchSchema.js";
 export * from "./MapSchema.js";
 export * from "./ScheduledTaskSchema.js";
+export * from "./MonitorSchema.js";
 export * from "./WebhookSchema.js";
 export * from "./ApiTypes.js";
 export * from "./RequestMetric.js";

@@ -417,3 +417,82 @@ export const mapCache = p.pgTable("map_cache", {
     p.index("map_cache_domain_hash_idx").on(table.domainHash),
     p.index("map_cache_discovered_at_idx").on(table.discoveredAt),
 ]);
+
+// Monitor tables — web change / price monitoring built on top of scheduled_tasks
+export const monitors = p.pgTable("monitors", {
+    uuid: p
+        .uuid()
+        .primaryKey()
+        .$defaultFn(() => randomUUID()),
+    // Owner
+    apiKey: p.uuid("api_key_id").references(() => apiKey.uuid),
+    userId: p.uuid("user_id"),
+    name: p.text("name").notNull(),
+    description: p.text("description"),
+    // 'webpage' | 'price'
+    monitorType: p.text("monitor_type").default("webpage").notNull(),
+    // Underlying scheduled task that drives the recurring scrape (1:1)
+    scheduledTaskUuid: p.uuid("scheduled_task_uuid").references(() => scheduledTasks.uuid, { onDelete: "cascade" }),
+    // [{ url, engine, options, location? }]
+    targets: p.jsonb("targets").notNull(),
+    // Natural-language judge criterion (optional)
+    goal: p.text("goal"),
+    // 'text' | 'json' | 'mixed'
+    trackMode: p.text("track_mode").default("text").notNull(),
+    // JSON schema used for structured (price) extraction
+    extractSchema: p.jsonb("extract_schema"),
+    // { ignoreSelectors?, onlyMainContent?, minChangeRatio? }
+    diffOptions: p.jsonb("diff_options"),
+    // { channels, emailRecipients?, onlyMeaningful?, thresholds? }
+    notifyOptions: p.jsonb("notify_options"),
+    isActive: p.boolean("is_active").default(true).notNull(),
+    createdAt: p.timestamp("created_at", { withTimezone: true }).default(sql`now()`).notNull(),
+    updatedAt: p.timestamp("updated_at", { withTimezone: true }).default(sql`now()`).notNull(),
+}, (table) => [
+    p.index("monitors_api_key_idx").on(table.apiKey),
+    p.index("monitors_user_id_idx").on(table.userId),
+    p.index("monitors_scheduled_task_idx").on(table.scheduledTaskUuid),
+]);
+
+export const monitorSnapshots = p.pgTable("monitor_snapshots", {
+    uuid: p
+        .uuid()
+        .primaryKey()
+        .$defaultFn(() => randomUUID()),
+    monitorUuid: p.uuid("monitor_uuid").notNull().references(() => monitors.uuid, { onDelete: "cascade" }),
+    taskExecutionUuid: p.uuid("task_execution_uuid").references(() => taskExecutions.uuid),
+    url: p.text("url").notNull(),
+    // sha256 of normalized content
+    contentHash: p.text("content_hash").notNull(),
+    // Inlined normalized content (truncated); large content moves to S3 later
+    content: p.text("content"),
+    // Structured extraction result (price mode)
+    extracted: p.jsonb("extracted"),
+    // 'new' | 'same' | 'changed' | 'removed' | 'error'
+    status: p.text("status").notNull(),
+    capturedAt: p.timestamp("captured_at", { withTimezone: true }).default(sql`now()`).notNull(),
+}, (table) => [
+    p.index("monitor_snapshots_monitor_url_idx").on(table.monitorUuid, table.url, table.capturedAt),
+]);
+
+export const monitorChanges = p.pgTable("monitor_changes", {
+    uuid: p
+        .uuid()
+        .primaryKey()
+        .$defaultFn(() => randomUUID()),
+    monitorUuid: p.uuid("monitor_uuid").notNull().references(() => monitors.uuid, { onDelete: "cascade" }),
+    url: p.text("url").notNull(),
+    fromSnapshotUuid: p.uuid("from_snapshot_uuid"),
+    toSnapshotUuid: p.uuid("to_snapshot_uuid"),
+    // 'content' | 'price_up' | 'price_down' | 'stock' | 'new' | 'removed'
+    changeType: p.text("change_type").notNull(),
+    diffText: p.text("diff_text"),
+    // [{ path, from, to, delta? }]
+    diffJson: p.jsonb("diff_json"),
+    // { meaningful, confidence, reason }
+    judgment: p.jsonb("judgment"),
+    notified: p.boolean("notified").default(false).notNull(),
+    createdAt: p.timestamp("created_at", { withTimezone: true }).default(sql`now()`).notNull(),
+}, (table) => [
+    p.index("monitor_changes_monitor_idx").on(table.monitorUuid, table.createdAt),
+]);

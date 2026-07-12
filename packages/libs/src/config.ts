@@ -84,6 +84,37 @@ export const config = {
         },
     },
 
+    monitor: {
+        // Max characters of normalized content stored inline per snapshot
+        get maxInlineContentChars(): number {
+            return parseIntEnv('ANYCRAWL_MONITOR_MAX_INLINE_CHARS', 262_144);
+        },
+    },
+
+    email: {
+        get enabled(): boolean {
+            return !!process.env.ANYCRAWL_SMTP_HOST;
+        },
+        get host(): string | undefined {
+            return process.env.ANYCRAWL_SMTP_HOST;
+        },
+        get port(): number {
+            return parseIntEnv('ANYCRAWL_SMTP_PORT', 587);
+        },
+        get secure(): boolean {
+            return process.env.ANYCRAWL_SMTP_SECURE === "true";
+        },
+        get user(): string | undefined {
+            return process.env.ANYCRAWL_SMTP_USER;
+        },
+        get pass(): string | undefined {
+            return process.env.ANYCRAWL_SMTP_PASS;
+        },
+        get from(): string {
+            return process.env.ANYCRAWL_SMTP_FROM || "AnyCrawl Monitor <no-reply@anycrawl.dev>";
+        },
+    },
+
     navigation: {
         get timeoutMs(): number {
             return parseIntEnv('ANYCRAWL_NAV_TIMEOUT', 30_000);

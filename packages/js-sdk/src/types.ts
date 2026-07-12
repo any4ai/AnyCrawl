@@ -369,3 +369,96 @@ export type WebhookEventsResponse = {
     event_types: string[];
     categories: Record<string, string[]>;
 };
+
+// ---------------------------------------------------------------------------
+// Monitors (web change / price monitoring)
+// ---------------------------------------------------------------------------
+
+export type MonitorType = 'webpage' | 'price';
+export type MonitorTrackMode = 'text' | 'json' | 'mixed';
+export type MonitorChannel = 'webhook' | 'email';
+
+export type MonitorTarget = {
+    url: string;
+    engine?: 'auto' | 'cheerio' | 'playwright' | 'puppeteer';
+    options?: Record<string, any>;
+    location?: { country: string };
+};
+
+export type MonitorNotifyOptions = {
+    channels?: MonitorChannel[];
+    email_recipients?: string[];
+    only_meaningful?: boolean;
+    thresholds?: { price_change_pct?: number };
+};
+
+export type CreateMonitorRequest = {
+    name: string;
+    description?: string | null;
+    monitor_type?: MonitorType;
+    cron_expression: string;
+    timezone?: string;
+    targets: MonitorTarget[];
+    goal?: string;
+    track_mode?: MonitorTrackMode;
+    extract_schema?: Record<string, any>;
+    diff_options?: {
+        ignore_selectors?: string[];
+        only_main_content?: boolean;
+        min_change_ratio?: number;
+    };
+    notify_options?: MonitorNotifyOptions;
+    concurrency_mode?: ConcurrencyMode;
+    max_executions_per_day?: number | null;
+    tags?: string[];
+    metadata?: Record<string, any>;
+};
+
+export type UpdateMonitorRequest = Partial<CreateMonitorRequest> & { is_active?: boolean };
+
+export interface MonitorBase {
+    uuid?: string;
+    name?: string;
+    description?: string | null;
+    monitor_type?: MonitorType;
+    scheduled_task_uuid?: string;
+    targets?: MonitorTarget[];
+    goal?: string | null;
+    track_mode?: MonitorTrackMode;
+    is_active?: boolean;
+    created_at?: string;
+    updated_at?: string;
+}
+
+export type Monitor = MonitorBase & Record<string, any>;
+
+export type MonitorCreateResponse = {
+    monitor_id: string;
+    scheduled_task_id: string;
+    track_mode: MonitorTrackMode;
+    next_execution_at: string | null;
+};
+
+export interface MonitorSnapshotBase {
+    uuid?: string;
+    monitor_uuid?: string;
+    url?: string;
+    content_hash?: string;
+    status?: 'new' | 'same' | 'changed' | 'removed' | 'error';
+    extracted?: Record<string, any> | null;
+    captured_at?: string;
+}
+export type MonitorSnapshot = MonitorSnapshotBase & Record<string, any>;
+
+export interface MonitorChangeBase {
+    uuid?: string;
+    monitor_uuid?: string;
+    url?: string;
+    change_type?: string;
+    diff_text?: string | null;
+    diff_json?: Array<{ path: string; from: any; to: any; delta?: number }> | null;
+    judgment?: { meaningful: boolean; confidence: string; reason: string } | null;
+    notified?: boolean;
+    created_at?: string;
+}
+export type MonitorChange = MonitorChangeBase & Record<string, any>;

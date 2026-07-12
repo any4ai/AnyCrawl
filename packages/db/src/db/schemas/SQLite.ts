@@ -407,3 +407,74 @@ export const mapCache = p.sqliteTable("map_cache", {
     discoveredAt: p.integer("discovered_at", { mode: "timestamp" }).notNull(),
     createdAt: p.integer("created_at", { mode: "timestamp" }).notNull().$defaultFn(() => new Date()),
 });
+
+// Monitor tables — web change / price monitoring built on top of scheduled_tasks
+export const monitors = p.sqliteTable("monitors", {
+    uuid: p
+        .text("uuid")
+        .primaryKey()
+        .$defaultFn(() => randomUUID()),
+    // Owner
+    apiKey: p.text("api_key_id").references(() => apiKey.uuid),
+    userId: p.text("user_id"),
+    name: p.text("name").notNull(),
+    description: p.text("description"),
+    // 'webpage' | 'price'
+    monitorType: p.text("monitor_type").default("webpage").notNull(),
+    // Underlying scheduled task that drives the recurring scrape (1:1)
+    scheduledTaskUuid: p.text("scheduled_task_uuid").references(() => scheduledTasks.uuid, { onDelete: "cascade" }),
+    // [{ url, engine, options, location? }]
+    targets: p.text("targets", { mode: "json" }).notNull(),
+    // Natural-language judge criterion (optional)
+    goal: p.text("goal"),
+    // 'text' | 'json' | 'mixed'
+    trackMode: p.text("track_mode").default("text").notNull(),
+    // JSON schema used for structured (price) extraction
+    extractSchema: p.text("extract_schema", { mode: "json" }),
+    // { ignoreSelectors?, onlyMainContent?, minChangeRatio? }
+    diffOptions: p.text("diff_options", { mode: "json" }),
+    // { channels, emailRecipients?, onlyMeaningful?, thresholds? }
+    notifyOptions: p.text("notify_options", { mode: "json" }),
+    isActive: p.integer("is_active", { mode: "boolean" }).default(true).notNull(),
+    createdAt: p.integer("created_at", { mode: "timestamp" }).notNull().$defaultFn(() => new Date()),
+    updatedAt: p.integer("updated_at", { mode: "timestamp" }).notNull().$defaultFn(() => new Date()),
+});
+
+export const monitorSnapshots = p.sqliteTable("monitor_snapshots", {
+    uuid: p
+        .text("uuid")
+        .primaryKey()
+        .$defaultFn(() => randomUUID()),
+    monitorUuid: p.text("monitor_uuid").notNull().references(() => monitors.uuid, { onDelete: "cascade" }),
+    taskExecutionUuid: p.text("task_execution_uuid").references(() => taskExecutions.uuid),
+    url: p.text("url").notNull(),
+    // sha256 of normalized content
+    contentHash: p.text("content_hash").notNull(),
+    // Inlined normalized content (truncated); large content moves to S3 later
+    content: p.text("content"),
+    // Structured extraction result (price mode)
+    extracted: p.text("extracted", { mode: "json" }),
+    // 'new' | 'same' | 'changed' | 'removed' | 'error'
+    status: p.text("status").notNull(),
+    capturedAt: p.integer("captured_at", { mode: "timestamp" }).notNull().$defaultFn(() => new Date()),
+});
+
+export const monitorChanges = p.sqliteTable("monitor_changes", {
+    uuid: p
+        .text("uuid")
+        .primaryKey()
+        .$defaultFn(() => randomUUID()),
+    monitorUuid: p.text("monitor_uuid").notNull().references(() => monitors.uuid, { onDelete: "cascade" }),
+    url: p.text("url").notNull(),
+    fromSnapshotUuid: p.text("from_snapshot_uuid"),
+    toSnapshotUuid: p.text("to_snapshot_uuid"),
+    // 'content' | 'price_up' | 'price_down' | 'stock' | 'new' | 'removed'
+    changeType: p.text("change_type").notNull(),
+    diffText: p.text("diff_text"),
+    // [{ path, from, to, delta? }]
+    diffJson: p.text("diff_json", { mode: "json" }),
+    // { meaningful, confidence, reason }
+    judgment: p.text("judgment", { mode: "json" }),
+    notified: p.integer("notified", { mode: "boolean" }).default(false).notNull(),
+    createdAt: p.integer("created_at", { mode: "timestamp" }).notNull().$defaultFn(() => new Date()),
+});

@@ -12,6 +12,15 @@ import {
     getOwnedWebhook as getOwnedWebhookByOwner,
     listWebhooksByOwner as listWebhooksByOwnerOwner,
 } from "./model/OwnerAccess.js";
+import {
+    buildMonitorWhereClause as buildMonitorWhereClauseByOwner,
+    getOwnedMonitor as getOwnedMonitorByOwner,
+    listMonitorsByOwner as listMonitorsByOwnerOwner,
+    getMonitorByScheduledTask as getMonitorByScheduledTaskFn,
+    getLatestSnapshot as getLatestSnapshotFn,
+    listSnapshotsByMonitor as listSnapshotsByMonitorFn,
+    listChangesByMonitor as listChangesByMonitorFn,
+} from "./model/MonitorAccess.js";
 
 // Backward compatibility functions
 export const createJob = Job.create;
@@ -45,6 +54,15 @@ export const listTasksByOwner = listTasksByOwnerOwner;
 export const getOwnedWebhook = getOwnedWebhookByOwner;
 export const listWebhooksByOwner = listWebhooksByOwnerOwner;
 
+// Monitor ownership + access helpers
+export const buildMonitorWhereClause = buildMonitorWhereClauseByOwner;
+export const getOwnedMonitor = getOwnedMonitorByOwner;
+export const listMonitorsByOwner = listMonitorsByOwnerOwner;
+export const getMonitorByScheduledTask = getMonitorByScheduledTaskFn;
+export const getLatestSnapshot = getLatestSnapshotFn;
+export const listSnapshotsByMonitor = listSnapshotsByMonitorFn;
+export const listChangesByMonitor = listChangesByMonitorFn;
+
 // Template system exports
 export { templates, templateExecutions, billingLedger } from "./db/schemas/PostgreSQL.js";
 
@@ -56,6 +74,13 @@ export {
     webhookDeliveries,
     pageCache,
     mapCache,
+} from "./db/schemas/PostgreSQL.js";
+
+// Monitor table exports
+export {
+    monitors,
+    monitorSnapshots,
+    monitorChanges,
 } from "./db/schemas/PostgreSQL.js";
 
 export { eq, and, gt, gte, sql, desc, getDB, schemas, STATUS, JOB_RESULT_STATUS, Job, Billing };

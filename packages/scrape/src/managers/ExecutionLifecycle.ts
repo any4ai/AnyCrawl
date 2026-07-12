@@ -152,6 +152,23 @@ export async function finalizeExecution(input: FinalizeExecutionInput): Promise<
         }
     }
 
+    // Monitor post-processing: diff content and fire notifications on successful transitions.
+    // Dynamic import keeps this module free of circular-dependency and is zero-cost for
+    // the majority of executions that do not belong to a monitor.
+    if (transitioned && input.status === "completed" && scheduledTaskUuid) {
+        try {
+            const { MonitorPostProcessor } = await import("../monitor/MonitorPostProcessor.js");
+            await MonitorPostProcessor.process({
+                db,
+                scheduledTaskUuid,
+                executionUuid: input.executionUuid,
+                jobUuid: input.jobUuid,
+            });
+        } catch (e) {
+            log.warning(`[MONITOR] post-process dispatch failed for execution ${input.executionUuid}: ${e}`);
+        }
+    }
+
     return {
         transitioned,
         created,

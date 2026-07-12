@@ -24,6 +24,12 @@ import {
     WebhookCreateResponse,
     WebhookDeliveriesResponse,
     WebhookEventsResponse,
+    CreateMonitorRequest,
+    UpdateMonitorRequest,
+    Monitor,
+    MonitorCreateResponse,
+    MonitorSnapshot,
+    MonitorChange,
 } from './types.js';
 import { scrape as scrapeMethod } from './methods/scrape.js';
 import { unwrapApiResponse } from './utils/index.js';
@@ -37,6 +43,7 @@ import { search as searchMethod } from './methods/search.js';
 import { map as mapMethod } from './methods/map.js';
 import * as scheduledTasksMethods from './methods/scheduled-tasks.js';
 import * as webhooksMethods from './methods/webhooks.js';
+import * as monitorsMethods from './methods/monitors.js';
 
 /**
  * AnyCrawl JavaScript/TypeScript client.
@@ -285,6 +292,57 @@ export class AnyCrawlClient {
 
     async getWebhookEvents(): Promise<WebhookEventsResponse> {
         return await webhooksMethods.getWebhookEvents(this.client);
+    }
+
+    // Monitors
+    async createMonitor(input: CreateMonitorRequest): Promise<MonitorCreateResponse> {
+        return await monitorsMethods.createMonitor(this.client, input);
+    }
+
+    async listMonitors(): Promise<Monitor[]> {
+        return await monitorsMethods.listMonitors(this.client);
+    }
+
+    async getMonitor(monitorId: string): Promise<Monitor> {
+        return await monitorsMethods.getMonitor(this.client, monitorId);
+    }
+
+    async updateMonitor(monitorId: string, input: UpdateMonitorRequest): Promise<Monitor> {
+        return await monitorsMethods.updateMonitor(this.client, monitorId, input);
+    }
+
+    async deleteMonitor(monitorId: string): Promise<void> {
+        return await monitorsMethods.deleteMonitor(this.client, monitorId);
+    }
+
+    async pauseMonitor(monitorId: string): Promise<void> {
+        return await monitorsMethods.pauseMonitor(this.client, monitorId);
+    }
+
+    async resumeMonitor(monitorId: string): Promise<void> {
+        return await monitorsMethods.resumeMonitor(this.client, monitorId);
+    }
+
+    async runMonitor(monitorId: string): Promise<void> {
+        return await monitorsMethods.runMonitor(this.client, monitorId);
+    }
+
+    async getMonitorSnapshots(
+        monitorId: string,
+        params?: { limit?: number; offset?: number }
+    ): Promise<MonitorSnapshot[]> {
+        return await monitorsMethods.getMonitorSnapshots(this.client, monitorId, params);
+    }
+
+    async getMonitorChanges(
+        monitorId: string,
+        params?: { limit?: number; offset?: number }
+    ): Promise<MonitorChange[]> {
+        return await monitorsMethods.getMonitorChanges(this.client, monitorId, params);
+    }
+
+    async getMonitorChange(monitorId: string, changeId: string): Promise<MonitorChange> {
+        return await monitorsMethods.getMonitorChange(this.client, monitorId, changeId);
     }
 
     /**

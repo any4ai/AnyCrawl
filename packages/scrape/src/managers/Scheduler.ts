@@ -237,6 +237,39 @@ export class SchedulerManager {
     }
 
     /**
+     * Trigger a one-off (non-repeatable) execution of a scheduled task immediately.
+     * Reuses the same processScheduledTaskJob path as cron-triggered runs.
+     * Used by the monitor on-demand /check endpoint.
+     */
+    public async triggerTaskNow(task: any): Promise<void> {
+        if (!this.schedulerQueue) {
+            throw new Error(
+                "Scheduler queue not initialized. Make sure to call start() first or set ANYCRAWL_SCHEDULER_ENABLED=true"
+            );
+        }
+
+        await this.schedulerQueue.add(
+            "scheduled-task",
+            {
+                taskUuid: task.uuid,
+                taskName: task.name,
+                taskType: task.taskType,
+                taskPayload: task.taskPayload,
+                triggeredBy: "manual",
+            },
+            {
+                // randomUUID suffix prevents two /check calls in the same millisecond
+                // from producing an identical BullMQ jobId (which would be silently deduped).
+                jobId: `manual:${task.uuid}:${Date.now()}:${randomUUID()}`,
+                removeOnComplete: 100,
+                removeOnFail: 100,
+            }
+        );
+
+        log.info(`[SCHEDULER] ▶️ Manual trigger for task: ${task.name}`);
+    }
+
+    /**
      * Remove a scheduled task from BullMQ repeatable jobs
      * Note: This is a best-effort removal. Full cleanup happens in syncScheduledTasks.
      */
@@ -373,7 +406,10 @@ export class SchedulerManager {
      * This is where the actual scheduling logic happens
      */
     public async processScheduledTaskJob(job: Job): Promise<void> {
-        const { taskUuid } = job.data;
+        const { taskUuid, triggeredBy: jobTriggeredBy } = job.data;
+        // Manual (on-demand) triggers must not collide with the cron slot's idempotency
+        // key, must bypass the concurrency-skip guard, and must not disturb nextExecutionAt.
+        const isManual = jobTriggeredBy === "manual";
         const db = await getDB();
         let executionUuid: string | undefined;
         let executionNumber: number | undefined;
@@ -490,8 +526,8 @@ export class SchedulerManager {
                 }
             }
 
-            // Check concurrency mode
-            if (task.concurrencyMode === "skip") {
+            // Check concurrency mode (manual on-demand checks bypass the skip guard)
+            if (task.concurrencyMode === "skip" && !isManual) {
                 const runningExecution = await db
                     .select()
                     .from(schemas.taskExecutions)
@@ -530,15 +566,24 @@ export class SchedulerManager {
                     log.warning(
                         `[SCHEDULER] Task ${task.name} reached daily execution limit (${task.maxExecutionsPerDay})`
                     );
-                    // Still update nextExecutionAt even when limit reached
-                    await this.updateNextExecutionTime(task);
+                    // Still update nextExecutionAt even when limit reached — but never
+                    // for manual (on-demand) triggers, which must not shift the cron slot.
+                    if (!isManual) {
+                        await this.updateNextExecutionTime(task);
+                    }
                     return;
                 }
             }
 
             const executionCreatedAt = new Date();
-            const scheduledFor = resolveScheduledFor(task.nextExecutionAt, executionCreatedAt);
-            idempotencyKey = buildScheduledExecutionIdempotencyKey(task.uuid, scheduledFor);
+            // Manual triggers use their creation instant (+ job id) so they never collide
+            // with the cron-slot key; scheduled runs use the deterministic slot key for dedup.
+            const scheduledFor = isManual
+                ? executionCreatedAt
+                : resolveScheduledFor(task.nextExecutionAt, executionCreatedAt);
+            idempotencyKey = isManual
+                ? `${task.uuid}-manual-${job.id ?? executionCreatedAt.toISOString()}`
+                : buildScheduledExecutionIdempotencyKey(task.uuid, scheduledFor);
             const existingExecution = await db
                 .select({ uuid: schemas.taskExecutions.uuid })
                 .from(schemas.taskExecutions)
@@ -549,7 +594,10 @@ export class SchedulerManager {
                 log.info(
                     `[SCHEDULER] Execution already exists for task ${task.uuid} at ${scheduledFor.toISOString()}, skipping duplicate`
                 );
-                await this.updateNextExecutionTime(task);
+                // Manual triggers must not shift the cron slot on a dedup no-op.
+                if (!isManual) {
+                    await this.updateNextExecutionTime(task);
+                }
                 return;
             }
 
@@ -584,7 +632,7 @@ export class SchedulerManager {
                     idempotencyKey: idempotencyKey!,
                     status: "pending",
                     scheduledFor,
-                    triggeredBy: "scheduler",
+                    triggeredBy: isManual ? "manual" : "scheduler",
                     createdAt: executionCreatedAt,
                 });
             });
@@ -620,22 +668,25 @@ export class SchedulerManager {
                 );
             }
 
-            // Calculate next execution time
-            const nextExecutionAt = await this.calculateNextExecutionOrPause(task);
+            // Recompute next execution time only for cron-triggered runs.
+            // Manual on-demand checks must not shift the cron schedule.
+            if (!isManual) {
+                const nextExecutionAt = await this.calculateNextExecutionOrPause(task);
 
-            // Update task statistics
-            try {
-                await db
-                    .update(schemas.scheduledTasks)
-                    .set({
-                        nextExecutionAt: nextExecutionAt,
-                        updatedAt: new Date(),
-                    })
-                    .where(eq(schemas.scheduledTasks.uuid, task.uuid));
-            } catch (taskUpdateError) {
-                log.error(
-                    `[SCHEDULER] Failed to update nextExecutionAt after dispatch for task ${task.uuid}: ${taskUpdateError}`
-                );
+                // Update task statistics
+                try {
+                    await db
+                        .update(schemas.scheduledTasks)
+                        .set({
+                            nextExecutionAt: nextExecutionAt,
+                            updatedAt: new Date(),
+                        })
+                        .where(eq(schemas.scheduledTasks.uuid, task.uuid));
+                } catch (taskUpdateError) {
+                    log.error(
+                        `[SCHEDULER] Failed to update nextExecutionAt after dispatch for task ${task.uuid}: ${taskUpdateError}`
+                    );
+                }
             }
 
             log.info(`[SCHEDULER] ✅ Task ${task.name} triggered job ${jobUuid}`);

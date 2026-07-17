@@ -1,0 +1,548 @@
+From 9f5621043aaa3e0e4788e4e5404d9b9d1fef213f Mon Sep 17 00:00:00 2001
+From: Cursor Agent <cursoragent@cursor.com>
+Date: Fri, 17 Jul 2026 14:05:25 +0000
+Subject: [PATCH] fix: nginx routing, cloud auth validation, and HEAD probes
+
+- Serve JSON status on / and add HEAD fallbacks for health/MCP/SSE routes
+- Route /{API_KEY}/messages to the SSE upstream and remove the generic catch-all
+- Validate cloud API keys during connection with TTL caching and clearer errors
+- Sync server version from package.json and bump release to 1.0.4
+- Add auth/nginx config tests and cloud troubleshooting docs
+---
+ README.md                           | 35 +++++++++++
+ docker/nginx.conf                   | 40 +++++++++---
+ package.json                        |  2 +-
+ src/__tests__/auth.test.ts          | 73 ++++++++++++++++++++++
+ src/__tests__/modes.http.test.ts    |  4 +-
+ src/__tests__/nginx-routing.test.ts | 28 +++++++++
+ src/auth.ts                         | 97 +++++++++++++++++++++++++++++
+ src/index.ts                        | 63 ++++++++-----------
+ 8 files changed, 291 insertions(+), 51 deletions(-)
+ create mode 100644 src/__tests__/auth.test.ts
+ create mode 100644 src/__tests__/nginx-routing.test.ts
+ create mode 100644 src/auth.ts
+
+diff --git a/README.md b/README.md
+index e8bbc55..d624682 100644
+--- a/README.md
++++ b/README.md
+@@ -47,6 +47,41 @@ Cloud endpoints:
+ - **MCP (streamable_http)**: `https://mcp.anycrawl.dev/{API_KEY}/mcp`
+ - **SSE**: `https://mcp.anycrawl.dev/{API_KEY}/sse`
+ 
++### Cloud Integration Notes
++
++- Do **not** use the root URL (`https://mcp.anycrawl.dev/`). Always include your API key in the path.
++- Replace `{API_KEY}` with your real key. Placeholders like `{YOUR_API_KEY}` are rejected.
++- **Cursor remote HTTP** clients should use `/mcp`.
++- **Claude Desktop** and SSE clients should use `/sse`.
++- API keys in the URL path **must not contain `/`**. URL-encode other special characters when needed.
++- SSE clients receive a `/messages?sessionId=...` endpoint. Keep the SSE connection open while posting messages. The messages path does not repeat the API key prefix because the session is already authenticated.
++- Invalid API keys are rejected during connection in cloud mode.
++- If hosted HTTP/SSE is unstable in your environment, use the stdio fallback:
++
++```json
++{
++  "mcpServers": {
++    "anycrawl": {
++      "command": "npx",
++      "args": ["-y", "anycrawl-mcp"],
++      "env": {
++        "ANYCRAWL_API_KEY": "your-api-key"
++      }
++    }
++  }
++}
++```
++
++### Troubleshooting Cloud MCP
++
++| Symptom | Likely cause | Fix |
++| --- | --- | --- |
++| Root URL shows Nginx welcome page | Using `/` instead of keyed endpoint | Use `/{API_KEY}/mcp` or `/{API_KEY}/sse` |
++| `Not Acceptable` on `/mcp` | Missing Accept header | Client must send `Accept: application/json, text/event-stream` |
++| MCP connects but tools fail auth | Invalid API key | Verify key in AnyCrawl dashboard |
++| Claude Desktop fails after SSE connect | Wrong messages URL or closed SSE stream | Keep SSE open; post to `/messages?sessionId=...` |
++| `HEAD /health` fails on old deployments | Upstream did not handle HEAD | Upgrade to latest Docker image |
++
+ ### Self-Hosted Deployment
+ 
+ For self-hosted deployments, configure the base URL to point to your own AnyCrawl API instance:
+diff --git a/docker/nginx.conf b/docker/nginx.conf
+index a52685c..ec91dc4 100644
+--- a/docker/nginx.conf
++++ b/docker/nginx.conf
+@@ -10,9 +10,15 @@ http {
+   server {
+     listen 80;
+ 
+-    # API Key based routes (higher priority)
++    location = / {
++      default_type application/json;
++      return 200 '{"status":"ok","service":"anycrawl-mcp","endpoints":["/{API_KEY}/mcp","/{API_KEY}/sse","/health"]}';
++    }
++
+     # Map /{API_KEY}/sse -> /sse (SSE upstream)
+     location ~ ^/(?<apikey>[^/]+)/sse$ {
++      if ($request_method = HEAD) { return 200; }
++
+       proxy_set_header x-anycrawl-api-key $apikey;
+       proxy_set_header Host $host;
+       proxy_set_header X-Forwarded-For $remote_addr;
+@@ -28,6 +34,8 @@ http {
+ 
+     # Map /{API_KEY}/mcp -> /mcp (MCP upstream)
+     location ~ ^/(?<apikey>[^/]+)/mcp$ {
++      if ($request_method = HEAD) { return 200; }
++
+       proxy_set_header x-anycrawl-api-key $apikey;
+       proxy_set_header Host $host;
+       proxy_set_header X-Forwarded-For $remote_addr;
+@@ -41,23 +49,30 @@ http {
+       proxy_pass http://app_mcp;
+     }
+ 
+-    # Generic API Key route for other endpoints
+-    location ~ ^/(?<apikey>[^/]+)/(.*)$ {
++    # Map /{API_KEY}/messages -> /messages (SSE upstream)
++    location ~ ^/(?<apikey>[^/]+)/messages$ {
++      if ($request_method = HEAD) { return 200; }
++
+       proxy_set_header x-anycrawl-api-key $apikey;
+       proxy_set_header Host $host;
+       proxy_set_header X-Forwarded-For $remote_addr;
+       proxy_set_header X-Forwarded-Proto $scheme;
+ 
++      proxy_http_version 1.1;
++      proxy_request_buffering off;
+       proxy_buffering off;
++      chunked_transfer_encoding off;
+       proxy_read_timeout 620s;
+       proxy_send_timeout 620s;
++      proxy_set_header Connection "";
+ 
+-      rewrite ^/[^/]+/(.*)$ /$1 break;
+-      proxy_pass http://app_mcp;
++      rewrite ^/.*/messages$ /messages break;
++      proxy_pass http://app_sse;
+     }
+ 
+-    # Direct header-based paths
+     location /mcp {
++      if ($request_method = HEAD) { return 200; }
++
+       proxy_buffering off;
+       proxy_read_timeout 620s;
+       proxy_send_timeout 620s;
+@@ -68,6 +83,8 @@ http {
+     }
+ 
+     location /messages {
++      if ($request_method = HEAD) { return 200; }
++
+       proxy_http_version 1.1;
+       proxy_request_buffering off;
+       proxy_buffering off;
+@@ -81,8 +98,9 @@ http {
+       proxy_pass http://app_sse/messages;
+     }
+ 
+-    # SSE upstream
+     location /sse {
++      if ($request_method = HEAD) { return 200; }
++
+       proxy_http_version 1.1;
+       proxy_request_buffering off;
+       proxy_buffering off;
+@@ -98,6 +116,8 @@ http {
+     }
+ 
+     location /health {
++      if ($request_method = HEAD) { return 200; }
++
+       proxy_buffering off;
+       proxy_read_timeout 5s;
+       proxy_send_timeout 5s;
+@@ -107,8 +127,9 @@ http {
+       proxy_pass http://app_mcp/health;
+     }
+ 
+-    # Dedicated health check for MCP upstream
+     location /health_mcp {
++      if ($request_method = HEAD) { return 200; }
++
+       proxy_buffering off;
+       proxy_read_timeout 5s;
+       proxy_send_timeout 5s;
+@@ -118,8 +139,9 @@ http {
+       proxy_pass http://app_mcp/health;
+     }
+ 
+-    # Dedicated health check for SSE upstream
+     location /health_sse {
++      if ($request_method = HEAD) { return 200; }
++
+       proxy_buffering off;
+       proxy_read_timeout 5s;
+       proxy_send_timeout 5s;
+diff --git a/package.json b/package.json
+index 13eae4d..b1d668c 100644
+--- a/package.json
++++ b/package.json
+@@ -1,6 +1,6 @@
+ {
+   "name": "anycrawl-mcp",
+-  "version": "1.0.3",
++  "version": "1.0.4",
+   "description": "AnyCrawl MCP Server - Adds powerful web scraping and crawling to Cursor, Claude and any other LLM clients",
+   "main": "dist/index.js",
+   "type": "module",
+diff --git a/src/__tests__/auth.test.ts b/src/__tests__/auth.test.ts
+new file mode 100644
+index 0000000..ae6b42f
+--- /dev/null
++++ b/src/__tests__/auth.test.ts
+@@ -0,0 +1,73 @@
++import {
++    clearApiKeyValidationCache,
++    extractApiKey,
++    normalizeApiKey,
++    validateApiKey,
++} from '../auth';
++import { AnyCrawlClient } from '@anycrawl/js-sdk';
++
++jest.mock('@anycrawl/js-sdk');
++
++describe('auth', () => {
++    beforeEach(() => {
++        clearApiKeyValidationCache();
++        jest.clearAllMocks();
++    });
++
++    describe('extractApiKey', () => {
++        test('reads x-anycrawl-api-key header', () => {
++            expect(extractApiKey({ 'x-anycrawl-api-key': ' sk-test ' })).toBe('sk-test');
++        });
++
++        test('reads Authorization Bearer header', () => {
++            expect(extractApiKey({ authorization: 'Bearer sk-test' })).toBe('sk-test');
++        });
++
++        test('returns null when no key is present', () => {
++            expect(extractApiKey({})).toBeNull();
++        });
++    });
++
++    describe('normalizeApiKey', () => {
++        test('rejects empty keys', () => {
++            expect(() => normalizeApiKey('   ')).toThrow(/AnyCrawl API key is required/);
++        });
++
++        test('rejects placeholder keys', () => {
++            expect(() => normalizeApiKey('{YOUR_API_KEY}')).toThrow(/placeholder/i);
++            expect(() => normalizeApiKey('your-api-key')).toThrow(/placeholder/i);
++        });
++
++        test('returns trimmed key', () => {
++            expect(normalizeApiKey('  sk-live-123  ')).toBe('sk-live-123');
++        });
++    });
++
++    describe('validateApiKey', () => {
++        test('accepts valid keys from healthCheck', async () => {
++            (AnyCrawlClient as jest.Mock).mockImplementation(() => ({
++                healthCheck: jest.fn().mockResolvedValue({ status: 'ok' }),
++            }));
++
++            await expect(validateApiKey('sk-valid')).resolves.toBeUndefined();
++        });
++
++        test('rejects invalid keys from healthCheck', async () => {
++            (AnyCrawlClient as jest.Mock).mockImplementation(() => ({
++                healthCheck: jest.fn().mockRejectedValue(new Error('Authentication failed: Invalid API key')),
++            }));
++
++            await expect(validateApiKey('sk-invalid')).rejects.toThrow(/Invalid AnyCrawl API key/);
++        });
++
++        test('uses cache for repeated validations', async () => {
++            const healthCheck = jest.fn().mockResolvedValue({ status: 'ok' });
++            (AnyCrawlClient as jest.Mock).mockImplementation(() => ({ healthCheck }));
++
++            await validateApiKey('sk-valid');
++            await validateApiKey('sk-valid');
++
++            expect(healthCheck).toHaveBeenCalledTimes(1);
++        });
++    });
++});
+diff --git a/src/__tests__/modes.http.test.ts b/src/__tests__/modes.http.test.ts
+index d250aad..f830ebc 100644
+--- a/src/__tests__/modes.http.test.ts
++++ b/src/__tests__/modes.http.test.ts
+@@ -1,7 +1,6 @@
+ import express, { Request, Response } from 'express';
+ import helmet from 'helmet';
+ import cors from 'cors';
+-import { main } from '../index';
+ import { AnyCrawlMCPServer } from '../mcp-server';
+ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+ 
+@@ -11,7 +10,7 @@ describe('Server modes', () => {
+     const OLD_ENV = process.env;
+ 
+     beforeEach(() => {
+-        jest.resetModules();
++        jest.clearAllMocks();
+         process.env = { ...OLD_ENV };
+     });
+ 
+@@ -19,7 +18,6 @@ describe('Server modes', () => {
+         process.env = OLD_ENV;
+     });
+ 
+-
+     test('CLOUD_SERVICE mode handles POST /mcp and returns JSON', async () => {
+         process.env.ANYCRAWL_MODE = 'CLOUD_SERVICE';
+         process.env.ANYCRAWL_API_KEY = 'test';
+diff --git a/src/__tests__/nginx-routing.test.ts b/src/__tests__/nginx-routing.test.ts
+new file mode 100644
+index 0000000..5fcbf7a
+--- /dev/null
++++ b/src/__tests__/nginx-routing.test.ts
+@@ -0,0 +1,28 @@
++import { readFileSync } from 'fs';
++import { resolve } from 'path';
++
++describe('nginx routing config', () => {
++    const nginxConf = readFileSync(resolve(__dirname, '../../docker/nginx.conf'), 'utf8');
++
++    test('serves JSON status on root path', () => {
++        expect(nginxConf).toContain('location = /');
++        expect(nginxConf).toContain('"service":"anycrawl-mcp"');
++    });
++
++    test('routes api-key prefixed messages to SSE upstream', () => {
++        expect(nginxConf).toMatch(/location ~ \^\/\(\?<apikey>\[\^\/\]\+\)\/messages\$/);
++        expect(nginxConf).toContain('rewrite ^/.*/messages$ /messages break;');
++        expect(nginxConf).toContain('proxy_pass http://app_sse;');
++    });
++
++    test('does not keep generic api-key catch-all route', () => {
++        expect(nginxConf).not.toMatch(/location ~ \^\/\(\?<apikey>\[\^\/\]\+\)\/\(\.\*\)\$/);
++    });
++
++    test('handles HEAD probes for health and MCP endpoints', () => {
++        expect(nginxConf).toContain('location /health');
++        expect(nginxConf).toContain('if ($request_method = HEAD) { return 200; }');
++        expect(nginxConf).toContain('location /mcp');
++        expect(nginxConf).toContain('location /sse');
++    });
++});
+diff --git a/src/auth.ts b/src/auth.ts
+new file mode 100644
+index 0000000..d47a910
+--- /dev/null
++++ b/src/auth.ts
+@@ -0,0 +1,97 @@
++import { AnyCrawlClient } from '@anycrawl/js-sdk';
++import { IncomingHttpHeaders } from 'http';
++
++const PLACEHOLDER_KEYS = new Set([
++    '{your_api_key}',
++    '{your-api-key}',
++    'your-api-key',
++    'your_api_key',
++    'your-api-key-here',
++    'your_api_key_here',
++]);
++
++const VALID_KEY_CACHE_MS = 5 * 60 * 1000;
++const INVALID_KEY_CACHE_MS = 60 * 1000;
++
++interface KeyValidationCacheEntry {
++    valid: boolean;
++    expiresAt: number;
++}
++
++const keyValidationCache = new Map<string, KeyValidationCacheEntry>();
++
++export function extractApiKey(headers: IncomingHttpHeaders): string | null {
++    const anycrawlApiKey = headers['x-anycrawl-api-key'] || headers['X-AnyCrawl-Api-Key'];
++    if (typeof anycrawlApiKey === 'string' && anycrawlApiKey.trim()) {
++        return anycrawlApiKey.trim();
++    }
++
++    const authHeader = headers.authorization || headers.Authorization;
++    if (typeof authHeader === 'string') {
++        const match = authHeader.match(/^Bearer\s+(.+)$/i);
++        if (match?.[1]) {
++            return match[1].trim();
++        }
++        if (authHeader.trim()) {
++            return authHeader.trim();
++        }
++    }
++
++    return null;
++}
++
++export function normalizeApiKey(raw: string): string {
++    const apiKey = raw.trim();
++    if (!apiKey) {
++        throw new Error(
++            'AnyCrawl API key is required. Use /{API_KEY}/mcp or set Authorization: Bearer <key>'
++        );
++    }
++
++    const normalized = apiKey.toLowerCase();
++    if (PLACEHOLDER_KEYS.has(normalized) || apiKey.includes('{YOUR_API_KEY}') || apiKey.includes('{API_KEY}')) {
++        throw new Error(
++            'Invalid AnyCrawl API key placeholder. Replace {YOUR_API_KEY} with your real API key.'
++        );
++    }
++
++    return apiKey;
++}
++
++export function clearApiKeyValidationCache(): void {
++    keyValidationCache.clear();
++}
++
++export async function validateApiKey(apiKey: string, baseUrl?: string): Promise<void> {
++    const normalizedKey = normalizeApiKey(apiKey);
++    const cacheKey = `${baseUrl || 'https://api.anycrawl.dev'}:${normalizedKey}`;
++    const cached = keyValidationCache.get(cacheKey);
++    const now = Date.now();
++
++    if (cached && cached.expiresAt > now) {
++        if (!cached.valid) {
++            throw new Error('Invalid AnyCrawl API key');
++        }
++        return;
++    }
++
++    try {
++        const client = new AnyCrawlClient(normalizedKey, baseUrl);
++        await client.healthCheck();
++        keyValidationCache.set(cacheKey, {
++            valid: true,
++            expiresAt: now + VALID_KEY_CACHE_MS,
++        });
++    } catch (error) {
++        keyValidationCache.set(cacheKey, {
++            valid: false,
++            expiresAt: now + INVALID_KEY_CACHE_MS,
++        });
++
++        const message = error instanceof Error ? error.message : String(error);
++        if (/authentication failed/i.test(message)) {
++            throw new Error('Invalid AnyCrawl API key');
++        }
++        throw new Error(`Unable to validate AnyCrawl API key: ${message}`);
++    }
++}
+diff --git a/src/index.ts b/src/index.ts
+index c5db146..aee4042 100644
+--- a/src/index.ts
++++ b/src/index.ts
+@@ -1,9 +1,14 @@
+ #!/usr/bin/env node
+ 
++import { createRequire } from 'module';
+ import { FastMCP } from 'fastmcp';
+ import { logger } from './logger.js';
+ import { AnyCrawlMCPServer } from './mcp-server.js';
+-import { IncomingHttpHeaders } from 'http';
++import { extractApiKey, normalizeApiKey, validateApiKey } from './auth.js';
++
++const require = createRequire(import.meta.url);
++const { version: packageVersion } = require('../package.json') as { version: string };
++const serverVersion = packageVersion as `${number}.${number}.${number}`;
+ 
+ // Session data
+ interface SessionData extends Record<string, unknown> {
+@@ -11,32 +16,10 @@ interface SessionData extends Record<string, unknown> {
+     baseUrl?: string;
+ }
+ 
+-// Extract API key from request headers
+-function extractApiKey(headers: IncomingHttpHeaders): string | null {
+-    // Try x-anycrawl-api-key header first
+-    const anycrawlApiKey = headers['x-anycrawl-api-key'] || headers['X-AnyCrawl-Api-Key'];
+-    if (typeof anycrawlApiKey === 'string') {
+-        return anycrawlApiKey;
+-    }
+-
+-    // Fallback to Authorization header
+-    const authHeader = headers.authorization || headers.Authorization;
+-    if (typeof authHeader === 'string') {
+-        // Handle "Bearer <token>" format
+-        const match = authHeader.match(/^Bearer\s+(.+)$/i);
+-        if (match) {
+-            return match[1] || null;
+-        }
+-        // Handle direct token
+-        return authHeader || null;
+-    }
+-    return null;
+-}
+-
+ // Create FastMCP server instance (single port)
+ const server = new FastMCP<SessionData>({
+     name: 'anycrawl-fastmcp',
+-    version: '0.0.6',
++    version: serverVersion,
+     logger: {
+         debug: (message: string, data?: any) => logger.debug(message, data),
+         error: (message: string, data?: any) => logger.error(message, data),
+@@ -52,22 +35,26 @@ const server = new FastMCP<SessionData>({
+         },
+     },
+     roots: { enabled: false },
+-    authenticate: async (request: { headers: IncomingHttpHeaders }): Promise<SessionData> => {
+-        if (process.env.CLOUD_SERVICE === 'true') {
+-            const apiKey = extractApiKey(request.headers);
++    authenticate: async (request: { headers: import('http').IncomingHttpHeaders }): Promise<SessionData> => {
++        const baseUrl = process.env.ANYCRAWL_BASE_URL || 'https://api.anycrawl.dev';
+ 
+-            if (!apiKey) {
+-                throw new Error('AnyCrawl API key is required');
++        if (process.env.CLOUD_SERVICE === 'true') {
++            const rawApiKey = extractApiKey(request.headers);
++            if (!rawApiKey) {
++                throw new Error(
++                    'AnyCrawl API key is required. Use /{API_KEY}/mcp or set Authorization: Bearer <key>'
++                );
+             }
+-            return { anycrawlApiKey: apiKey };
+-        } else {
+-            // Self-hosted default base URL
+-            const baseUrl = process.env.ANYCRAWL_BASE_URL || 'https://api.anycrawl.dev';
+-            return {
+-                anycrawlApiKey: process.env.ANYCRAWL_API_KEY || '',
+-                baseUrl
+-            };
++
++            const apiKey = normalizeApiKey(rawApiKey);
++            await validateApiKey(apiKey, baseUrl);
++            return { anycrawlApiKey: apiKey, baseUrl };
+         }
++
++        return {
++            anycrawlApiKey: process.env.ANYCRAWL_API_KEY || '',
++            baseUrl,
++        };
+     },
+     // Health endpoint
+     health: {
+@@ -200,4 +187,4 @@ if (import.meta.url === `file://${process.argv[1]}`) {
+     });
+ }
+ 
+-export { main };
+\ No newline at end of file
++export { main };
+-- 
+2.43.0
+

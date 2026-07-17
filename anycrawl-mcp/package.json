@@ -1,0 +1,74 @@
+{
+  "name": "anycrawl-mcp",
+  "version": "1.0.4",
+  "description": "AnyCrawl MCP Server - Adds powerful web scraping and crawling to Cursor, Claude and any other LLM clients",
+  "main": "dist/index.js",
+  "type": "module",
+  "bin": {
+    "anycrawl-mcp": "dist/cli.js",
+    "anycrawl-mcp-server": "dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/cli.js",
+    "dev": "tsx src/cli.ts",
+    "start:mcp": "ANYCRAWL_MODE=MCP node dist/cli.js",
+    "start:sse": "ANYCRAWL_MODE=SSE node dist/cli.js",
+    "dev:mcp": "ANYCRAWL_MODE=MCP tsx src/cli.ts",
+    "dev:sse": "ANYCRAWL_MODE=SSE tsx src/cli.ts",
+    "test": "jest",
+    "lint": "eslint src/**/*.ts",
+    "format": "prettier --write src/**/*.ts",
+    "prepublishOnly": "npm run build"
+  },
+  "packageManager": "npm@10.8.2",
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "keywords": [
+    "anycrawl",
+    "mcp",
+    "web-scraping",
+    "crawling",
+    "claude",
+    "cursor",
+    "crawl ai",
+    "ai crawler",
+    "llm-tools"
+  ],
+  "author": "AnyCrawl Team",
+  "license": "MIT",
+  "dependencies": {
+    "@anycrawl/js-sdk": "0.0.3",
+    "fastmcp": "^3.17.0",
+    "zod": "^3.22.0"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.17",
+    "@types/express": "^4.17.21",
+    "@types/jest": "^29.0.0",
+    "@types/node": "^20.0.0",
+    "@typescript-eslint/eslint-plugin": "6.21.0",
+    "@typescript-eslint/parser": "6.21.0",
+    "axios": "^1.6.0",
+    "cors": "^2.8.5",
+    "eslint": "^8.0.0",
+    "express": "^4.18.2",
+    "helmet": "^7.1.0",
+    "jest": "^29.0.0",
+    "prettier": "^3.0.0",
+    "ts-jest": "^29.0.0",
+    "tsx": "^4.0.0",
+    "typescript": "^5.0.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "overrides": {
+    "undici": "^5.29.0"
+  },
+  "resolutions": {
+    "undici": "^5.29.0"
+  }
+}

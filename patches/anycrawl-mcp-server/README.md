@@ -4,6 +4,17 @@ Cloud Agent 对 `any4ai/anycrawl-mcp-server` 的修复因 bot 无 push 权限未
 
 ## 在本机应用
 
+你的本地目录如果是 `/Users/thans/working/AnyCrawl/anycrawl-mcp`，可以直接拉 AnyCrawl 分支拿完整修复版：
+
+```bash
+cd /Users/thans/working/AnyCrawl
+git fetch origin cursor/mcp-server-fix-patch-984e
+git checkout cursor/mcp-server-fix-patch-984e
+# 修复版在 anycrawl-mcp/ 目录，见 anycrawl-mcp/SYNC.md
+```
+
+或单独 clone MCP 仓库后打补丁：
+
 ```bash
 git clone https://github.com/any4ai/anycrawl-mcp-server.git
 cd anycrawl-mcp-server

@@ -1,0 +1,47 @@
+version: '3.8'
+
+services:
+  # AnyCrawl MCP Server with integrated Nginx
+  anycrawl-mcp:
+    build:
+      context: .
+      dockerfile: Dockerfile.service
+    container_name: anycrawl-mcp-server
+    environment:
+      - ANYCRAWL_MODE=MCP_AND_SSE
+      - ANYCRAWL_MCP_PORT=3000
+      - ANYCRAWL_SSE_PORT=3001
+      - ANYCRAWL_HOST=0.0.0.0
+      - CLOUD_SERVICE=true
+      - ANYCRAWL_BASE_URL=https://api.anycrawl.dev
+      - ENABLE_NGINX=true
+    ports:
+      - '80:80' # Nginx proxy port
+      - '3000:3000' # Direct MCP server port
+      - '3001:3001' # Direct SSE server port
+    networks:
+      - anycrawl-network
+    restart: unless-stopped
+    healthcheck:
+      test: ['CMD', 'curl', '-f', 'http://localhost/health']
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
+        reservations:
+          memory: 256M
+          cpus: '0.25'
+
+networks:
+  anycrawl-network:
+    driver: bridge
+# Optional: Add volumes for SSL certificates
+# volumes:
+#   ssl-certs:
+#     external: true

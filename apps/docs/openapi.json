@@ -2501,78 +2501,117 @@
             }
           },
           "400": {
-            "description": "Bad request - validation error",
+            "description": "Bad request - validation error or upstream parameter rejection",
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object",
-                  "properties": {
-                    "success": {
-                      "type": "boolean",
-                      "const": false,
-                      "description": "Indicates the request failed"
-                    },
-                    "error": {
-                      "type": "string",
-                      "description": "Error message",
-                      "example": "Validation error"
-                    },
-                    "details": {
+                  "anyOf": [
+                    {
                       "type": "object",
                       "properties": {
-                        "issues": {
-                          "type": "array",
-                          "items": {
-                            "type": "object",
-                            "properties": {
-                              "field": {
-                                "type": "string",
-                                "description": "The field that caused the error",
-                                "example": "engine"
-                              },
-                              "message": {
-                                "type": "string",
-                                "description": "Error message for the field",
-                                "example": "Invalid enum value. Expected 'playwright' | 'cheerio' | 'puppeteer', received 'cheeri1o'"
-                              },
-                              "code": {
-                                "type": "string",
-                                "description": "Error code",
-                                "example": "invalid_enum_value"
-                              }
-                            },
-                            "required": [
-                              "field",
-                              "message",
-                              "code"
-                            ]
-                          },
-                          "description": "Array of validation issues"
+                        "success": {
+                          "type": "boolean",
+                          "const": false,
+                          "description": "Indicates the request failed"
                         },
-                        "messages": {
-                          "type": "array",
-                          "items": {
-                            "type": "string"
+                        "error": {
+                          "type": "string",
+                          "description": "Error message",
+                          "example": "Validation error"
+                        },
+                        "details": {
+                          "type": "object",
+                          "properties": {
+                            "issues": {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "properties": {
+                                  "field": {
+                                    "type": "string",
+                                    "description": "The field that caused the error",
+                                    "example": "engine"
+                                  },
+                                  "message": {
+                                    "type": "string",
+                                    "description": "Error message for the field",
+                                    "example": "Invalid enum value. Expected 'auto' | 'playwright' | 'cheerio' | 'puppeteer', received 'cheeri1o'"
+                                  },
+                                  "code": {
+                                    "type": "string",
+                                    "description": "Error code",
+                                    "example": "invalid_enum_value"
+                                  }
+                                },
+                                "required": [
+                                  "field",
+                                  "message",
+                                  "code"
+                                ]
+                              },
+                              "description": "Array of validation issues"
+                            },
+                            "messages": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              },
+                              "description": "Array of validation error messages",
+                              "example": [
+                                "Invalid enum value. Expected 'auto' | 'playwright' | 'cheerio' | 'puppeteer', received 'cheeri1o'"
+                              ]
+                            }
                           },
-                          "description": "Array of validation error messages",
-                          "example": [
-                            "Invalid enum value. Expected 'playwright' | 'cheerio' | 'puppeteer', received 'cheeri1o'"
+                          "required": [
+                            "issues",
+                            "messages"
+                          ],
+                          "description": "Validation error details"
+                        }
+                      },
+                      "required": [
+                        "success",
+                        "error",
+                        "details"
+                      ],
+                      "description": "Standard error response format for validation errors"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "success": {
+                          "type": "boolean",
+                          "const": false
+                        },
+                        "error": {
+                          "type": "string",
+                          "const": "SEARCH_INVALID_REQUEST"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "upstream_status": {
+                          "anyOf": [
+                            {
+                              "type": "number",
+                              "const": 400
+                            },
+                            {
+                              "type": "number",
+                              "const": 422
+                            }
                           ]
                         }
                       },
                       "required": [
-                        "issues",
-                        "messages"
+                        "success",
+                        "error",
+                        "message",
+                        "upstream_status"
                       ],
-                      "description": "Validation error details"
+                      "description": "The search upstream rejected the request parameters"
                     }
-                  },
-                  "required": [
-                    "success",
-                    "error",
-                    "details"
-                  ],
-                  "description": "Standard error response format for validation errors"
+                  ]
                 }
               }
             }
@@ -2670,6 +2709,38 @@
                     "message"
                   ],
                   "description": "Internal server error response format"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Search upstream HTTP or transport failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": {
+                      "type": "boolean",
+                      "const": false
+                    },
+                    "error": {
+                      "type": "string",
+                      "const": "SEARCH_UPSTREAM_ERROR"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "upstream_status": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "success",
+                    "error",
+                    "message"
+                  ],
+                  "description": "Search upstream HTTP or transport failure; contains no raw upstream credentials or error body"
                 }
               }
             }

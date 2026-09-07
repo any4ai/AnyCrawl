@@ -5,6 +5,8 @@ import { ensureAIConfigLoaded, getAIConfig } from '../utils/config.js';
 import { getExtractModelId } from '../utils/helper.js';
 
 (globalThis as any).AI_SDK_LOG_WARNINGS = false;
+// Real model calls may include multiple sequential chunks; latency remains reported.
+const LIVE_LLM_TIMEOUT = 120_000;
 // 测试数据
 const testMarkdown = `
 # Company Information
@@ -258,7 +260,7 @@ describe('LLMExtract', () => {
             expect(result.data.companyName).toBeDefined();
             expect(typeof result.data.companyName).toBe('string');
             expect(result.data.industry).toBeDefined();
-        }, 60000);
+        }, LIVE_LLM_TIMEOUT);
 
         test('should handle empty text', async () => {
             const result = await extractor.perform('', simpleSchema);
@@ -268,7 +270,7 @@ describe('LLMExtract', () => {
 
             expect(result.data.companyName === null).toBe(true);
             expect(result.data.industry === null).toBe(true);
-        }, 30000);
+        }, LIVE_LLM_TIMEOUT);
 
     });
 
@@ -287,7 +289,7 @@ describe('LLMExtract', () => {
             if (result.data.services) {
                 expect(Array.isArray(result.data.services)).toBe(true);
             }
-        }, 30000);
+        }, LIVE_LLM_TIMEOUT);
 
         test('should handle long text with chunking', async () => {
             const result = await extractor.perform(longTestMarkdown, companySchema);
@@ -318,19 +320,28 @@ describe('LLMExtract', () => {
             // check employees exists
             expect(result.data.employees).toBeDefined();
             expect(typeof result.data.employees).toBe('number');
-        }, 60000);
+        }, LIVE_LLM_TIMEOUT);
     });
 
     describe('Custom Options Tests', () => {
         test('should use custom prompt', async () => {
-            const customPrompt = 'Extract only the company name and founding year from this text.';
-            const result = await extractor.perform(testMarkdown, simpleSchema, {
+            const customPrompt = 'Extract only the company name and founding year. Return companyName in UPPERCASE.';
+            const focusedSchema: JSONSchema7 = {
+                type: 'object',
+                properties: { companyName: { type: 'string' }, founded: { type: 'string' } },
+                required: ['companyName', 'founded'],
+                additionalProperties: false,
+            };
+            const result = await extractor.perform(testMarkdown, focusedSchema, {
                 prompt: customPrompt
             });
             expect(result).toBeDefined();
             expect(result.data).toBeDefined();
-            expect(result.data.industry === undefined || result.data.industry === null).toBe(true);
-        }, 30000);
+            expect(result.data.companyName).toMatch(/TECHCORP/);
+            expect(result.data.companyName).toBe(result.data.companyName.toUpperCase());
+            expect(result.data.founded).toContain('2015');
+            expect(result.data).not.toHaveProperty('industry');
+        }, LIVE_LLM_TIMEOUT);
 
         test('should use custom system prompt', async () => {
             const customSystemPrompt = 'You are a specialized data extraction assistant. Focus on accuracy and completeness.';
@@ -342,7 +353,7 @@ describe('LLMExtract', () => {
             expect(result.data).toBeDefined();
             expect(result.data.industry).toBeDefined();
             expect(result.data.industry !== null).toBe(true);
-        }, 30000);
+        }, LIVE_LLM_TIMEOUT);
 
         test('should respect token limits', async () => {
             const result = await extractor.perform(longTestMarkdown, simpleSchema, {
@@ -353,7 +364,10 @@ describe('LLMExtract', () => {
             expect(result.data).toBeDefined();
 
             expect(result.chunks).toBe(2);
-        }, 30000);
+            expect(result.data.companyName).toMatch(/TechCorp/i);
+            expect(Array.isArray(result.data.industry)).toBe(true);
+            console.info(`Two-chunk extraction duration: ${result.durationMs} ms`);
+        }, LIVE_LLM_TIMEOUT);
     });
 
     describe('Array Input Tests', () => {
@@ -372,7 +386,7 @@ describe('LLMExtract', () => {
             expect(result.data.industry).toBeDefined();
             expect(result.data.founded).toBeDefined();
 
-        }, 30000);
+        }, LIVE_LLM_TIMEOUT);
     });
 
     describe('Error Handling Tests', () => {
@@ -384,7 +398,7 @@ describe('LLMExtract', () => {
             const result = await extractor.perform(testMarkdown, invalidSchema);
 
             expect(result).toBeDefined();
-        }, 30000);
+        }, LIVE_LLM_TIMEOUT);
 
         test('should handle invalid model id', async () => {
             expect.assertions(2);
@@ -397,7 +411,7 @@ describe('LLMExtract', () => {
                     error instanceof Error && error.message.includes('Model invalid-model-id is not found')
                 ).toBe(true);
             }
-        }, 30000);
+        }, LIVE_LLM_TIMEOUT);
     });
 
 
@@ -417,7 +431,7 @@ describe('LLMExtract', () => {
             expect(result.chunks).toBeGreaterThan(0);
             expect(result.data).toBeDefined();
             expect(result.data.company).toBeDefined();
-        }, 30000);
+        }, LIVE_LLM_TIMEOUT);
 
         test('should respect cost limits', async () => {
             const lowCostExtractor = new LLMExtract(defaultLLMModel, undefined, 0.001); // 很低的成本限制
@@ -429,6 +443,6 @@ describe('LLMExtract', () => {
                 expect(error instanceof Error).toBe(true);
                 expect((error as Error).message.includes('Cost limit exceeded')).toBe(true);
             }
-        }, 60000);
+        }, LIVE_LLM_TIMEOUT);
     });
 });

@@ -1,6 +1,6 @@
 import { Response } from "express";
 import { z } from "zod";
-import { SearchService, getSearchConfig } from "@anycrawl/search/SearchService";
+import { SearchService, SearchServiceError, getSearchConfig } from "@anycrawl/search/SearchService";
 import { log } from "@anycrawl/libs/log";
 import { searchSchema, RequestWithAuth, CreditCalculator, WebhookEventType, estimateTaskCredits, getCacheConfig, appConfig } from "@anycrawl/libs";
 import { randomUUID } from "crypto";
@@ -65,6 +65,9 @@ export class SearchController {
         let searchJobId: string | null = null;
         let engineName: string | null = null;
         let defaultPrice: number = 0;
+        let pagesProcessed = 0;
+        let failedPages = 0;
+        let successPages = 0;
         /** Search-template metadata: when false, do not bill scrape template perCall for follow-up scrapes. */
         let chargeScrapeTemplateCreditsForFollowup = true;
         try {
@@ -252,9 +255,6 @@ export class SearchController {
             );
 
             const expectedPages = validatedData.pages || 1;
-            let pagesProcessed = 0;
-            let failedPages = 0;
-            let successPages = 0;
 
             let scrapeJobIds: string[] = [];
             const scrapeJobCreationPromises: Promise<void>[] = [];
@@ -534,13 +534,29 @@ export class SearchController {
             } else {
                 if (searchJobId) {
                     try {
-                        await failedJob(searchJobId, error instanceof Error ? error.message : "Unknown error", false, { total: 0, completed: 0, failed: 0 });
+                        await failedJob(searchJobId, error instanceof Error ? error.message : "Unknown error", false, {
+                            total: pagesProcessed, completed: successPages, failed: failedPages,
+                        });
+                        if (error instanceof SearchServiceError) {
+                            await triggerWebhookEvent(WebhookEventType.SEARCH_FAILED, searchJobId, {
+                                status: "failed", error: error.code, message: error.message,
+                            }, "search");
+                        }
                     } catch (e) {
                         log.error(`Failed to mark job failed for job_id=${searchJobId}: ${e instanceof Error ? e.message : String(e)}`);
                     }
                 }
                 req.creditsUsed = 0;
                 req.billingChargeDetails = undefined;
+                if (error instanceof SearchServiceError) {
+                    res.status(error.httpStatus).json({
+                        success: false,
+                        error: error.code,
+                        message: error.message,
+                        ...(error.upstreamStatus === undefined ? {} : { upstream_status: error.upstreamStatus }),
+                    });
+                    return;
+                }
                 res.status(500).json({
                     success: false,
                     error: "Internal server error",

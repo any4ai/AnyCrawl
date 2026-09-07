@@ -5,6 +5,31 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.0-beta.37] - 2026-09-07
+
+### Added
+
+- **Monitoring recovery** — persist check and notification intents, serialize checks through post-processing, and recover unfinished work after queue failures or worker restarts.
+- **Monitoring API and JS SDK 0.0.9** — cursor pagination, an owner-scoped changes feed, full snapshot details, check/notification history, nullable configuration updates, and specific response types.
+- Facebook, Instagram, and YouTube scraper templates, with validated PostgreSQL/SQLite SQL generation and template registration tooling.
+- Per-request Playwright humanization through CloakBrowser, with default/careful presets and pointer warm-up.
+
+### Fixed
+
+- Propagate search upstream parameter errors as HTTP 400 and other upstream failures as HTTP 502 instead of successful empty results; await page callbacks and prevent partial searches from dispatching follow-up scrapes or being charged.
+- Align live-test output assertions with requested formats and real page content; use a controlled HTTP status fixture, validate actual JSON extraction output, and give real multi-call LLM checks an explicit functional time budget.
+- Enforce webhook owner isolation and validate the final merged monitor configuration; preserve configuration revisions and complete comparison content, and report unavailable AI judgments as unknown.
+- Recover email/webhook delivery with stable IDs and retryable intent records; protect pending work during retention and prevent hidden checks from orphaned or inactive managed tasks.
+- Align SQLite/PostgreSQL transactions and migrations, including the SQLite job-billing schema repair.
+- Declare the missing direct monitor-test dependency and isolate production compilation and Docker context from test files while retaining full type checks and tests.
+
+### Upgrade notes
+
+- Stop and drain old monitoring producers, back up and migrate the target database, then start the new API, Scheduler, and Workers together. Do not run old and new monitoring producers concurrently.
+- New migrations: PostgreSQL `0026_monitor_workflow.sql`; SQLite `0021_monitor_workflow.sql` and `0022_repair_sqlite_job_billing.sql`. Historical alerts are not replayed; incomplete historical snapshots remain visible but do not become new comparison baselines. Keep the new workflow tables if rolling back.
+- Monitor country pinning is explicitly unsupported and new country requests return HTTP 400. `ignore_selectors` filters literal text lines. Email alerts require recipients; price/JSON/mixed monitoring requires an extraction schema.
+- New SDK cursor-pagination methods require the updated server; the existing array-returning history methods remain available.
+
 ## [1.0.0-beta.36] - 2026-08-12
 
 ### Added

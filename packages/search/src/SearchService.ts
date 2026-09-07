@@ -7,6 +7,19 @@ import { HttpClient } from "@anycrawl/scrape";
 import { log, config as globalConfig } from "@anycrawl/libs";
 import { AVAILABLE_SEARCH_ENGINES } from "@anycrawl/libs/constants";
 
+export class SearchServiceError extends Error {
+    readonly code: "SEARCH_INVALID_REQUEST" | "SEARCH_UPSTREAM_ERROR";
+    readonly httpStatus: 400 | 502;
+
+    constructor(readonly upstreamStatus?: number) {
+        const invalidRequest = upstreamStatus === 400 || upstreamStatus === 422;
+        super(invalidRequest ? "Search upstream rejected request parameters" : "Search upstream request failed");
+        this.name = "SearchServiceError";
+        this.code = invalidRequest ? "SEARCH_INVALID_REQUEST" : "SEARCH_UPSTREAM_ERROR";
+        this.httpStatus = invalidRequest ? 400 : 502;
+    }
+}
+
 export interface SearchServiceConfig {
     defaultEngine?: string;
     enabledEngines?: string[];
@@ -206,111 +219,115 @@ export class SearchService {
     async search(
         engineName: string | undefined,
         options: SearchOptions,
-        onPage?: (page: number, results: SearchResult[], uniqueKey: string, success: boolean) => void,
+        onPage?: (page: number, results: SearchResult[], uniqueKey: string, success: boolean) => void | Promise<void>,
     ): Promise<SearchResult[]> {
         log.info("Search called with options:", options);
 
-        try {
-            // Use default engine if none provided
-            const actualEngineName = engineName || this.config.defaultEngine || 'default';
-            const engine = this.getEngine(actualEngineName);
-            const allResults: SearchResult[] = [];
+        // Use default engine if none provided
+        const actualEngineName = engineName || this.config.defaultEngine || 'default';
+        const engine = this.getEngine(actualEngineName);
+        const allResults: SearchResult[] = [];
 
-            // Determine effective pages
-            const perPage = 10; // Default page size per request for engines that do not support direct limit
-            let effectivePages = options.pages ?? 1;
-            if (typeof options.limit === 'number' && options.limit > 0) {
-                // If engine supports direct limit, one request is enough
-                if ((engine as any).supportsDirectLimit) {
-                    effectivePages = 1;
-                } else {
-                    effectivePages = Math.ceil(options.limit / perPage);
-                }
-            }
-
-            log.info(`Executing search for: ${actualEngineName}, pages: ${effectivePages}, concurrent: ${options.concurrent ?? false}`);
-
-            // Helper function to fetch a single page
-            const fetchPage = async (pageNum: number): Promise<{ pageNum: number; results: SearchResult[]; success: boolean }> => {
-                try {
-                    // Build task options
-                    const taskOptions: any = { ...options, page: pageNum };
-                    if (typeof options.limit === 'number' && options.limit > 0) {
-                        // If engine does not support direct limit, enforce per-page limit
-                        if (!(engine as any).supportsDirectLimit) {
-                            taskOptions.limit = perPage;
-                        }
-                    }
-                    const task: SearchTask = await engine.search(taskOptions);
-
-                    log.info(`Fetching page ${pageNum}: ${task.url} requireProxy=${task.requireProxy}`);
-
-                    // Prepare cookie header if cookies are present
-                    const cookieHeader = task.cookies && Object.keys(task.cookies).length > 0
-                        ? Object.entries(task.cookies).map(([key, value]) => `${key}=${value}`).join('; ')
-                        : undefined;
-
-                    // Make HTTP request using HttpClient
-                    const response = await HttpClient.get(task.url, {
-                        headers: task.headers,
-                        cookieHeader: cookieHeader,
-                        requireProxy: task.requireProxy === true,
-                        timeoutMs: 30000,
-                        retries: 2,
-                    });
-
-                    // Parse the response
-                    const html = response.rawText || response.data;
-                    const results = await engine.parse(html, { url: task.url, page: pageNum });
-
-                    log.info(`Page ${pageNum} returned ${results.length} results`);
-
-                    return { pageNum, results, success: true };
-                } catch (error) {
-                    log.error(`Error fetching page ${pageNum}: ${error}`);
-                    return { pageNum, results: [], success: false };
-                }
-            };
-
-            // Execute requests - concurrent or sequential based on options
-            if (options.concurrent) {
-                // Concurrent: fetch all pages in parallel
-                const pageNumbers = Array.from({ length: effectivePages }, (_, i) => i + 1);
-                const pageResults = await Promise.all(pageNumbers.map(fetchPage));
-
-                // Sort by page number and accumulate results
-                pageResults.sort((a, b) => a.pageNum - b.pageNum);
-                for (const { pageNum, results, success } of pageResults) {
-                    if (onPage) {
-                        onPage(pageNum, results, actualEngineName, success);
-                    }
-                    allResults.push(...results);
-                }
-            } else {
-                // Sequential: fetch pages one by one
-                for (let i = 0; i < effectivePages; i++) {
-                    const pageNum = i + 1;
-                    const { results, success } = await fetchPage(pageNum);
-
-                    if (onPage) {
-                        onPage(pageNum, results, actualEngineName, success);
-                    }
-                    allResults.push(...results);
-                }
-            }
-
-            // Apply limit if specified
-            const finalResults = typeof options.limit === 'number' && options.limit > 0
-                ? allResults.slice(0, options.limit)
-                : allResults;
-
-            log.info(`Search completed: ${finalResults.length} total results`);
-            return finalResults;
-
-        } catch (error) {
-            log.error(`Search execution error: ${error}`);
+        if (!options.query.trim()) {
+            await onPage?.(1, [], actualEngineName, true);
             return [];
         }
+
+        // Determine effective pages
+        const perPage = 10; // Default page size per request for engines that do not support direct limit
+        let effectivePages = options.pages ?? 1;
+        if (typeof options.limit === 'number' && options.limit > 0) {
+            // If engine supports direct limit, one request is enough
+            if ((engine as any).supportsDirectLimit) {
+                effectivePages = 1;
+            } else {
+                effectivePages = Math.ceil(options.limit / perPage);
+            }
+        }
+
+        log.info(`Executing search for: ${actualEngineName}, pages: ${effectivePages}, concurrent: ${options.concurrent ?? false}`);
+
+        // Helper function to fetch a single page
+        type PageResult = { pageNum: number; results: SearchResult[]; error?: SearchServiceError };
+        const fetchPage = async (pageNum: number): Promise<PageResult> => {
+            try {
+                // Build task options
+                const taskOptions: any = { ...options, page: pageNum };
+                if (typeof options.limit === 'number' && options.limit > 0) {
+                    // If engine does not support direct limit, enforce per-page limit
+                    if (!(engine as any).supportsDirectLimit) {
+                        taskOptions.limit = perPage;
+                    }
+                }
+                const task: SearchTask = await engine.search(taskOptions);
+
+                log.info(`Fetching page ${pageNum}: ${task.url} requireProxy=${task.requireProxy}`);
+
+                // Prepare cookie header if cookies are present
+                const cookieHeader = task.cookies && Object.keys(task.cookies).length > 0
+                    ? Object.entries(task.cookies).map(([key, value]) => `${key}=${value}`).join('; ')
+                    : undefined;
+
+                // Make HTTP request using HttpClient
+                const response = await HttpClient.get(task.url, {
+                    headers: task.headers,
+                    cookieHeader: cookieHeader,
+                    requireProxy: task.requireProxy === true,
+                    timeoutMs: 30000,
+                    retries: 2,
+                });
+
+                if (response.status < 200 || response.status >= 300) {
+                    throw new SearchServiceError(response.status);
+                }
+
+                // Parse the response
+                const html = response.rawText || response.data;
+                const results = await engine.parse(html, { url: task.url, page: pageNum });
+
+                log.info(`Page ${pageNum} returned ${results.length} results`);
+
+                return { pageNum, results };
+            } catch (error) {
+                const failure = error instanceof SearchServiceError ? error : new SearchServiceError();
+                log.error(`Error fetching search page ${pageNum}: ${failure.message}`);
+                return { pageNum, results: [], error: failure };
+            }
+        };
+
+        // Wait for all pages before successful callbacks can enqueue follow-up
+        // scrapes or account for results from an incomplete search.
+        const pageResults: PageResult[] = [];
+        if (options.concurrent) {
+            const pageNumbers = Array.from({ length: effectivePages }, (_, i) => i + 1);
+            pageResults.push(...await Promise.all(pageNumbers.map(fetchPage)));
+        } else {
+            for (let i = 0; i < effectivePages; i++) {
+                const page = await fetchPage(i + 1);
+                pageResults.push(page);
+                if (page.error) break;
+            }
+        }
+
+        const failedPages = pageResults.filter(page => page.error);
+        if (failedPages.length) {
+            for (const page of failedPages) await onPage?.(page.pageNum, [], actualEngineName, false);
+            throw failedPages[0]!.error;
+        }
+
+        for (const page of pageResults) {
+            await onPage?.(page.pageNum, page.results, actualEngineName, true);
+            allResults.push(...page.results);
+        }
+
+        // Apply limit if specified
+        const finalResults = typeof options.limit === 'number' && options.limit > 0
+            ? allResults.slice(0, options.limit)
+            : allResults;
+
+        log.info(`Search completed: ${finalResults.length} total results`);
+        return finalResults;
+
     }
 
 }

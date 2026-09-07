@@ -623,6 +623,20 @@ const errorResponseSchema = z.object({
     description: 'Standard error response format for validation errors'
 });
 
+const searchInvalidRequestResponseSchema = z.object({
+    success: z.literal(false),
+    error: z.literal('SEARCH_INVALID_REQUEST'),
+    message: z.string(),
+    upstream_status: z.union([z.literal(400), z.literal(422)]),
+}).openapi({ description: 'The search upstream rejected the request parameters' });
+
+const searchUpstreamErrorResponseSchema = z.object({
+    success: z.literal(false),
+    error: z.literal('SEARCH_UPSTREAM_ERROR'),
+    message: z.string(),
+    upstream_status: z.number().int().optional(),
+}).openapi({ description: 'Search upstream HTTP or transport failure; contains no raw upstream credentials or error body' });
+
 const InsufficientCreditsResponseSchema = z.object({
     success: z.literal(false).openapi({
         description: 'Indicates the request failed due to insufficient credits'
@@ -1082,10 +1096,10 @@ const document = createDocument({
                         }
                     },
                     '400': {
-                        description: 'Bad request - validation error',
+                        description: 'Bad request - validation error or upstream parameter rejection',
                         content: {
                             'application/json': {
-                                schema: errorResponseSchema
+                                schema: z.union([errorResponseSchema, searchInvalidRequestResponseSchema])
                             }
                         }
                     },
@@ -1103,6 +1117,12 @@ const document = createDocument({
                             'application/json': {
                                 schema: InsufficientCreditsResponseSchema
                             }
+                        }
+                    },
+                    '502': {
+                        description: 'Search upstream HTTP or transport failure',
+                        content: {
+                            'application/json': { schema: searchUpstreamErrorResponseSchema }
                         }
                     },
                     '500': {

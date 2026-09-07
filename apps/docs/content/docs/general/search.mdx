@@ -400,6 +400,12 @@ The API returns two types of results:
 - **Language Targeting**: Specify language for region-specific and localized results
 - **Query Optimization**: Use specific keywords and phrases for better result quality
 
+### Upstream search failures
+
+An upstream parameter rejection (HTTP 400 or 422) returns HTTP 400 with `error: "SEARCH_INVALID_REQUEST"`. Other upstream HTTP failures or transport errors return HTTP 502 with `error: "SEARCH_UPSTREAM_ERROR"`. The body contains `success: false`, a safe `message`, and `upstream_status` when an HTTP response was received. Upstream authentication errors are gateway failures; they do not indicate an invalid AnyCrawl API key.
+
+Successful searches with no matches, including an empty query, still return `success: true` and `data: []`. An upstream error is never reported as a successful empty result. For a multi-page search, any failed page fails the request before successful-page callbacks can dispatch follow-up scrapes. Failed searches are not charged and do not write a successful Dataset result.
+
 ### Error Handling
 
 ```javascript

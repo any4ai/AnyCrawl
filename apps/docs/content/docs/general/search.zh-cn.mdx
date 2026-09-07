@@ -400,6 +400,12 @@ API 返回两种类型的结果：
 - **语言定向**：指定语言以获取特定地区和本地化结果
 - **查询优化**：使用具体的关键词和短语以提升结果质量
 
+### 搜索上游失败
+
+上游因参数问题拒绝请求（HTTP 400 或 422）时，API 返回 HTTP 400，`error` 为 `SEARCH_INVALID_REQUEST`。其他上游 HTTP 错误或网络错误返回 HTTP 502，`error` 为 `SEARCH_UPSTREAM_ERROR`。响应包含 `success: false`、安全的 `message`，并在收到上游 HTTP 响应时附带 `upstream_status`。上游认证失败属于网关错误，不代表 AnyCrawl API key 无效。
+
+正常搜索没有匹配项以及空查询仍返回 `success: true`、`data: []`，上游错误不会被伪装成成功的空结果。多页搜索中任何一页失败，整次请求都会失败；成功页面的回调在全部页面成功后才执行，因此失败请求不会提前派发后续抓取。失败的搜索不计费，也不会写入成功的 Dataset 结果。
+
 ### 错误处理
 
 ```javascript

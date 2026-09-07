@@ -1,116 +1,73 @@
-import { describe, expect, it } from "@jest/globals";
+import { afterAll, beforeAll, describe, expect, it } from "@jest/globals";
 import request from "supertest";
+import { startHttpStatusFixture } from "./helpers/httpStatusFixture.js";
 
-const TEST_URL = "http://127.0.0.1:8080";
-const TIMEOUT = 30000; // 30 seconds
+const BASE_URL = process.env.ANYCRAWL_BASE_URL || "http://127.0.0.1:8080";
+// Functional live checks include queueing and the documented auto-proxy budget.
+const REQUEST_TIMEOUT = 120_000;
+const TEST_TIMEOUT = REQUEST_TIMEOUT + 15_000;
+const engines = ["cheerio", "playwright", "puppeteer"] as const;
 
 describe("Scrape API", () => {
-    beforeAll(() => {
-        process.env.ANYCRAWL_API_AUTH_ENABLED = "false";
-    });
+    let fixture: Awaited<ReturnType<typeof startHttpStatusFixture>>;
+    beforeAll(async () => { fixture = await startHttpStatusFixture(); });
+    afterAll(async () => { await fixture?.close(); });
 
     it("health check", async () => {
-        const response = await request(TEST_URL).get("/");
+        const response = await request(BASE_URL).get("/");
         expect(response.status).toBe(200);
         expect(response.text).toBe("Hello World");
     });
 
-    it("should return failed when 403 forbidden", async () => {
-        const response = await request(TEST_URL).post("/v1/scrape").timeout(TIMEOUT).send({
-            url: "https://httpstat.us/403",
+    it.each([403, 404])("reports a real HTTP %i response as a failed scrape", async (status) => {
+        const response = await request(BASE_URL).post("/v1/scrape").timeout(REQUEST_TIMEOUT).send({
+            url: `${fixture.url}/status/${status}`,
+            proxy: fixture.url,
             engine: "cheerio",
+            formats: ["html"],
         });
+        expect(fixture.hits.get(status)).toBeGreaterThan(0);
         expect(response.status).toBe(200);
-        expect(response.body.success).toBe(true);
-        expect(response.body.data.status).toBe("failed");
-        expect(response.body.data.error.toLowerCase()).toContain("request blocked");
-    }, 10000);
-    it("should return success when 200 ok with cheerio", async () => {
-        const response = await request(TEST_URL).post("/v1/scrape").timeout(TIMEOUT).send({
-            url: "https://example.com",
-            engine: "cheerio",
-        });
-        expect(response.status).toBe(200);
-        expect(response.body.success).toBe(true);
-        expect(response.body.data.status).toBe("completed");
-        expect(response.body.data.html.toLowerCase()).toContain("200 ok");
-    }, 10000);
+        expect(response.body.success).toBe(false);
+        expect(response.body.error).toBe("Scrape task failed");
+        expect(response.body.data).toMatchObject({ status: "failed", type: "http_error", code: status });
+    }, TEST_TIMEOUT);
 
-    it("should return success when 200 ok with playwright", async () => {
-        const response = await request(TEST_URL).post("/v1/scrape").timeout(TIMEOUT).send({
-            url: "https://example.com/",
-            engine: "playwright",
+    it.each(engines)("returns requested HTML and Markdown with %s", async (engine) => {
+        const response = await request(BASE_URL).post("/v1/scrape").timeout(REQUEST_TIMEOUT).send({
+            url: "https://example.com/", engine, formats: ["html", "markdown"],
         });
         expect(response.status).toBe(200);
         expect(response.body.success).toBe(true);
         expect(response.body.data.status).toBe("completed");
-        expect(response.body.data.html.toLowerCase()).toContain("200 ok");
-    }, 10000);
-    it("should return success when 200 ok with puppeteer", async () => {
-        const response = await request(TEST_URL).post("/v1/scrape").timeout(TIMEOUT).send({
-            url: "https://example.com/",
-            engine: "puppeteer",
-        });
-        expect(response.status).toBe(200);
-        expect(response.body.success).toBe(true);
-        expect(response.body.data.status).toBe("completed");
-        expect(response.body.data.html.toLowerCase()).toContain("200 ok");
-    });
+        expect(response.body.data.html).toMatch(/example domain/i);
+        expect(response.body.data.markdown).toMatch(/example domain/i);
+    }, TEST_TIMEOUT);
 
-    it("should return success when 404 not found", async () => {
-        const response = await request(TEST_URL).post("/v1/scrape").timeout(TIMEOUT).send({
-            url: "https://httpstat.us/404",
-            engine: "cheerio",
+    it("defaults to Markdown without returning unrequested HTML", async () => {
+        const response = await request(BASE_URL).post("/v1/scrape").timeout(REQUEST_TIMEOUT).send({
+            url: "https://example.com/", engine: "cheerio",
         });
         expect(response.status).toBe(200);
         expect(response.body.success).toBe(true);
         expect(response.body.data.status).toBe("completed");
-        expect(response.body.data.html.toLowerCase()).toContain("404 not found");
-    });
+        expect(response.body.data.markdown).toMatch(/example domain/i);
+        expect(response.body.data).not.toHaveProperty("html");
+    }, TEST_TIMEOUT);
 
-    it("should return success when 200 ok with cheerio and expired ssl", async () => {
-        const response = await request(TEST_URL).post("/v1/scrape").timeout(TIMEOUT).send({
-            url: "https://expired.badssl.com/",
-            engine: "cheerio",
+    it.each(engines)("honors the configured SSL policy with %s", async (engine) => {
+        const response = await request(BASE_URL).post("/v1/scrape").timeout(REQUEST_TIMEOUT).send({
+            url: "https://expired.badssl.com/", engine, formats: ["html"],
         });
         expect(response.status).toBe(200);
-        expect(response.body.success).toBe(true);
         if (process.env.ANYCRAWL_IGNORE_SSL_ERROR === "true") {
+            expect(response.body.success).toBe(true);
             expect(response.body.data.status).toBe("completed");
-            expect(response.body.data.html.toLowerCase()).toContain("expired");
+            expect(response.body.data.html).toMatch(/expired/i);
         } else {
+            expect(response.body.success).toBe(false);
             expect(response.body.data.status).toBe("failed");
-            expect(response.body.data.error.toLowerCase()).toContain("ssl");
+            expect(response.body.message).toMatch(/ssl|certificate/i);
         }
-    });
-    it("should return success when 200 ok with playwright and expired ssl", async () => {
-        const response = await request(TEST_URL).post("/v1/scrape").timeout(TIMEOUT).send({
-            url: "https://expired.badssl.com/",
-            engine: "playwright",
-        });
-        expect(response.status).toBe(200);
-        expect(response.body.success).toBe(true);
-        if (process.env.ANYCRAWL_IGNORE_SSL_ERROR === "true") {
-            expect(response.body.data.status).toBe("completed");
-            expect(response.body.data.html.toLowerCase()).toContain("expired");
-        } else {
-            expect(response.body.data.status).toBe("failed");
-            expect(response.body.data.error.toLowerCase()).toContain("ssl");
-        }
-    });
-    it("should return success when 200 ok with puppeteer and expired ssl", async () => {
-        const response = await request(TEST_URL).post("/v1/scrape").timeout(TIMEOUT).send({
-            url: "https://expired.badssl.com/",
-            engine: "puppeteer",
-        });
-        expect(response.status).toBe(200);
-        expect(response.body.success).toBe(true);
-        if (process.env.ANYCRAWL_IGNORE_SSL_ERROR === "true") {
-            expect(response.body.data.status).toBe("completed");
-            expect(response.body.data.html.toLowerCase()).toContain("expired");
-        } else {
-            expect(response.body.data.status).toBe("failed");
-            expect(response.body.data.error.toLowerCase()).toContain("ssl");
-        }
-    });
+    }, TEST_TIMEOUT);
 });

@@ -1,4 +1,5 @@
 import { log } from "@anycrawl/libs";
+import { toCloakBrowserOptions } from "./CloakBrowserOptions.js";
 
 export const CLOAKBROWSER_RUNTIME = "cloakbrowser" as const;
 
@@ -22,31 +23,19 @@ export interface CloakBrowserPlaywrightLauncher extends CloakBrowserLauncher {
 
 type CloakBrowserModule = {
     launch?: LaunchFunction;
-    ensureBinary?: () => Promise<unknown>;
     launchPersistentContext?: PlaywrightPersistentContextFunction;
+    buildContextOptions?: (options: Record<string, unknown>) => Record<string, unknown>;
 };
 type LoadedCloakBrowserModule = CloakBrowserModule & {
     launch: LaunchFunction;
 };
 
-let binaryPromise: Promise<void> | null = null;
 let playwrightLauncherPromise: Promise<CloakBrowserPlaywrightLauncher> | null = null;
 let puppeteerLauncherPromise: Promise<CloakBrowserLauncher> | null = null;
-
-const ensureCloakBrowserBinary = async (): Promise<void> => {
-    binaryPromise ??= (async () => {
-        const mod = await import("cloakbrowser") as CloakBrowserModule;
-        if (typeof mod.ensureBinary === "function") {
-            await mod.ensureBinary();
-        }
-    })();
-    await binaryPromise;
-};
 
 const loadCloakBrowserModule = async (
     moduleName: "cloakbrowser" | "cloakbrowser/puppeteer",
 ): Promise<LoadedCloakBrowserModule> => {
-    await ensureCloakBrowserBinary();
     const mod = await import(moduleName) as CloakBrowserModule;
     if (typeof mod.launch !== "function") {
         throw new Error(`${moduleName} does not export a launch function`);
@@ -63,9 +52,21 @@ const createPlaywrightLauncher = async (): Promise<CloakBrowserPlaywrightLaunche
     log.info("[CloakBrowser] Using cloakbrowser Playwright launcher");
     return {
         name: () => "chromium",
-        launch: mod.launch,
+        launch: async (options = {}) => {
+            const adapted = toCloakBrowserOptions(options, "playwright");
+            if (typeof mod.buildContextOptions !== "function") throw new Error("cloakbrowser does not export buildContextOptions");
+            const browser: any = await mod.launch(adapted);
+            const defaults = mod.buildContextOptions(adapted);
+            // Crawlee creates isolated contexts through browser.newPage(), not launchContext().
+            // Apply the same native context defaults while preserving explicit per-page options.
+            const newContext = browser.newContext.bind(browser);
+            const newPage = browser.newPage.bind(browser);
+            browser.newContext = (contextOptions: Record<string, unknown> = {}) => newContext({ ...defaults, ...contextOptions });
+            browser.newPage = (contextOptions: Record<string, unknown> = {}) => newPage({ ...defaults, ...contextOptions });
+            return browser;
+        },
         launchPersistentContext: (userDataDir, options = {}) => mod.launchPersistentContext!({
-            ...options,
+            ...toCloakBrowserOptions(options, "playwright", true),
             userDataDir,
         }),
         __anycrawlBrowserRuntime: CLOAKBROWSER_RUNTIME,
@@ -76,7 +77,7 @@ const createPuppeteerLauncher = async (): Promise<CloakBrowserLauncher> => {
     const mod = await loadCloakBrowserModule("cloakbrowser/puppeteer");
     log.info("[CloakBrowser] Using cloakbrowser Puppeteer launcher");
     return {
-        launch: mod.launch,
+        launch: (options = {}) => mod.launch(toCloakBrowserOptions(options, "puppeteer")),
         __anycrawlBrowserRuntime: CLOAKBROWSER_RUNTIME,
     };
 };

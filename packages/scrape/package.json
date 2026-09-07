@@ -21,7 +21,10 @@
         "typecheck": "tsc --noEmit",
         "test": "NODE_OPTIONS=--experimental-vm-modules dotenv-run -r ../.. -- jest --detectOpenHandles --forceExit",
         "test:watch": "NODE_OPTIONS=--experimental-vm-modules dotenv-run -r ../.. -- jest --watch --detectOpenHandles",
-        "test:coverage": "NODE_OPTIONS=--experimental-vm-modules dotenv-run -r ../.. -- jest --coverage --detectOpenHandles --forceExit"
+        "test:coverage": "NODE_OPTIONS=--experimental-vm-modules dotenv-run -r ../.. -- jest --coverage --detectOpenHandles --forceExit",
+        "test:browser-score": "dotenv-run -r ../.. -- tsx tests/browser-score/run.ts",
+        "test:browser-score:unit": "NODE_OPTIONS=--experimental-vm-modules jest --config jest.browser-score.config.mjs --runInBand --detectOpenHandles",
+        "typecheck:browser-score": "tsc --project tests/browser-score/tsconfig.json --noEmit"
     },
     "exports": {
         ".": {
@@ -70,6 +73,8 @@
         "@types/nodemailer": "^8.0.1",
         "@types/supertest": "^6.0.2",
         "drizzle-orm": "^0.43.1",
+        "fingerprint-generator": "2.1.72",
+        "fingerprint-injector": "2.1.72",
         "jest": "^29.7.0",
         "supertest": "^6.3.4",
         "ts-jest": "^29.1.2",
@@ -87,16 +92,18 @@
         "axios": "^1.12.2",
         "bullmq": "^5.45.1",
         "cheerio": "^1.0.0",
-        "cloakbrowser": "0.5.7",
+        "cloakbrowser": "0.5.10",
         "crawlee": "^3.13.0",
         "cron-parser": "^5.5.0",
         "html-to-text": "^9.0.5",
         "ioredis": "^5.6.0",
         "minimatch": "^10.0.3",
+        "mmdb-lib": "3.0.2",
         "node-cron": "^4.2.1",
         "nodemailer": "^9.0.3",
         "playwright": "^1.51.1",
         "puppeteer": "^24.4.0",
+        "socks-proxy-agent": "10.0.0",
         "zod": "^3.25.76"
     }
 }

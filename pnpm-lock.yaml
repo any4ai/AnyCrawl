@@ -469,8 +469,8 @@ importers:
         specifier: ^1.0.0
         version: 1.1.2
       cloakbrowser:
-        specifier: 0.5.7
-        version: 0.5.7(playwright-core@1.55.0)(puppeteer-core@24.22.0)
+        specifier: 0.5.10
+        version: 0.5.10(mmdb-lib@3.0.2)(playwright-core@1.55.0)(puppeteer-core@24.22.0)(socks-proxy-agent@10.0.0)
       crawlee:
         specifier: ^3.13.0
         version: 3.15.0(@types/node@22.14.1)(playwright@1.55.0)(puppeteer@24.22.0(typescript@5.8.2))
@@ -486,6 +486,9 @@ importers:
       minimatch:
         specifier: ^10.0.3
         version: 10.0.3
+      mmdb-lib:
+        specifier: 3.0.2
+        version: 3.0.2
       node-cron:
         specifier: ^4.2.1
         version: 4.2.1
@@ -498,6 +501,9 @@ importers:
       puppeteer:
         specifier: ^24.4.0
         version: 24.22.0(typescript@5.8.2)
+      socks-proxy-agent:
+        specifier: 10.0.0
+        version: 10.0.0
       zod:
         specifier: ^3.25.76
         version: 3.25.76
@@ -526,6 +532,12 @@ importers:
       drizzle-orm:
         specifier: ^0.43.1
         version: 0.43.1(@opentelemetry/api@1.9.0)(@types/better-sqlite3@7.6.13)(@types/pg@8.15.5)(better-sqlite3@11.10.0)(pg@8.16.3)
+      fingerprint-generator:
+        specifier: 2.1.72
+        version: 2.1.72
+      fingerprint-injector:
+        specifier: 2.1.72
+        version: 2.1.72(playwright@1.55.0)(puppeteer@24.22.0(typescript@5.8.2))
       jest:
         specifier: ^29.7.0
         version: 29.7.0(@types/node@22.14.1)
@@ -3017,6 +3029,10 @@ packages:
     resolution: {integrity: sha512-MnA+YT8fwfJPgBx3m60MNqakm30XOkyIoH1y6huTQvC0PwZG7ki8NacLBcrPbNoo8vEZy7Jpuk7+jMO+CUovTQ==}
     engines: {node: '>= 14'}
 
+  agent-base@9.0.0:
+    resolution: {integrity: sha512-TQf59BsZnytt8GdJKLPfUZ54g/iaUL2OWDSFCCvMOhsHduDQxO8xC4PNeyIkVcA5KwL2phPSv0douC0fgWzmnA==}
+    engines: {node: '>= 20'}
+
   ai@5.0.47:
     resolution: {integrity: sha512-/DKfU9tTsQVcUYSDCTu1L7jmvEgzUWOr1xf5UHwwDbRf/HED8LDb60QlWYs6f4BkZsVoLvpliCSjliXiRZywFQ==}
     engines: {node: '>=18'}
@@ -3425,8 +3441,8 @@ packages:
     resolution: {integrity: sha512-BSeNnyus75C4//NQ9gQt1/csTXyo/8Sb+afLAkzAptFuMsod9HFokGNudZpi/oQV73hnVK+sR+5PVRMd+Dr7YQ==}
     engines: {node: '>=12'}
 
-  cloakbrowser@0.5.7:
-    resolution: {integrity: sha512-QUCM+rVduu4NQmQne0FePojl2X4144n+rm/Cfva9MSkG4Cssr5zvQa5LAYYoBNiwonv2GxhCtp1/YZWyOuHvuA==}
+  cloakbrowser@0.5.10:
+    resolution: {integrity: sha512-Pzfi8WRAuXCk2GUKIpRZrLtQ/EaXfQ2t+N39fVGxxQfowRpyZB7qbsv0dYtmd+wuV/GK2aO1EBCcCV35TFVo2A==}
     engines: {node: '>=20.0.0'}
     hasBin: true
     peerDependencies:
@@ -5575,6 +5591,10 @@ packages:
   ml-matrix@6.12.1:
     resolution: {integrity: sha512-TJ+8eOFdp+INvzR4zAuwBQJznDUfktMtOB6g/hUcGh3rcyjxbz4Te57Pgri8Q9bhSQ7Zys4IYOGhFdnlgeB6Lw==}
 
+  mmdb-lib@3.0.2:
+    resolution: {integrity: sha512-7e87vk0DdWT647wjcfEtWeMtjm+zVGqNohN/aeIymbUfjHQ2T4Sx5kM+1irVDBSloNC3CkGKxswdMoo8yhqTDg==}
+    engines: {node: '>=10', npm: '>=6'}
+
   morgan@1.10.1:
     resolution: {integrity: sha512-223dMRJtI/l25dJKWpgij2cMtywuG/WiUKXdvwfbhGKBhy1puASqXwFzmWZ7+K73vUPoR7SS2Qz2cI/g9MKw0A==}
     engines: {node: '>= 0.8.0'}
@@ -6414,6 +6434,10 @@ packages:
   smol-toml@1.4.2:
     resolution: {integrity: sha512-rInDH6lCNiEyn3+hH8KVGFdbjc099j47+OSgbMrfDYX1CmXLfdKd7qi6IfcWj2wFxvSVkuI46M+wPGYfEOEj6g==}
     engines: {node: '>= 18'}
+
+  socks-proxy-agent@10.0.0:
+    resolution: {integrity: sha512-pyp2YR3mNxAMu0mGLtzs4g7O3uT4/9sQOLAKcViAkaS9fJWkud7nmaf6ZREFqQEi24IPkBcjfHjXhPTUWjo3uA==}
+    engines: {node: '>= 20'}
 
   socks-proxy-agent@8.0.5:
     resolution: {integrity: sha512-HehCEsotFqbPW9sJ8WVYB6UbmIMv7kUUORIF2Nncq4VQvBfNBLibW9YZR5dlYCSUhwcD628pRllm7n+E+YTzJw==}
@@ -10156,6 +10180,8 @@ snapshots:
 
   agent-base@7.1.4: {}
 
+  agent-base@9.0.0: {}
+
   ai@5.0.47(zod@3.25.76):
     dependencies:
       '@ai-sdk/gateway': 1.0.24(zod@3.25.76)
@@ -10639,12 +10665,14 @@ snapshots:
       strip-ansi: 6.0.1
       wrap-ansi: 7.0.0
 
-  cloakbrowser@0.5.7(playwright-core@1.55.0)(puppeteer-core@24.22.0):
+  cloakbrowser@0.5.10(mmdb-lib@3.0.2)(playwright-core@1.55.0)(puppeteer-core@24.22.0)(socks-proxy-agent@10.0.0):
     dependencies:
       tar: 7.4.3
     optionalDependencies:
+      mmdb-lib: 3.0.2
       playwright-core: 1.55.0
       puppeteer-core: 24.22.0
+      socks-proxy-agent: 10.0.0
 
   clone@1.0.4: {}
 
@@ -13543,6 +13571,8 @@ snapshots:
       is-any-array: 2.0.1
       ml-array-rescale: 1.3.7
 
+  mmdb-lib@3.0.2: {}
+
   morgan@1.10.1:
     dependencies:
       basic-auth: 2.0.1
@@ -14573,6 +14603,14 @@ snapshots:
   smart-buffer@4.2.0: {}
 
   smol-toml@1.4.2: {}
+
+  socks-proxy-agent@10.0.0:
+    dependencies:
+      agent-base: 9.0.0
+      debug: 4.4.3
+      socks: 2.8.7
+    transitivePeerDependencies:
+      - supports-color
 
   socks-proxy-agent@8.0.5:
     dependencies:

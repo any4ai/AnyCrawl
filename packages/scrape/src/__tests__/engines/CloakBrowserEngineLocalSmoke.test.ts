@@ -22,6 +22,7 @@ describe('CloakBrowser engine local smoke', () => {
         process.env.ANYCRAWL_CACHE_ENABLED = 'false';
         process.env.ANYCRAWL_PROXY_URL = '';
         process.env.ANYCRAWL_PROXY_STEALTH_URL = '';
+        process.env.ANYCRAWL_USER_AGENT = '';
 
         server = createServer((_req, res) => {
             res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
@@ -88,6 +89,7 @@ describe('CloakBrowser engine local smoke', () => {
                 });
 
                 engine = await EngineFactoryRegistry.createEngine(engineType, queue, {
+                    headless: true,
                     proxyConfiguration: undefined,
                     useSessionPool: false,
                     maxRequestsPerCrawl: 1,
@@ -96,6 +98,18 @@ describe('CloakBrowser engine local smoke', () => {
                     requestHandler: async (context: CrawlingContext) => {
                         const page: any = (context as any).page;
                         const text = await page.evaluate(() => document.querySelector('#ready')?.textContent);
+                        const identity = await page.evaluate(() => ({ ua: navigator.userAgent, webdriver: navigator.webdriver }));
+                        expect(identity.webdriver).toBe(false);
+                        expect(identity.ua).not.toContain('Chrome/107.');
+                        expect(identity.ua).not.toContain('HeadlessChrome');
+                        if (engineType === 'playwright') {
+                            expect(page.viewportSize()).not.toEqual({ width: 1920, height: 1080 });
+                            const other = await page.context().browser().newContext();
+                            try {
+                                await page.context().addCookies([{ name: 'isolation-test', value: 'private', url: baseUrl! }]);
+                                expect((await other.cookies()).some((cookie: any) => cookie.name === 'isolation-test')).toBe(false);
+                            } finally { await other.close(); }
+                        }
 
                         let cdpAttached = false;
                         if (engineType === 'playwright') {

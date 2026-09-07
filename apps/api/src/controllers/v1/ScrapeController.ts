@@ -4,15 +4,13 @@ import { scrapeSchema, RequestWithAuth, CreditCalculator, WebhookEventType, getC
 import { QueueManager, CrawlerErrorType, CacheManager, resolveAutoEngine } from "@anycrawl/scrape";
 import { STATUS, createJob, failedJob, completedJob, insertJobResult, updateJobCacheHits, writeResultToDataset, assertDatasetWritable, parseDatasetOutput, standardDatasetMapping, DatasetWriteError, type ParsedDatasetOutput, type DatasetMapping } from "@anycrawl/db";
 import type { OwnerContext } from "@anycrawl/libs";
-import { log } from "@anycrawl/libs";
+import { log, getBrowserRuntimeForCache } from "@anycrawl/libs";
 import { TemplateHandler, TemplateVariableMapper } from "../../utils/templateHandler.js";
 import { validateTemplateOnlyFields } from "../../utils/templateValidator.js";
 import { renderUrlTemplate } from "../../utils/urlTemplate.js";
 import { triggerWebhookEvent } from "../../utils/webhookHelper.js";
 import { randomUUID } from "crypto";
 
-const getBrowserRuntimeForCache = (engine?: string | null): string | undefined =>
-    engine === "playwright" || engine === "puppeteer" ? "cloakbrowser" : undefined;
 export class ScrapeController {
     private resolveWaitTimeoutMs(jobPayload: any, hasExplicitTimeout: boolean): number {
         const options = (jobPayload?.options || {}) as Record<string, any>;

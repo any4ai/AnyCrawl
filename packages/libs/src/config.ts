@@ -168,6 +168,15 @@ export const config = {
         get userAgent(): string | undefined {
             return process.env.ANYCRAWL_USER_AGENT;
         },
+        get browserGeoip(): boolean {
+            return process.env.ANYCRAWL_BROWSER_GEOIP !== "false";
+        },
+        get browserTimezone(): string | undefined {
+            return process.env.ANYCRAWL_BROWSER_TIMEZONE?.trim() || undefined;
+        },
+        get browserLocale(): string | undefined {
+            return process.env.ANYCRAWL_BROWSER_LOCALE?.trim() || undefined;
+        },
         get browserIdleRetireSecs(): number {
             return parsePositiveIntEnv('ANYCRAWL_BROWSER_IDLE_RETIRE_SECS', 3600);
         },

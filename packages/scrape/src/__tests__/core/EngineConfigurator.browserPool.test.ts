@@ -50,4 +50,43 @@ describe("EngineConfigurator browser pool options", () => {
             useFingerprints: true,
         }));
     });
+
+    it.each(["playwright", "puppeteer"] as const)("uses native identity and exact proxy matching for CloakBrowser %s", async (engineType) => {
+        process.env = { ...originalEnv, ANYCRAWL_BROWSER_GEOIP: "true" };
+        const options = await configure(engineType, {
+            launchContext: { launcher: { __anycrawlBrowserRuntime: "cloakbrowser" }, browserPerProxy: false, useIncognitoPages: true },
+            browserPoolOptions: { useFingerprints: true },
+        });
+        expect(options.browserPoolOptions.useFingerprints).toBe(false);
+        expect(options.launchContext.browserPerProxy).toBe(true);
+        expect(options.launchContext.useIncognitoPages).toBe(true);
+        const launchContext: any = { launchOptions: { headless: true, args: [] }, proxyUrl: "http://example.test:8080", proxyTier: 1 };
+        for (const hook of options.browserPoolOptions.preLaunchHooks) await hook("page", launchContext);
+        expect(launchContext.launchOptions).toMatchObject({ geoip: true, proxy: "http://example.test:8080", __anycrawlNativeFingerprint: true, __anycrawlExplicitUserAgent: false });
+        const controller: any = { proxyTier: 1, proxyUrl: "http://other.test:8080", launchContext };
+        for (const hook of options.browserPoolOptions.postLaunchHooks) await hook("page", controller);
+        expect(controller.proxyTier).toBeUndefined();
+        expect(controller.proxyUrl).toBe(launchContext.proxyUrl);
+        expect(controller.launchContext.proxyTier).toBe(1);
+        const { BrowserPool } = await import("crawlee");
+        const plugin = {};
+        controller.browserPlugin = plugin;
+        controller.activePages = 0;
+        const pool = { activeBrowserControllers: new Set([controller]), maxOpenPagesPerBrowser: 20 };
+        // Exercise the installed Crawlee selector: the same tier must not permit a different proxy.
+        const pick = (BrowserPool.prototype as any)._pickBrowserWithFreeCapacity;
+        expect(pick.call(pool, plugin, { proxyTier: 1, proxyUrl: "http://other.test:8080" })).toBeUndefined();
+        expect(pick.call(pool, plugin, { proxyTier: 1, proxyUrl: launchContext.proxyUrl })).toBe(controller);
+    });
+
+    it("does not force a CloakBrowser viewport or run GeoIP for direct traffic", async () => {
+        process.env = { ...originalEnv, ANYCRAWL_BROWSER_GEOIP: "true" };
+        const options = await configure("playwright", { launchContext: { launcher: { __anycrawlBrowserRuntime: "cloakbrowser" } } });
+        const setViewportSize = jest.fn();
+        await options.preNavigationHooks[0]({ page: { setViewportSize }, request: { userData: {} } }, {});
+        expect(setViewportSize).not.toHaveBeenCalled();
+        const launchContext: any = { launchOptions: {} };
+        for (const hook of options.browserPoolOptions.preLaunchHooks) await hook("page", launchContext);
+        expect(launchContext.launchOptions.geoip).toBe(false);
+    });
 });

@@ -2,7 +2,7 @@ import { Response } from "express";
 import { z } from "zod";
 import { SearchService, SearchServiceError, getSearchConfig } from "@anycrawl/search/SearchService";
 import { log } from "@anycrawl/libs/log";
-import { searchSchema, RequestWithAuth, CreditCalculator, WebhookEventType, estimateTaskCredits, getCacheConfig, appConfig } from "@anycrawl/libs";
+import { searchSchema, RequestWithAuth, CreditCalculator, WebhookEventType, estimateTaskCredits, getCacheConfig, appConfig, getBrowserRuntimeForCache } from "@anycrawl/libs";
 import { randomUUID } from "crypto";
 import { STATUS, createJob, insertJobResult, completedJob, failedJob, updateJobCounts, updateJobCacheHits, JOB_RESULT_STATUS, writeResultToDataset, assertDatasetWritable, parseDatasetOutput, standardDatasetMapping, DatasetWriteError, type ParsedDatasetOutput, type DatasetMapping } from "@anycrawl/db";
 import type { OwnerContext } from "@anycrawl/libs";
@@ -13,9 +13,6 @@ import { mergeOptionsWithTemplate } from "../../utils/optionMerger.js";
 import { DomainValidator } from "@anycrawl/template-client";
 import { renderTextTemplate } from "../../utils/urlTemplate.js";
 import { triggerWebhookEvent } from "../../utils/webhookHelper.js";
-
-const getBrowserRuntimeForCache = (engine?: string | null): string | undefined =>
-    engine === "playwright" || engine === "puppeteer" ? "cloakbrowser" : undefined;
 
 export class SearchController {
     private searchService: SearchService;

@@ -1,0 +1,73 @@
+{
+    "schemaVersion": 1,
+    "type": "historical-observation",
+    "date": "2026-09-07",
+    "environment": {
+        "platform": "darwin",
+        "arch": "arm64",
+        "headless": false,
+        "cloakbrowser": "0.5.7",
+        "playwright": "1.55.0",
+        "chromium": "145.0.7632.109",
+        "cloakBuild": "145.0.7632.109.2",
+        "fingerprintSeed": 42069,
+        "injectedPersona": "Windows 10 / Chrome 139 / 1280x720",
+        "network": "configured HTTP proxy; exit IP changed between observations",
+        "scope": "Fingerprint subchain with historical AnyCrawl launch flags; not a full Worker run"
+    },
+    "observations": [
+        {
+            "variant": "native",
+            "timezone": "Asia/Singapore",
+            "authenticity": 75,
+            "headless": 0,
+            "stealth": 0,
+            "sannysoftWebdriverPassed": true
+        },
+        {
+            "variant": "fixed-only",
+            "timezone": "Asia/Singapore",
+            "authenticity": 75,
+            "headless": 0,
+            "stealth": 0,
+            "sannysoftWebdriverPassed": true
+        },
+        {
+            "variant": "inject-only",
+            "timezone": "Asia/Singapore",
+            "authenticity": 70,
+            "headless": 0,
+            "stealth": 20,
+            "sannysoftWebdriverPassed": true
+        },
+        {
+            "variant": "injected-fixed",
+            "timezone": "Asia/Singapore",
+            "authenticity": 70,
+            "headless": 0,
+            "stealth": 20,
+            "sannysoftWebdriverPassed": true
+        },
+        {
+            "variant": "native",
+            "timezone": "America/New_York",
+            "authenticity": 85,
+            "headless": 0,
+            "stealth": 0,
+            "sannysoftWebdriverPassed": null
+        }
+    ],
+    "recaptcha": {
+        "status": "unavailable",
+        "score": null,
+        "attempts": 4,
+        "reason": "Navigation exceeded 45000ms in all four main variants."
+    },
+    "limitations": [
+        "One generated injection sample and one observation per condition; not a statistical success rate.",
+        "BrowserScan authenticity and CreepJS feature percentages are different metrics, not human probabilities.",
+        "Proxy exits changed; this was not a fixed-IP causal experiment.",
+        "The original harness used application launch flags; the retained live runner uses installed CloakBrowser launch defaults.",
+        "Not a Linux production, Cloudflare success-rate, or scrape-speed benchmark."
+    ]
+}

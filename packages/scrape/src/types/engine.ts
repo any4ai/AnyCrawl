@@ -35,6 +35,7 @@ export interface EngineOptions {
     launchContext?: {
         launcher?: unknown;
         useIncognitoPages?: boolean;
+        browserPerProxy?: boolean;
         userAgent?: string;
         userDataDir?: string;
         launchOptions?: {
@@ -42,7 +43,7 @@ export interface EngineOptions {
             defaultViewport?: {
                 width: number;
                 height: number;
-            };
+            } | null;
             ignoreHTTPSErrors?: boolean;
             [key: string]: unknown;
         };

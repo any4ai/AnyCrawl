@@ -10,18 +10,27 @@ describe('CloakBrowserLauncher', () => {
         const launch = jest.fn();
         const launchPersistentContext = jest.fn(async () => ({ context: true }));
         const ensureBinary = jest.fn(async () => undefined);
+        const newContext = jest.fn(async (options: any) => options);
+        const newPage = jest.fn(async (options: any) => options);
+        launch.mockImplementation(async () => ({ newContext, newPage }));
 
         jest.unstable_mockModule('cloakbrowser', () => ({
             ensureBinary,
             launch,
             launchPersistentContext,
+            buildContextOptions: jest.fn(() => ({ viewport: null, ignoreHTTPSErrors: true })),
         }));
 
         const { getCloakBrowserPlaywrightLauncher } = await import('../../core/CloakBrowserLauncher.js');
         const launcher = await getCloakBrowserPlaywrightLauncher();
 
-        expect(ensureBinary).toHaveBeenCalledTimes(1);
-        expect(launcher.launch).toBe(launch);
+        expect(ensureBinary).not.toHaveBeenCalled();
+        const browser: any = await launcher.launch({ headless: true, timeout: 9000, ignoreHTTPSErrors: true });
+        expect(launch).toHaveBeenCalledWith({ headless: true, launchOptions: { timeout: 9000 }, contextOptions: { ignoreHTTPSErrors: true } });
+        await browser.newPage();
+        expect(newPage).toHaveBeenCalledWith({ viewport: null, ignoreHTTPSErrors: true });
+        await browser.newContext({ viewport: { width: 800, height: 600 } });
+        expect(newContext).toHaveBeenCalledWith({ viewport: { width: 800, height: 600 }, ignoreHTTPSErrors: true });
         expect(launcher.name()).toBe('chromium');
         await launcher.launchPersistentContext('/tmp/cloak-profile', { headless: true });
         expect(launchPersistentContext).toHaveBeenCalledWith({
@@ -47,8 +56,9 @@ describe('CloakBrowserLauncher', () => {
         const { getCloakBrowserPuppeteerLauncher } = await import('../../core/CloakBrowserLauncher.js');
         const launcher = await getCloakBrowserPuppeteerLauncher();
 
-        expect(ensureBinary).toHaveBeenCalledTimes(1);
-        expect(launcher.launch).toBe(launch);
+        expect(ensureBinary).not.toHaveBeenCalled();
+        await launcher.launch({ headless: false, timeout: 8000, defaultViewport: null });
+        expect(launch).toHaveBeenCalledWith({ headless: false, launchOptions: { timeout: 8000, defaultViewport: null } });
         expect(launcher.__anycrawlBrowserRuntime).toBe('cloakbrowser');
     });
 

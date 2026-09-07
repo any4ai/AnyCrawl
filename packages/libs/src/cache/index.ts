@@ -6,6 +6,19 @@ import { config } from "../config.js";
 // Default cache max age: 2 days in milliseconds
 export const DEFAULT_MAX_AGE = 2 * 24 * 60 * 60 * 1000;
 
+/** Keep API cache reads and worker writes on the same native-browser/region policy. */
+export function getBrowserRuntimeForCache(engine?: string | null): string | undefined {
+    if (engine !== "playwright" && engine !== "puppeteer") return undefined;
+    const policy = JSON.stringify({
+        geoip: config.engine.browserGeoip,
+        timezone: config.engine.browserTimezone ?? null,
+        locale: config.engine.browserLocale ?? null,
+        userAgent: config.engine.userAgent ?? null,
+        headless: config.engine.headless,
+    });
+    return `cloakbrowser-native-v1:${createHash("sha256").update(policy).digest("hex").slice(0, 16)}`;
+}
+
 /** @deprecated Use `config.cache` instead. */
 export function getCacheConfig() {
     return {

@@ -19,6 +19,8 @@ build
 **/__tests__
 **/*.test.*
 **/*.spec.*
+packages/scrape/tests/browser-score
+output/playwright/browser-score
 
 # Environment files
 .env*

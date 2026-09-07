@@ -1,5 +1,6 @@
 import { RequestQueueV2, LaunchContext } from "crawlee";
 import { config } from "@anycrawl/libs";
+import { getBrowserLaunchOptions } from "../core/BrowserLaunchOptions.js";
 import type { EngineOptions } from "../types/engine.js";
 import {
     getCloakBrowserPlaywrightLauncher,
@@ -28,62 +29,14 @@ if (config.engine.maxConcurrency !== undefined) {
     defaultOptions.maxConcurrency = config.engine.maxConcurrency;
 }
 
-// Build platform-aware Chromium args to avoid instability on macOS/Windows
-const defaultLaunchContext: Partial<LaunchContext> = {
-    launchOptions: {
-        args: (() => {
-            const isLinux = process.platform === 'linux';
-            const baseArgs = [
-                "--no-first-run",
-                "--disable-accelerated-2d-canvas",
-                ...(config.engine.lightMode ? [
-                    "--disable-background-networking",
-                    "--disable-breakpad",
-                    "--disable-component-extensions-with-background-pages",
-                    "--disable-default-apps",
-                    "--disable-extensions",
-                    "--disable-features=TranslateUI",
-                    "--disable-hang-monitor",
-                    "--disable-popup-blocking",
-                    "--disable-prompt-on-repost",
-                    "--disable-sync",
-                    "--metrics-recording-only",
-                    "--password-store=basic",
-                    "--use-mock-keychain",
-                    "--mute-audio",
-                    "--force-color-profile=srgb",
-                ] : []),
-            ];
-            const sslArgs = config.engine.ignoreSSLError
-                ? ["--ignore-certificate-errors", "--ignore-certificate-errors-spki-list"]
-                : [];
-            if (isLinux) {
-                return [
-                    "--no-sandbox",
-                    "--disable-setuid-sandbox",
-                    "--disable-dev-shm-usage",
-                    "--no-zygote",
-                    "--disable-gpu",
-                    ...baseArgs,
-                    ...sslArgs,
-                ];
-            }
-            return [
-                ...baseArgs,
-                ...sslArgs,
-            ];
-        })(),
-        defaultViewport: {
-            width: 1920,
-            height: 1080
-        },
-        ignoreHTTPSErrors: config.engine.ignoreSSLError,
-    },
+const getDefaultLaunchContext = (): Partial<LaunchContext> => ({
+    launchOptions: getBrowserLaunchOptions(),
     useIncognitoPages: config.engine.browserIsolateContexts,
+    browserPerProxy: true,
     ...(config.engine.userAgent ? {
         userAgent: config.engine.userAgent
     } : {}),
-};
+});
 
 const defaultHttpOptions: Record<string, any> = {
     ignoreSslErrors: config.engine.ignoreSSLError,
@@ -170,7 +123,7 @@ export class PlaywrightEngineFactory extends BaseEngineFactory {
         const launcher = await getCloakBrowserPlaywrightLauncher();
         return {
             launchContext: {
-                ...defaultLaunchContext,
+                ...getDefaultLaunchContext(),
                 launcher,
             },
         };
@@ -185,7 +138,7 @@ export class PuppeteerEngineFactory extends BaseEngineFactory {
         const launcher = await getCloakBrowserPuppeteerLauncher();
         return {
             launchContext: {
-                ...defaultLaunchContext,
+                ...getDefaultLaunchContext(),
                 launcher,
             },
         };

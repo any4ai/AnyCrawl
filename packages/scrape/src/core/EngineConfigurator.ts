@@ -10,7 +10,8 @@ import { CloudflareChallengeHandler } from "../challenges/cloudflare/CloudflareC
 import { ChallengeOrchestrator } from "../challenges/ChallengeOrchestrator.js";
 import { ProxyCacheManager } from "../managers/ProxyCacheManager.js";
 import { smartWaitForDOMStable } from "../utils/smartWait.js";
-import { applyCloakBrowserHumanize, cloakBrowserHumanWarmup } from "./CloakBrowserLauncher.js";
+import { applyCloakBrowserHumanize, cloakBrowserHumanWarmup, CLOAKBROWSER_RUNTIME } from "./CloakBrowserLauncher.js";
+import { shouldResolveBrowserGeoip } from "./BrowserLaunchOptions.js";
 
 /**
  * Decide whether the cloakbrowser human-behavior layer should be enabled for a
@@ -171,6 +172,7 @@ export class EngineConfigurator {
     }
 
     private static configureBrowserEngine(options: any, engineType: ConfigurableEngineType): void {
+        const nativeFingerprint = this.isCloakBrowser(options);
         // Enforce viewport for browser engines
         const viewportHook = async ({ page }: any) => {
             try {
@@ -563,7 +565,7 @@ export class EngineConfigurator {
         // Add browser-specific hooks to preNavigationHooks
         const existingHooks = options.preNavigationHooks || [];
         options.preNavigationHooks = [
-            viewportHook,
+            ...(!nativeFingerprint ? [viewportHook] : []),
             bandwidthHook,
             resourceBlockingHook,
             requestTimeoutHook,
@@ -758,7 +760,7 @@ export class EngineConfigurator {
             maxOpenPagesPerBrowser: options.browserPoolOptions?.maxOpenPagesPerBrowser ?? config.engine.browserMaxOpenPagesPerBrowser,
             retireBrowserAfterPageCount: options.browserPoolOptions?.retireBrowserAfterPageCount ?? config.engine.browserMaxPagesPerBrowser,
             retireInactiveBrowserAfterSecs: options.browserPoolOptions?.retireInactiveBrowserAfterSecs ?? config.engine.browserIdleRetireSecs,
-            useFingerprints: true,
+            useFingerprints: this.isCloakBrowser(options) ? false : (options.browserPoolOptions?.useFingerprints ?? true),
             fingerprintOptions: {
                 ...options.browserPoolOptions?.fingerprintOptions,
                 fingerprintGeneratorOptions: {
@@ -767,6 +769,7 @@ export class EngineConfigurator {
                 },
             },
         };
+        this.configureCloakBrowserPool(options);
     }
 
     private static configurePlaywright(options: any): void {
@@ -775,7 +778,7 @@ export class EngineConfigurator {
             maxOpenPagesPerBrowser: options.browserPoolOptions?.maxOpenPagesPerBrowser ?? config.engine.browserMaxOpenPagesPerBrowser,
             retireBrowserAfterPageCount: options.browserPoolOptions?.retireBrowserAfterPageCount ?? config.engine.browserMaxPagesPerBrowser,
             retireInactiveBrowserAfterSecs: options.browserPoolOptions?.retireInactiveBrowserAfterSecs ?? config.engine.browserIdleRetireSecs,
-            useFingerprints: true,
+            useFingerprints: this.isCloakBrowser(options) ? false : (options.browserPoolOptions?.useFingerprints ?? true),
             fingerprintOptions: {
                 ...options.browserPoolOptions?.fingerprintOptions,
                 fingerprintGeneratorOptions: {
@@ -784,6 +787,38 @@ export class EngineConfigurator {
                 },
             },
         };
+        this.configureCloakBrowserPool(options);
+    }
+
+    private static isCloakBrowser(options: any): boolean {
+        return options.launchContext?.launcher?.__anycrawlBrowserRuntime === CLOAKBROWSER_RUNTIME;
+    }
+
+    private static configureCloakBrowserPool(options: any): void {
+        if (!this.isCloakBrowser(options)) return;
+        options.launchContext = { ...options.launchContext, browserPerProxy: true };
+        const pool = options.browserPoolOptions;
+        pool.preLaunchHooks = [...(pool.preLaunchHooks ?? []), (_pageId: string, launchContext: any) => {
+            launchContext.browserPerProxy = true;
+            const raw = { ...launchContext.launchOptions };
+            raw.geoip = shouldResolveBrowserGeoip(raw, Boolean(launchContext.proxyUrl));
+            // Puppeteer's Crawlee plugin normally applies the proxy only at context creation.
+            // Also expose the selected upstream to CloakBrowser so GeoIP resolves that egress.
+            if (launchContext.proxyUrl && !raw.proxy) raw.proxy = launchContext.proxyUrl;
+            raw.__anycrawlNativeFingerprint = true;
+            raw.__anycrawlUserAgentArgs = [...(raw.launchOptions?.args ?? []), ...(raw.args ?? [])]
+                .filter((arg: string) => arg.startsWith("--user-agent"));
+            raw.__anycrawlExplicitUserAgent = Boolean(raw.userAgent || options.launchContext.userAgent ||
+                (raw.args ?? []).some((arg: string) => arg.startsWith("--user-agent")));
+            launchContext.launchOptions = raw;
+        }];
+        pool.postLaunchHooks = [...(pool.postLaunchHooks ?? []), (_pageId: string, controller: any) => {
+            // Crawlee 3.15 can otherwise reuse different proxy URLs merely because their
+            // numeric tiers match. Keep launchContext.proxyTier for provider diagnostics,
+            // but require exact proxy-URL matching in BrowserPool's controller selection.
+            controller.proxyTier = undefined;
+            controller.proxyUrl = controller.launchContext.proxyUrl;
+        }];
     }
 
     private static configureCheerio(options: any): void {

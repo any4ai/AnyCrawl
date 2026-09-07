@@ -103,12 +103,15 @@ describe('EngineFactory Tests', () => {
             const playwrightOptions = await (new factoryModule.PlaywrightEngineFactory() as any).getEngineSpecificOptions();
             const puppeteerOptions = await (new factoryModule.PuppeteerEngineFactory() as any).getEngineSpecificOptions();
 
-            expect(playwrightOptions.launchContext.launcher.launch).toBe(playwrightLauncher);
+            expect(playwrightOptions.launchContext.launcher.launch).toEqual(expect.any(Function));
             expect(playwrightOptions.launchContext.launcher.name()).toBe('chromium');
             expect(typeof playwrightOptions.launchContext.launcher.launchPersistentContext).toBe('function');
             expect(playwrightOptions.launchContext.launcher.__anycrawlBrowserRuntime).toBe('cloakbrowser');
             expect(playwrightOptions.launchContext.useIncognitoPages).toBe(true);
-            expect(puppeteerOptions.launchContext.launcher.launch).toBe(puppeteerLauncher);
+            expect(puppeteerOptions.launchContext.launcher.launch).toEqual(expect.any(Function));
+            expect(playwrightOptions.launchContext.browserPerProxy).toBe(true);
+            expect(puppeteerOptions.launchContext.browserPerProxy).toBe(true);
+            expect(playwrightOptions.launchContext.launchOptions.defaultViewport).toBeUndefined();
             expect(puppeteerOptions.launchContext.launcher.__anycrawlBrowserRuntime).toBe('cloakbrowser');
             expect(puppeteerOptions.launchContext.useIncognitoPages).toBe(true);
         });
@@ -140,7 +143,7 @@ describe('EngineFactory Tests', () => {
                 },
             ) as any;
 
-            expect(mergedLaunchContext.launcher.launch).toBe(playwrightLauncher);
+            expect(mergedLaunchContext.launcher).toBe(playwrightOptions.launchContext.launcher);
             expect(mergedLaunchContext.launcher).not.toBe(customLauncher);
             expect(mergedLaunchContext.launchOptions.defaultViewport).toEqual({
                 width: 800,

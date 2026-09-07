@@ -154,6 +154,12 @@ The public scrape and crawl engine values remain `cheerio`, `playwright`, and `p
 
 CloakBrowser requires Node.js 20 or newer. Docker images pre-install its browser binary during image build. For local or custom deployments, set `CLOAKBROWSER_CACHE_DIR` to a stable writable path and `CLOAKBROWSER_AUTO_UPDATE=false` to avoid browser downloads during worker startup. If you manage the binary yourself, set `CLOAKBROWSER_BINARY_PATH`.
 
+Browser engines use CloakBrowser's native fingerprint and context/viewport defaults. Crawlee fingerprint injection and its automatic headless UA override are disabled for this runtime; explicit user-agent and viewport overrides remain supported. Browser processes are reused only for the same configured proxy URL, while page contexts remain isolated by default.
+
+`ANYCRAWL_BROWSER_GEOIP=true` (default) resolves timezone and locale through the selected proxy when a browser starts. The optional GeoIP dependencies are installed; its database (~70 MB) is downloaded and cached on first use. Failed resolution fails the launch instead of continuing with an unknown region. For a known region, set both `ANYCRAWL_BROWSER_TIMEZONE` and `ANYCRAWL_BROWSER_LOCALE` to avoid lookup, or explicitly disable automatic lookup with `ANYCRAWL_BROWSER_GEOIP=false`. Use sticky or region-stable proxies: a fixed proxy URL does not guarantee a fixed exit, and GeoIP databases may disagree. Changing the exit behind the same URL cannot change an already running browser's process-wide timezone.
+
+API and worker deployments should use the same browser region settings. Browser cache identity includes the native fingerprint policy and these settings, preventing reuse of entries from the old injected-fingerprint policy. Existing cached data is retained.
+
 #### LLM Extraction
 
 ```bash
@@ -299,6 +305,10 @@ curl -X POST https://api.anycrawl.dev/v1/search \
 ## 🤝 Contributing
 
 We welcome contributions! See the [Contributing Guide](CONTRIBUTING.md).
+
+Browser fingerprint and scoring checks have a separate live test type: `pnpm test:browser-score --help`.
+It records BrowserScan, CreepJS, Sannysoft, and server-verified reCAPTCHA demo results without combining them into a human score.
+See the [browser-score testing guide](packages/scrape/tests/browser-score/README.md) for proxy configuration, comparison variants, thresholds, and saved artifacts.
 
 ## Backers
 

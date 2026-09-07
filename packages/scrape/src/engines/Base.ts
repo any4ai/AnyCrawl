@@ -16,7 +16,7 @@ import {
 import { insertJobResult, failedJob, completedJob, Billing, JOB_RESULT_STATUS, writeResultToDataset } from "@anycrawl/db";
 import { ProgressManager } from "../managers/Progress.js";
 import { CacheManager } from "../managers/Cache.js";
-import { log, JOB_TYPE_CRAWL, JOB_TYPE_SCRAPE, CreditCalculator, resolveWaitUntil, appConfig, config } from "@anycrawl/libs";
+import { log, JOB_TYPE_CRAWL, JOB_TYPE_SCRAPE, CreditCalculator, resolveWaitUntil, appConfig, config, getBrowserRuntimeForCache } from "@anycrawl/libs";
 import type { RequestTrafficMetric } from "@anycrawl/libs";
 import { CrawlLimitReachedError } from "../errors/index.js";
 import type { CrawlingContext, EngineOptions } from "../types/engine.js";
@@ -26,14 +26,8 @@ import { getResolvedProxyModeName } from "../managers/Proxy.js";
 import { ensureChallengeState, consumeProxyAction } from "../challenges/ChallengeContext.js";
 import { ProxyCacheManager } from "../managers/ProxyCacheManager.js";
 import { smartWaitForDOMStable } from "../utils/smartWait.js";
-import { CLOAKBROWSER_RUNTIME } from "../core/CloakBrowserLauncher.js";
 
 // Template system imports - directly use @anycrawl/template-client
-
-const getBrowserRuntimeForCache = (engine?: string): string | undefined =>
-    engine === ConfigurableEngineType.PLAYWRIGHT || engine === ConfigurableEngineType.PUPPETEER
-        ? CLOAKBROWSER_RUNTIME
-        : undefined;
 
 // Re-export core types for backward compatibility
 export type { MetadataEntry, BaseContent } from "../core/DataExtractor.js";

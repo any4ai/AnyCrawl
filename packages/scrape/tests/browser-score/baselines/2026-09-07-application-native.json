@@ -1,0 +1,40 @@
+{
+    "schemaVersion": 1,
+    "type": "historical-observation",
+    "date": "2026-09-07",
+    "variant": "application",
+    "environment": {
+        "platform": "darwin",
+        "arch": "arm64",
+        "headless": false,
+        "cloakbrowser": "0.5.10",
+        "chromium": "145.0.7632.109",
+        "playwright": "1.55.0",
+        "geoip": true,
+        "configuredProxy": true,
+        "scope": "Application launch options and adapter; not full production Worker"
+    },
+    "metrics": {
+        "browserscanAuthenticity": 75,
+        "creepjsHeadless": 0,
+        "creepjsStealth": 0,
+        "sannysoftWebdriverPassed": true,
+        "sannysoftAdvancedPassed": true
+    },
+    "penalties": [
+        { "label": "Different time zones", "deduction": 10 },
+        { "label": "WebGL exception", "deduction": 5 },
+        { "label": "Incognito mode", "deduction": 10 }
+    ],
+    "regionObservation": {
+        "browserTimezone": "America/New_York",
+        "detectorIpTimezone": "America/Toronto",
+        "rootCause": "Not determined: rotating egress and/or geolocation database disagreement"
+    },
+    "gate": { "minAuthenticity": 85, "actual": 75, "passed": false },
+    "limitations": [
+        "No claim of Cloudflare success rate or scraping performance.",
+        "No production Linux runtime validation.",
+        "The earlier manually aligned 85% remains an experiment, not this run's result."
+    ]
+}

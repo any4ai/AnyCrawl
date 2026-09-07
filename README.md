@@ -55,16 +55,6 @@ Free trial available. Use code **PROXY90** for an exclusive 10% discount.
 
 [Rapidproxy](https://www.rapidproxy.io/?ref=AnyCrawl) — RapidProxy is a high-performance proxy provider offering clean residential proxies and native static ISP IPs for web scraping, browser automation, social media automation, e-commerce, multi-account management, and large-scale data operations. With 90M+ residential IPs, smart rotation, stable sessions, high concurrency, AI-powered CAPTCHA bypass, and non-expiring traffic, RapidProxy helps developers run reliable automation tasks at scale. Residential proxies start from $0.65/GB. Use code **RAPID10** for 10% off — try it now.
 
-<div align="center">
-  <p>
-    <a href="https://talordata.com/?campaignid=5avLYJ0mVCaOwWWx&utm_source=GitHub&utm_term=anycrawl">
-      <img src="assets/sponsors/black-talordata.png" alt="TalorData" width="300">
-    </a>
-  </p>
-</div>
-
-[TalorData](https://talordata.com/?campaignid=5avLYJ0mVCaOwWWx&utm_source=GitHub&utm_term=anycrawl) provides a fast, reliable SERP API that delivers structured, real-time search data from Google, Bing, Yandex, and DuckDuckGo, built for AI agents and SEO automation. Sign up to receive free trial and a 10% discount.
-
 ## 📖 Overview
 
 AnyCrawl is a high‑performance crawling and scraping toolkit:

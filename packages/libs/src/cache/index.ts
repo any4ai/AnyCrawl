@@ -15,6 +15,7 @@ export function getBrowserRuntimeForCache(engine?: string | null): string | unde
         locale: config.engine.browserLocale ?? null,
         userAgent: config.engine.userAgent ?? null,
         headless: config.engine.headless,
+        isolateContexts: config.engine.browserIsolateContexts,
     });
     return `cloakbrowser-native-v1:${createHash("sha256").update(policy).digest("hex").slice(0, 16)}`;
 }

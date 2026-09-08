@@ -113,3 +113,7 @@ pnpm typecheck:browser-score
 解析/参数测试也会被 scrape 包的普通 Jest 测试发现，它们不访问外网。live runner 与普通测试匹配路径分离，不接入 Turbo 缓存或普通 CI 测试任务。整个测试目录不参与生产 TypeScript 构建和 Docker 上下文。
 
 增加检测站时：在 scoring.ts 声明独立语义和解析器，补充有效结果、占位内容、零值及缺失结果的离线用例，再执行一次显式 live 验证。不把不同检测器合并成总分；站点失效时保留 unavailable，不自动替换来源。
+
+## Sticky 生命周期实现验证
+
+统一 sticky 开关、代理模板、普通/隔离模式及回退步骤见 [配置与使用说明](../../STICKY_PROXY.md)。相关单元回归覆盖双驱动租约、fallback 和取消清理；真实验收应使用生产 tsc + Node，保留失败记录，并分别检查长期轮换、无痕检测和业务结果。

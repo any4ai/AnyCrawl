@@ -59,6 +59,7 @@ export function toCloakBrowserOptions(
         __anycrawlNativeFingerprint,
         __anycrawlExplicitUserAgent,
         __anycrawlUserAgentArgs,
+        __anycrawlTrackBrowser,
         ...flat
     } = input;
     const { args: nestedArgs, defaultViewport: nestedViewport, ...rawLaunch } = launchOptions;
@@ -83,6 +84,18 @@ export function toCloakBrowserOptions(
         else if (key === "userDataDir" && persistent) result.userDataDir = value;
         else if (engine === "playwright" && contextKeys.has(key)) context[key] = value;
         else result.launchOptions[key] = value;
+    }
+    if (engine === "puppeteer" && __anycrawlNativeFingerprint) {
+        // Crawlee appends its authenticated forwarding proxy after preLaunchHooks.
+        // Use that transport for both CloakBrowser GeoIP and Chrome. Passing the
+        // upstream again makes the wrapper append a second --proxy-server and
+        // bypasses Crawlee's authentication in the default browser context.
+        const proxyArgs = filteredArgs.filter((arg) => arg.startsWith("--proxy-server="));
+        const transport = proxyArgs.at(-1)?.slice("--proxy-server=".length);
+        if (transport) {
+            result.proxy = transport;
+            result.args = (result.args ?? []).filter((arg: string) => !arg.startsWith("--proxy-server="));
+        }
     }
     if (engine === "playwright") {
         if (explicitViewport !== undefined && context.viewport === undefined)

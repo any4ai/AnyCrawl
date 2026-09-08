@@ -25,6 +25,24 @@ const parseMsEnv = (key: string, fallback: number): number => {
 };
 
 export const config = {
+    proxy: {
+        get stickyEnabled(): boolean {
+            const value = process.env.ANYCRAWL_PROXY_STICKY_ENABLED;
+            if (value && value !== "true" && value !== "false") {
+                throw new Error("ANYCRAWL_PROXY_STICKY_ENABLED must be true or false");
+            }
+            return value === "true";
+        },
+        get stickyTtlSecs(): number | undefined {
+            if (!config.proxy.stickyEnabled) return undefined;
+            const value = process.env.ANYCRAWL_PROXY_STICKY_TTL_SECS ?? "";
+            const seconds = Number(value);
+            if (!/^\d+$/.test(value) || !Number.isSafeInteger(seconds) || seconds <= 10 || seconds > 2_147_483) {
+                throw new Error("ANYCRAWL_PROXY_STICKY_TTL_SECS must be an integer greater than 10 and at most 2147483 when sticky is enabled");
+            }
+            return seconds;
+        },
+    },
     auth: {
         get enabled(): boolean {
             return process.env.ANYCRAWL_API_AUTH_ENABLED === "true";

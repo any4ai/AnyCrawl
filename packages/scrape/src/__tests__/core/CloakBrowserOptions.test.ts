@@ -2,6 +2,16 @@ import { describe, expect, test } from "@jest/globals";
 import { toCloakBrowserOptions } from "../../core/CloakBrowserOptions.js";
 
 describe("CloakBrowser option adaptation", () => {
+    test("uses Crawlee's authenticated transport for Puppeteer GeoIP and launch without duplicate proxy flags", () => {
+        const adapted = toCloakBrowserOptions({
+            __anycrawlNativeFingerprint: true,
+            proxy: "http://account:secret@upstream.test:8080", geoip: true,
+            args: ["--fingerprint=123", "--proxy-server=http://127.0.0.1:12345"],
+        }, "puppeteer");
+        expect(adapted.proxy).toBe("http://127.0.0.1:12345");
+        expect(adapted.geoip).toBe(true);
+        expect(adapted.args).toEqual(["--fingerprint=123"]);
+    });
     test("keeps wrapper flags separate from native launch and context fields", () => {
         const env = { TEST_MARKER: "present" };
         const options = toCloakBrowserOptions(

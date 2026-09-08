@@ -33,6 +33,16 @@ type LoadedCloakBrowserModule = CloakBrowserModule & {
 let playwrightLauncherPromise: Promise<CloakBrowserPlaywrightLauncher> | null = null;
 let puppeteerLauncherPromise: Promise<CloakBrowserLauncher> | null = null;
 
+// Keep ownership of SDK-created resources until Crawlee assigns a controller.
+// A parent timeout can otherwise cancel that assignment after launch succeeds.
+const launchTrackedBrowser = async (options: Record<string, unknown>, launch: () => Promise<any>): Promise<any> => {
+    const track = options.__anycrawlTrackBrowser;
+    if (typeof track === "function") await track();
+    const resource = await launch();
+    if (typeof track === "function") await track(resource);
+    return resource;
+};
+
 const loadCloakBrowserModule = async (
     moduleName: "cloakbrowser" | "cloakbrowser/puppeteer",
 ): Promise<LoadedCloakBrowserModule> => {
@@ -55,7 +65,7 @@ const createPlaywrightLauncher = async (): Promise<CloakBrowserPlaywrightLaunche
         launch: async (options = {}) => {
             const adapted = toCloakBrowserOptions(options, "playwright");
             if (typeof mod.buildContextOptions !== "function") throw new Error("cloakbrowser does not export buildContextOptions");
-            const browser: any = await mod.launch(adapted);
+            const browser: any = await launchTrackedBrowser(options, () => mod.launch(adapted));
             const defaults = mod.buildContextOptions(adapted);
             // Crawlee creates isolated contexts through browser.newPage(), not launchContext().
             // Apply the same native context defaults while preserving explicit per-page options.
@@ -65,10 +75,10 @@ const createPlaywrightLauncher = async (): Promise<CloakBrowserPlaywrightLaunche
             browser.newPage = (contextOptions: Record<string, unknown> = {}) => newPage({ ...defaults, ...contextOptions });
             return browser;
         },
-        launchPersistentContext: (userDataDir, options = {}) => mod.launchPersistentContext!({
+        launchPersistentContext: async (userDataDir, options = {}) => launchTrackedBrowser(options, () => mod.launchPersistentContext!({
             ...toCloakBrowserOptions(options, "playwright", true),
             userDataDir,
-        }),
+        })),
         __anycrawlBrowserRuntime: CLOAKBROWSER_RUNTIME,
     };
 };
@@ -77,7 +87,7 @@ const createPuppeteerLauncher = async (): Promise<CloakBrowserLauncher> => {
     const mod = await loadCloakBrowserModule("cloakbrowser/puppeteer");
     log.info("[CloakBrowser] Using cloakbrowser Puppeteer launcher");
     return {
-        launch: (options = {}) => mod.launch(toCloakBrowserOptions(options, "puppeteer")),
+        launch: async (options = {}) => launchTrackedBrowser(options, () => mod.launch(toCloakBrowserOptions(options, "puppeteer"))),
         __anycrawlBrowserRuntime: CLOAKBROWSER_RUNTIME,
     };
 };

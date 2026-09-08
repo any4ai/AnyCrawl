@@ -12,6 +12,7 @@ import { ProxyCacheManager } from "../managers/ProxyCacheManager.js";
 import { smartWaitForDOMStable } from "../utils/smartWait.js";
 import { applyCloakBrowserHumanize, cloakBrowserHumanWarmup, CLOAKBROWSER_RUNTIME } from "./CloakBrowserLauncher.js";
 import { shouldResolveBrowserGeoip } from "./BrowserLaunchOptions.js";
+import { proxyForCache, StickyProxyConfigurationError } from "./StickyProxyContext.js";
 
 /**
  * Decide whether the cloakbrowser human-behavior layer should be enabled for a
@@ -629,7 +630,12 @@ export class EngineConfigurator {
         }
         const isTimeoutLikeError = (error: Error): boolean => {
             const errorName = error?.name || (error as any)?.constructor?.name;
-            return errorName === "TimeoutError";
+            // BrowserCrawler replaces the driver's TimeoutError with a plain
+            // Error carrying this exact message. Preserve fail-fast behavior.
+            return errorName === "TimeoutError"
+                || error?.constructor?.name === "TimeoutError"
+                || error?.constructor?.name === "InternalTimeoutError"
+                || /^Navigation timed out after \d+(?:\.\d+)? seconds\.$/.test(error?.message ?? "");
         };
 
         // Proxy-related errors that might be temporary
@@ -662,6 +668,11 @@ export class EngineConfigurator {
         options.errorHandler = async (context: any, error: Error) => {
             log.debug(`Error handler triggered: ${error.message}`);
 
+            if (error instanceof StickyProxyConfigurationError) {
+                context.request.noRetry = true;
+                return;
+            }
+
             // Handle CrawlLimitReachedError specially - log as INFO instead of ERROR
             if (error instanceof CrawlLimitReachedError) {
                 log.info(`[EXPECTED] Crawl limit reached for job ${error.jobId}: ${error.reason} - continuing with processed pages`);
@@ -681,7 +692,7 @@ export class EngineConfigurator {
                     const reason = mapToFailureReason(errorMessage, error);
 
                     // Get the actual proxy URL used for this request
-                    const proxyUrl = context?.proxyInfo?.url || 'unknown';
+                    const proxyUrl = proxyForCache(context) || 'unknown';
 
                     // Record both domain-level and proxy-level failures
                     proxyCache.recordDomainFailure(domain, proxyMode, reason).catch(() => {

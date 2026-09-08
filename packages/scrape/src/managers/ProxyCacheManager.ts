@@ -1,3 +1,4 @@
+import { proxyConfigurationId } from "../core/StickyProxyContext.js";
 /**
  * Proxy Cache Manager - Persistent proxy caching for domain-specific proxy selection
  *
@@ -262,7 +263,7 @@ export class ProxyCacheManager {
     // Persist to Redis (permanent, no TTL)
     await this.setDomainEntry(key, entry, 0);
 
-    log.debug(`[ProxyCache] Domain success: ${domain} proxy=${proxyUrl} mode=${currentMode}`);
+    log.debug(`[ProxyCache] Domain success: ${domain} proxy=${proxyConfigurationId(proxyUrl)} mode=${currentMode}`);
   }
 
   // ==================== Proxy-level Operations ====================
@@ -296,7 +297,7 @@ export class ProxyCacheManager {
       log.warning(`[ProxyCache] Failed to persist proxy failure: ${error instanceof Error ? error.message : String(error)}`);
     }
 
-    log.info(`[ProxyCache] Proxy failure: ${domain}@${proxyUrl} (${reason})`);
+    log.info(`[ProxyCache] Proxy failure: ${domain}@${proxyConfigurationId(proxyUrl)} (${reason})`);
   }
 
   /**

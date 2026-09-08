@@ -1,6 +1,22 @@
 import { jest } from '@jest/globals';
 
 describe('CloakBrowserLauncher', () => {
+    test.each(['playwright', 'puppeteer', 'persistent'])("tracks %s resources before returning them to Crawlee", async (engine) => {
+        const resource = { close: jest.fn(async () => undefined) };
+        const launch = jest.fn(async (_options: Record<string, unknown>) => resource);
+        const persistent = jest.fn(async (_options: Record<string, unknown>) => resource);
+        jest.unstable_mockModule('cloakbrowser', () => ({ launch, launchPersistentContext: persistent, buildContextOptions: jest.fn(() => ({})) }));
+        jest.unstable_mockModule('cloakbrowser/puppeteer', () => ({ launch }));
+        const module = await import('../../core/CloakBrowserLauncher.js');
+        const track = jest.fn(async (browser?: typeof resource) => { if (!browser) return; await browser.close(); throw new Error('cancelled startup'); });
+        const options = { __anycrawlTrackBrowser: track };
+        const launcher = engine === 'puppeteer' ? await module.getCloakBrowserPuppeteerLauncher() : await module.getCloakBrowserPlaywrightLauncher();
+        const pending = engine === 'persistent' ? (launcher as any).launchPersistentContext('/tmp/test-profile', options) : launcher.launch(options);
+        await expect(pending).rejects.toThrow('cancelled startup');
+        expect(resource.close).toHaveBeenCalledTimes(1);
+        const received = engine === 'persistent' ? persistent.mock.calls[0] : launch.mock.calls[0];
+        expect(received?.[0]).not.toHaveProperty('__anycrawlTrackBrowser');
+    });
     beforeEach(() => {
         jest.resetModules();
         jest.clearAllMocks();

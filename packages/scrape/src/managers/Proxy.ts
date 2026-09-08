@@ -1,5 +1,5 @@
 import { Request, ProxyConfiguration as CrawleeProxyConfiguration } from "crawlee";
-import { log, isProxyMode, getResolvedProxyMode, getBaseProxyUrls, getStealthProxyUrls } from "@anycrawl/libs";
+import { log, config, isProxyMode, getResolvedProxyMode, getBaseProxyUrls, getStealthProxyUrls } from "@anycrawl/libs";
 import type { ProxyMode, ResolvedProxyMode } from "@anycrawl/libs";
 import type { Dictionary } from '@crawlee/types';
 import { readFileSync } from 'fs';
@@ -9,6 +9,7 @@ import * as https from 'https';
 
 import { cryptoRandomObjectId } from '@apify/utilities';
 import { ProxyCacheManager } from './ProxyCacheManager.js';
+import { materializeHttpProxy, proxyConfigurationId, stickyProxySelection, STICKY_SESSION_TOKEN, StickyProxyConfigurationError, validateStickyProxyTemplate } from '../core/StickyProxyContext.js';
 
 export type { ProxyMode, ResolvedProxyMode };
 export { isProxyMode, getResolvedProxyMode as getResolvedProxyModeName };
@@ -83,6 +84,8 @@ export interface TieredProxy {
  * ```
  */
 export interface ProxyInfo {
+    /** Stable identity for caching a materialized HTTP proxy configuration. */
+    stickyProxyTemplate?: string;
     /**
      * The identifier of used {@apilink Session}, if used.
      */
@@ -231,6 +234,7 @@ export class ProxyConfiguration extends CrawleeProxyConfiguration {
      * @return Represents information about used proxy and its configuration.
      */
     async newProxyInfo(sessionId?: string | number, options?: TieredProxyOptions): Promise<ProxyInfo | undefined> {
+        if (stickyProxySelection.getStore()) await ensureProxyConfigFresh();
         if (typeof sessionId === 'number') sessionId = `${sessionId}`;
 
         let url: string | undefined | null;
@@ -260,9 +264,17 @@ export class ProxyConfiguration extends CrawleeProxyConfiguration {
 
         if (!url) return undefined;
 
+        let stickyProxyTemplate: string | undefined;
+        if (stickyProxySelection.getStore()) validateStickyProxyTemplate(url, config.proxy.stickyTtlSecs!);
+        else {
+            if (url.includes(STICKY_SESSION_TOKEN)) stickyProxyTemplate = url;
+            url = materializeHttpProxy(url);
+        }
+
         const { username, password, port, hostname } = new URL(url);
 
         return {
+            ...(stickyProxyTemplate ? { stickyProxyTemplate } : {}),
             sessionId,
             url,
             username: decodeURIComponent(username),
@@ -292,7 +304,7 @@ export class ProxyConfiguration extends CrawleeProxyConfiguration {
                 const selectedProxy = combined[this.nextCustomUrlIndex++ % combined.length] ?? null;
                 if (selectedProxy) {
                     const originalUrl = (options.request.userData as any)?.original_url;
-                    this.log.info(`[PROXY] URL: ${options.request.url}${originalUrl && originalUrl !== options.request.url ? ` (original: ${originalUrl})` : ''} → Using merged proxy (rule + fallback): ${selectedProxy}`);
+                    this.log.info(`[PROXY] URL: ${options.request.url}${originalUrl && originalUrl !== options.request.url ? ` (original: ${originalUrl})` : ''} → Using merged proxy (rule + fallback): ${proxyConfigurationId(selectedProxy)}`);
                 }
                 return {
                     proxyUrl: selectedProxy,
@@ -304,7 +316,7 @@ export class ProxyConfiguration extends CrawleeProxyConfiguration {
             const allProxyUrls = this.tieredProxyUrls.flat().filter((url): url is string | null => url !== undefined);
             const selectedProxy = allProxyUrls[this.nextCustomUrlIndex++ % allProxyUrls.length] ?? null;
             if (selectedProxy) {
-                this.log.info(`[PROXY] → Using tiered proxy (fallback): ${selectedProxy}`);
+                this.log.info(`[PROXY] → Using tiered proxy (fallback): ${proxyConfigurationId(selectedProxy)}`);
             }
             return {
                 proxyUrl: selectedProxy,
@@ -326,7 +338,7 @@ export class ProxyConfiguration extends CrawleeProxyConfiguration {
         if (selectedProxy) {
             const requestUrl = options?.request?.url || 'unknown';
             const originalUrl = options?.request?.userData ? (options.request.userData as any)?.original_url : undefined;
-            this.log.info(`[PROXY] URL: ${requestUrl}${originalUrl && originalUrl !== requestUrl ? ` (original: ${originalUrl})` : ''} → Using tiered proxy from tier ${tierPrediction}: ${selectedProxy}`);
+            this.log.info(`[PROXY] URL: ${requestUrl}${originalUrl && originalUrl !== requestUrl ? ` (original: ${originalUrl})` : ''} → Using tiered proxy from tier ${tierPrediction}: ${proxyConfigurationId(selectedProxy)}`);
         }
 
         return {
@@ -355,20 +367,22 @@ export class ProxyConfiguration extends CrawleeProxyConfiguration {
 
         // First try newUrlFunction
         if (this.newUrlFunction) {
-            const result = await this._callNewUrlFunction(sessionId, { request: options?.request });
+            const result = await this._callNewUrlFunction(sessionId, { request: options?.request, proxyTier: options?.proxyTier } as any);
             if (result) {
-                return result;
+                return materializeHttpProxy(result);
             }
         }
 
         // If newUrlFunction returns null, try tieredProxyUrls
         if (this.tieredProxyUrls) {
-            return this._handleTieredUrl(sessionId ?? cryptoRandomObjectId(6), options).proxyUrl ?? undefined;
+            const url = this._handleTieredUrl(sessionId ?? cryptoRandomObjectId(6), options).proxyUrl;
+            return url ? materializeHttpProxy(url) : undefined;
         }
 
         // If both fail, try custom URLs as fallback
         if (this.proxyUrls && this.proxyUrls.length > 0) {
-            return this._handleCustomUrl(sessionId) ?? undefined;
+            const url = this._handleCustomUrl(sessionId);
+            return url ? materializeHttpProxy(url) : undefined;
         }
 
         // If all methods fail, return null
@@ -384,6 +398,15 @@ interface ProxyRule {
 
 interface ProxyConfig {
     rules: ProxyRule[];
+}
+
+function validateStickyRules(value: ProxyConfig): void {
+    if (!config.proxy.stickyEnabled) return;
+    if (!Array.isArray(value.rules)) throw new StickyProxyConfigurationError("Sticky proxy rules must be an array");
+    for (const rule of value.rules) {
+        if (typeof rule.proxy !== "string") throw new StickyProxyConfigurationError("Sticky proxy rule requires a URL template");
+        validateStickyProxyTemplate(rule.proxy, config.proxy.stickyTtlSecs!);
+    }
 }
 
 /**
@@ -454,12 +477,14 @@ function loadProxyConfigFromFile(source: string): void {
         const pathToRead = resolve(source);
         const configContent = readFileSync(pathToRead, 'utf-8');
         const parsed: ProxyConfig = JSON.parse(configContent);
+        validateStickyRules(parsed);
         proxyConfig = parsed;
         proxyConfigFetchedAt = Date.now();
         if (proxyConfig?.rules) {
             log.info(`Loaded proxy configuration from ${pathToRead} with ${proxyConfig.rules.length} rules`);
         }
     } catch (error) {
+        if (error instanceof StickyProxyConfigurationError) throw error;
         log.error('Failed to load proxy configuration from file', { configPath: source, error });
     }
 }
@@ -482,6 +507,7 @@ function loadProxyConfigFromHttp(urlStr: string): Promise<void> {
                 res.on('end', () => {
                     try {
                         const parsed: ProxyConfig = JSON.parse(data);
+                        validateStickyRules(parsed);
                         proxyConfig = parsed;
                         proxyConfigFetchedAt = Date.now();
                         if (proxyConfig?.rules) {
@@ -514,7 +540,8 @@ async function refreshProxyConfig(): Promise<void> {
         } else {
             loadProxyConfigFromFile(proxyConfigSource);
         }
-    } catch {
+    } catch (error) {
+        if (error instanceof StickyProxyConfigurationError) throw error;
         // Errors already logged in load functions; keep existing cache
     }
 }
@@ -741,17 +768,17 @@ function findProxyForUrl(requestUrl: string): string | null {
     for (const rule of proxyConfig.rules) {
         // Priority 1: Check exact URL match first (highest priority)
         if (rule.url && rule.url === requestUrl) {
-            log.debug(`Proxy matched by exact URL rule: ${rule.url} → ${rule.proxy}`);
+            log.debug(`Proxy matched by exact URL rule: ${rule.url} → ${proxyConfigurationId(rule.proxy)}`);
             return rule.proxy;
         }
         // Priority 2: Check URL pattern match
         if (rule.pattern && matchesUrlPattern(rule.pattern, requestUrl)) {
-            log.debug(`Proxy matched by URL pattern: ${rule.pattern} → ${rule.proxy}`);
+            log.debug(`Proxy matched by URL pattern: ${rule.pattern} → ${proxyConfigurationId(rule.proxy)}`);
             return rule.proxy;
         }
         // Priority 3: Check domain pattern match (lowest priority)
         if (rule.domain && matchesDomainPattern(rule.domain, urlObj.hostname)) {
-            log.debug(`Proxy matched by domain pattern: ${rule.domain} → ${rule.proxy}`);
+            log.debug(`Proxy matched by domain pattern: ${rule.domain} → ${proxyConfigurationId(rule.proxy)}`);
             return rule.proxy;
         }
     }
@@ -782,7 +809,7 @@ const proxyConfiguration = new ProxyConfiguration({
         // On first attempt, prefer the config rule proxy (highest priority).
         // On retries, fall through to merge with proxy mode proxies for rotation.
         if (ruleMatch && retryCount === 0) {
-            log.info(`[PROXY] URL: ${requestUrl}${originalUrl && originalUrl !== requestUrl ? ` (original: ${originalUrl})` : ''} → Matched proxy config rule: ${ruleMatch}`);
+            log.info(`[PROXY] URL: ${requestUrl}${originalUrl && originalUrl !== requestUrl ? ` (original: ${originalUrl})` : ''} → Matched proxy config rule: ${proxyConfigurationId(ruleMatch)}`);
             return ruleMatch;
         }
 
@@ -811,13 +838,17 @@ const proxyConfiguration = new ProxyConfiguration({
                     const cachedWorkingProxy = effectiveProxyMode === 'base'
                         ? domainEntry?.baseWorkingProxy
                         : domainEntry?.stealthWorkingProxy;
-                    if (cachedWorkingProxy) {
+                    const allowed = resolveProxyModeWithFallback(effectiveProxyMode)?.flat() ?? [];
+                    const usableCache = !stickyProxySelection.getStore() || (
+                        retryCount === 0 && proxyTier === 0 && cachedWorkingProxy?.includes(STICKY_SESSION_TOKEN) && allowed.includes(cachedWorkingProxy)
+                    );
+                    if (cachedWorkingProxy && usableCache) {
                         const isFailed = await proxyCache.isProxyFailureActive(domain, cachedWorkingProxy);
                         if (!isFailed) {
-                            log.info(`[PROXY] URL: ${requestUrl}${originalUrl && originalUrl !== requestUrl ? ` (original: ${originalUrl})` : ''} → Using cached ${effectiveProxyMode} proxy: ${cachedWorkingProxy}`);
+                            log.info(`[PROXY] URL: ${requestUrl}${originalUrl && originalUrl !== requestUrl ? ` (original: ${originalUrl})` : ''} → Using cached ${effectiveProxyMode} proxy: ${proxyConfigurationId(cachedWorkingProxy)}`);
                             return cachedWorkingProxy;
                         }
-                        log.info(`[ProxyCache] Cached working proxy is currently failed, falling back to rotation: ${domain}@${cachedWorkingProxy}`);
+                        log.info(`[ProxyCache] Cached working proxy is currently failed, falling back to rotation: ${domain}@${proxyConfigurationId(cachedWorkingProxy)}`);
                     }
                 }
 
@@ -837,7 +868,7 @@ const proxyConfiguration = new ProxyConfiguration({
                     const combined = [ruleMatch, ...modeProxies];
                     const selectedProxy = combined[proxyModeRotationIndex++ % combined.length];
                     if (selectedProxy) {
-                        log.info(`[PROXY] URL: ${requestUrl}${originalUrl && originalUrl !== requestUrl ? ` (original: ${originalUrl})` : ''} → Config rule + ${effectiveProxyMode} rotation (retry=${retryCount}, pool=${combined.length}): ${selectedProxy}`);
+                        log.info(`[PROXY] URL: ${requestUrl}${originalUrl && originalUrl !== requestUrl ? ` (original: ${originalUrl})` : ''} → Config rule + ${effectiveProxyMode} rotation (retry=${retryCount}, pool=${combined.length}): ${proxyConfigurationId(selectedProxy)}`);
                         return selectedProxy;
                     }
                 }
@@ -846,13 +877,13 @@ const proxyConfiguration = new ProxyConfiguration({
                 if (resolvedProxy) {
                     const tierCount = getProxyTierCount(effectiveProxyMode);
                     const tierInfo = tierCount > 1 ? ` (tier ${effectiveProxyTier}/${tierCount - 1})` : '';
-                    log.info(`[PROXY] URL: ${requestUrl}${originalUrl && originalUrl !== requestUrl ? ` (original: ${originalUrl})` : ''} → Using proxy mode "${effectiveProxyMode}"${tierInfo}: ${resolvedProxy}`);
+                    log.info(`[PROXY] URL: ${requestUrl}${originalUrl && originalUrl !== requestUrl ? ` (original: ${originalUrl})` : ''} → Using proxy mode "${effectiveProxyMode}"${tierInfo}: ${proxyConfigurationId(resolvedProxy)}`);
                     return resolvedProxy;
                 }
                 log.debug(`[PROXY] URL: ${requestUrl} → Proxy mode "${effectiveProxyMode}" resolved to no proxy`);
             } else {
                 // Custom proxy URL - no fallback allowed
-                log.info(`[PROXY] URL: ${requestUrl}${originalUrl && originalUrl !== requestUrl ? ` (original: ${originalUrl})` : ''} → Using custom proxy from userData: ${proxyValue}`);
+                log.info(`[PROXY] URL: ${requestUrl}${originalUrl && originalUrl !== requestUrl ? ` (original: ${originalUrl})` : ''} → Using custom proxy from userData: ${proxyConfigurationId(proxyValue)}`);
                 return proxyValue;
             }
         }
@@ -864,14 +895,14 @@ const proxyConfiguration = new ProxyConfiguration({
             const combined = [ruleMatch, ...envProxies];
             const selectedProxy = combined[proxyModeRotationIndex++ % combined.length];
             if (selectedProxy) {
-                log.info(`[PROXY] URL: ${requestUrl}${originalUrl && originalUrl !== requestUrl ? ` (original: ${originalUrl})` : ''} → Config rule + env rotation (retry=${retryCount}, pool=${combined.length}): ${selectedProxy}`);
+                log.info(`[PROXY] URL: ${requestUrl}${originalUrl && originalUrl !== requestUrl ? ` (original: ${originalUrl})` : ''} → Config rule + env rotation (retry=${retryCount}, pool=${combined.length}): ${proxyConfigurationId(selectedProxy)}`);
                 return selectedProxy;
             }
         }
 
         // If config rule matched but this is the only proxy available, use it
         if (ruleMatch) {
-            log.info(`[PROXY] URL: ${requestUrl}${originalUrl && originalUrl !== requestUrl ? ` (original: ${originalUrl})` : ''} → Matched proxy config rule (no other proxies for rotation): ${ruleMatch}`);
+            log.info(`[PROXY] URL: ${requestUrl}${originalUrl && originalUrl !== requestUrl ? ` (original: ${originalUrl})` : ''} → Matched proxy config rule (no other proxies for rotation): ${proxyConfigurationId(ruleMatch)}`);
             return ruleMatch;
         }
 

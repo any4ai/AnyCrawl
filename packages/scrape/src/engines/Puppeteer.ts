@@ -1,4 +1,6 @@
 import { BaseEngine, BaseEngineType } from "./Base.js";
+import { config } from "@anycrawl/libs";
+import { StickyPuppeteerCrawler } from "./StickyBrowserCrawler.js";
 import type { EngineOptions, CrawlingContext } from "../types/engine.js";
 import {
     Dictionary,
@@ -47,7 +49,9 @@ export class PuppeteerEngine extends BaseEngine {
         // Apply engine-specific configurations (including ad blocking for browser engines)
         const enhancedOptions = this.applyEngineConfigurations(crawlerOptions, BaseEngineType.PUPPETEER);
 
-        this.engine = new PuppeteerCrawler(enhancedOptions);
+        this.engine = config.proxy.stickyEnabled
+            ? new StickyPuppeteerCrawler(enhancedOptions)
+            : new PuppeteerCrawler(enhancedOptions);
         this.isInitialized = true;
     }
 

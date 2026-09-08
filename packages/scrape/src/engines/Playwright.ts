@@ -1,4 +1,6 @@
 import { BaseEngine, BaseEngineType } from "./Base.js";
+import { config } from "@anycrawl/libs";
+import { StickyPlaywrightCrawler } from "./StickyBrowserCrawler.js";
 import type { EngineOptions, CrawlingContext } from "../types/engine.js";
 import {
     Dictionary,
@@ -47,7 +49,9 @@ export class PlaywrightEngine extends BaseEngine {
         // Apply engine-specific configurations (including ad blocking for browser engines)
         const enhancedOptions = this.applyEngineConfigurations(crawlerOptions, BaseEngineType.PLAYWRIGHT);
 
-        this.engine = new PlaywrightCrawler(enhancedOptions);
+        this.engine = config.proxy.stickyEnabled
+            ? new StickyPlaywrightCrawler(enhancedOptions)
+            : new PlaywrightCrawler(enhancedOptions);
         this.isInitialized = true;
     }
 

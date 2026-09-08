@@ -2,6 +2,7 @@ import { gotScraping, Request } from 'crawlee';
 import proxyConfiguration from './managers/Proxy.js';
 import { log, normalizeProxyUrl } from '@anycrawl/libs';
 import type { HttpResponse } from '@anycrawl/libs';
+import { materializeHttpProxy, proxyConfigurationId, StickyProxyConfigurationError } from './core/StickyProxyContext.js';
 
 export type { HttpResponse };
 
@@ -62,7 +63,8 @@ export async function request<T = any>(method: HttpMethod, url: string, opts?: H
                 const tier = attemptIndex - 1; // 0-based tier index
                 try {
                     proxyUrl = await proxyConfiguration.newUrl(undefined, { request: req, proxyTier: tier });
-                } catch {
+                } catch (error) {
+                    if (error instanceof StickyProxyConfigurationError) throw error;
                     // Fallback to auto selection if explicit tier is invalid/unavailable
                     proxyUrl = await proxyConfiguration.newUrl(undefined, { request: req });
                 }
@@ -72,6 +74,7 @@ export async function request<T = any>(method: HttpMethod, url: string, opts?: H
                 e.name = 'PROXY_REQUIRED';
                 throw e;
             }
+            proxyUrl = materializeHttpProxy(proxyUrl);
         }
 
         const attemptOpts = { ...baseGsOpts } as any;
@@ -79,7 +82,7 @@ export async function request<T = any>(method: HttpMethod, url: string, opts?: H
 
         try {
             const bodyLen = typeof attemptOpts.body === 'string' ? attemptOpts.body.length : (attemptOpts.body ? 1 : 0);
-            log.info(`[HTTP] start method=${method} url=${url} proxy=${proxyUrl} attempt=${attemptIndex}/${totalAttempts} requireProxy=${requireProxy} timeout=${attemptOpts.timeout?.request} bodyLen=${bodyLen}`);
+            log.info(`[HTTP] start method=${method} url=${url} proxy=${proxyUrl ? proxyConfigurationId(proxyUrl) : 'direct'} attempt=${attemptIndex}/${totalAttempts} requireProxy=${requireProxy} timeout=${attemptOpts.timeout?.request} bodyLen=${bodyLen}`);
             const res = await gotScraping(url, attemptOpts);
 
             const contentType = String(res.headers['content-type'] || '');
@@ -97,14 +100,14 @@ export async function request<T = any>(method: HttpMethod, url: string, opts?: H
                 data = rawText as unknown as T;
             }
             const size = (res.body as any)?.length ?? 0;
-            log.info(`[HTTP] done method=${method} status=${res.statusCode} url=${url} proxy=${proxyUrl} ct=${contentType} bytes=${size}`);
+            log.info(`[HTTP] done method=${method} status=${res.statusCode} url=${url} proxy=${proxyUrl ? proxyConfigurationId(proxyUrl) : 'direct'} ct=${contentType} bytes=${size}`);
             return { status: res.statusCode, headers: flatHeaders, data, rawText };
         } catch (err: any) {
             lastError = err;
-            log.error(`[HTTP] error method=${method} url=${url} proxy=${attemptOpts?.proxyUrl} attempt=${attemptIndex}/${totalAttempts} msg=${err?.message || ''}`);
+            log.error(`[HTTP] error method=${method} url=${url} proxy=${attemptOpts?.proxyUrl ? proxyConfigurationId(attemptOpts.proxyUrl) : 'direct'} attempt=${attemptIndex}/${totalAttempts} msg=${err?.message || ''}`);
             const hasMoreAttempts = attemptIndex < totalAttempts;
             if (!hasMoreAttempts) {
-                const e = new Error(`HTTP_REQUEST_ERROR ${err?.message || ''} url=${url} proxy=${attemptOpts?.proxyUrl}`.trim());
+                const e = new Error(`HTTP_REQUEST_ERROR ${err?.message || ''} url=${url} proxy=${attemptOpts?.proxyUrl ? proxyConfigurationId(attemptOpts.proxyUrl) : 'direct'}`.trim());
                 e.name = 'HTTP_REQUEST_ERROR';
                 throw e;
             }
@@ -124,5 +127,4 @@ export const HttpClient = {
     put: <T = any>(url: string, opts?: HttpClientOptions) => request<T>('PUT', url, opts),
     delete: <T = any>(url: string, opts?: HttpClientOptions) => request<T>('DELETE', url, opts),
 };
-
 

@@ -7,6 +7,19 @@ const configure = async (engineType: "playwright" | "puppeteer", options: Record
 };
 
 describe("EngineConfigurator browser pool options", () => {
+    it.each(["playwright", "puppeteer"] as const)("recognizes timeout subclasses whose name remains Error for %s", async type => {
+        class TimeoutError extends Error {}
+        const options = await configure(type);
+        const context: any = { request: { url: "https://example.test", userData: {}, noRetry: false } };
+        await options.errorHandler(context, new TimeoutError("handler deadline"));
+        expect(context.request.noRetry).toBe(true);
+    });
+    it.each(["playwright", "puppeteer"] as const)("does not retry Crawlee-wrapped navigation timeouts for %s", async (type) => {
+        const options = await configure(type);
+        const context: any = { request: { url: "https://example.test", userData: {}, noRetry: false } };
+        await options.errorHandler(context, new Error("Navigation timed out after 0.25 seconds."));
+        expect(context.request.noRetry).toBe(true);
+    });
     const originalEnv = process.env;
 
     afterEach(() => {

@@ -26,6 +26,7 @@ import { getResolvedProxyModeName } from "../managers/Proxy.js";
 import { ensureChallengeState, consumeProxyAction } from "../challenges/ChallengeContext.js";
 import { ProxyCacheManager } from "../managers/ProxyCacheManager.js";
 import { smartWaitForDOMStable } from "../utils/smartWait.js";
+import { proxyConfigurationId, proxyForCache } from "../core/StickyProxyContext.js";
 
 // Template system imports - directly use @anycrawl/template-client
 
@@ -820,7 +821,7 @@ export abstract class BaseEngine {
                 if (proxyInfo?.url) {
                     const jobId = context.request.userData?.jobId || 'unknown';
                     const queueName = context.request.userData?.queueName || 'unknown';
-                    log.info(`[PROXY] [${queueName}] [${jobId}] Request URL: ${context.request.url} → Using proxy: ${proxyInfo.url}, session: ${sessionId}`);
+                    log.info(`[PROXY] [${queueName}] [${jobId}] Request URL: ${context.request.url} → Using proxy: ${proxyConfigurationId(proxyForCache(context)!)}, session: ${sessionId}`);
                 } else if (sessionId !== 'unknown') {
                     const jobId = context.request.userData?.jobId || 'unknown';
                     const queueName = context.request.userData?.queueName || 'unknown';
@@ -1390,8 +1391,9 @@ export abstract class BaseEngine {
                             const proxyCache = ProxyCacheManager.getInstance();
                             const domain = proxyCache.extractDomain(context.request.url);
                             if (domain) {
-                                log.debug(`[ProxyCache] Recording success: domain=${domain}, proxy=${proxyInfo.url}, mode=${proxyMode}`);
-                                proxyCache.recordDomainSuccess(domain, proxyInfo.url, proxyMode).catch(() => {
+                                const stableProxy = proxyForCache(context)!;
+                                log.debug(`[ProxyCache] Recording success: domain=${domain}, proxy=${proxyConfigurationId(stableProxy)}, mode=${proxyMode}`);
+                                proxyCache.recordDomainSuccess(domain, stableProxy, proxyMode).catch(() => {
                                     // Ignore cache recording errors
                                 });
                             }

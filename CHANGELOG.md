@@ -28,7 +28,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Validation and known limitations
 
-- Scrape regression suite: 400 passed, 7 existing optional tests skipped. Controlled headless flow checks and final DOM checks passed with both CloakBrowser drivers on macOS.
+- Release-worktree scrape regression suite: 393 passed, 7 existing optional tests skipped (400 total). Controlled headless flow checks and final DOM checks passed with both CloakBrowser drivers on macOS.
 - ScienceDirect validation covered a fixed 50-request matrix, 20-minute identity reuse, and a final-source five-page chain. The 120-minute supplier lifetime and all deployment platform combinations were not fully observed.
 - The historical intermittent 79-character response did not recur during follow-up sampling; its exact trigger remains unconfirmed. Observable error detection is improved, but arbitrary future page loading cannot be guaranteed complete.
 

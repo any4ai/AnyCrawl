@@ -5,6 +5,33 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.0] - 2026-09-09
+
+### Added
+
+- Opt-in sticky proxy lifecycle management with a shared TTL, per-browser session identities, safe lease admission, and ordinary-context reuse.
+- Browser score tooling and regression coverage for CloakBrowser runtime behavior.
+
+### Fixed
+
+- Preserve healthy browser identities after content failures, distinguish origin restrictions from proxy/browser failures, and keep proxy fallback within configured permissions.
+- Share Cloudflare verification within the same browser context and origin while recovering each page independently.
+- Detect observable content failures before extraction, allow one bounded same-session recovery, and use one validated HTML snapshot across HTML-derived formats.
+- Preserve proxy authentication/transport errors during recovery, prevent unsafe replay after extraction or template side effects, and keep validation metadata internal to cache payloads.
+
+### Upgrade notes
+
+- Sticky management remains disabled by default. Enabling it requires a proxy username containing `{sessionId}` and a supplier session window that covers the complete request budget plus the existing safety margin. Application TTL does not change supplier settings.
+- Ordinary contexts are required for shared website state. Sticky management owns its browser leases and disables Crawlee SessionPool/cookie replay internally.
+- Sticky proxy preferences use an isolated, expiring cache policy; a single session failure does not blacklist the entire proxy template.
+- No new database migrations are included relative to beta.37. Server workspace packages move to 1.0.0; the independently versioned JS SDK remains at 0.0.9.
+
+### Validation and known limitations
+
+- Release-worktree scrape regression suite: 393 passed, 7 existing optional tests skipped (400 total). Controlled headless flow checks and final DOM checks passed with both CloakBrowser drivers on macOS.
+- ScienceDirect validation covered a fixed 50-request matrix, 20-minute identity reuse, and a final-source five-page chain. The 120-minute supplier lifetime and all deployment platform combinations were not fully observed.
+- The historical intermittent 79-character response did not recur during follow-up sampling; its exact trigger remains unconfirmed. Observable error detection is improved, but arbitrary future page loading cannot be guaranteed complete.
+
 ## [1.0.0-beta.37] - 2026-09-07
 
 ### Added

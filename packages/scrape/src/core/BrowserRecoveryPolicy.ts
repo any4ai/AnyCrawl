@@ -28,6 +28,17 @@ export function requestOrigin(url?: string): string | undefined {
     } catch { return undefined; }
 }
 
+/** Explicit resource evidence is independent of the current content phase. */
+export function browserResourceFailure(error: Error): 'proxy_transport' | 'proxy_auth' | 'browser' | undefined {
+    const message = error.message;
+    if (/\b(?:ERR_PROXY_AUTH_FAILED|ERR_INVALID_AUTH_CREDENTIALS)\b/.test(message)
+        || (error as any).statusCode === 407 || /^Received blocked status code: 407\b/.test(message)) return 'proxy_auth';
+    if (/\b(?:ERR_PROXY_CONNECTION_FAILED|ERR_TUNNEL_CONNECTION_FAILED|ERR_SOCKS_CONNECTION_FAILED)\b/.test(message)) return 'proxy_transport';
+    if (error instanceof BrowserIdentityChangedError || error.name === 'TargetClosedError'
+        || /^(?:browserType\.launch: |browser\.newPage: )?Browser has been closed/.test(message)) return 'browser';
+    return undefined;
+}
+
 /** Classify once at the browser boundary, before Crawlee's retry/cleanup hooks. */
 export function classifyBrowserFailure(context: any, error: Error): RecoveryDecision {
     const request = context.request;
@@ -39,7 +50,8 @@ export function classifyBrowserFailure(context: any, error: Error): RecoveryDeci
         leaseAction: 'keep', proxyAction: 'none', cacheAction: 'none' };
     const finish = (kind: FailureKind) => {
         decision.failureKind = kind;
-        if (request?.noRetry || data._anycrawlSideEffectsStarted || !['GET', 'HEAD'].includes(request?.method ?? 'GET')) {
+        if (request?.noRetry || data._anycrawlSideEffectsStarted || data._anycrawlExtractionStarted || !['GET', 'HEAD'].includes(request?.method ?? 'GET')
+            || error.name === 'AbortError' || Number.isFinite(data._anycrawlBrowserDeadlineAt) && Date.now() >= data._anycrawlBrowserDeadlineAt) {
             decision.retryAllowed = false;
             decision.proxyAction = 'none';
             decision.cacheAction = 'none';
@@ -47,6 +59,12 @@ export function classifyBrowserFailure(context: any, error: Error): RecoveryDeci
         return decision;
     };
     if (error instanceof NonRetryableError) return finish('configuration');
+    const resource = browserResourceFailure(error) ?? (context.__anycrawlLeaseFailure ? 'browser' : undefined);
+    if (resource) {
+        decision.scope = 'lease'; decision.leaseAction = 'retire'; decision.retryAllowed = true;
+        decision.proxyAction = resource === 'proxy_transport' && (data._originalProxy ?? data.options?.proxy) === 'auto' ? 'upgrade' : 'rotate';
+        return finish(resource);
+    }
     if (error.name === 'AbortError' || code === 'CF_CANCELLED' || state.phase === 'cancelled') return finish('cancelled');
     if (['TimeoutError', 'InternalTimeoutError', 'DeadlineExceededError'].includes(error.name)
         || ['TimeoutError', 'InternalTimeoutError'].includes(error.constructor.name)
@@ -54,15 +72,6 @@ export function classifyBrowserFailure(context: any, error: Error): RecoveryDeci
         || ['CF_CONTENT_TIMEOUT', 'CF_RECOVERY_TIMEOUT'].includes(code)
         || Number.isFinite(data._anycrawlBrowserDeadlineAt) && Date.now() >= data._anycrawlBrowserDeadlineAt) return finish('timeout');
     if (state.cleared && state.phase === 'failed' || typeof code === 'string' && code.startsWith('CF_CONTENT_')) return finish('content');
-    const transport = /\b(?:ERR_PROXY_CONNECTION_FAILED|ERR_TUNNEL_CONNECTION_FAILED|ERR_SOCKS_CONNECTION_FAILED)\b/.test(message);
-    const auth = /\b(?:ERR_PROXY_AUTH_FAILED|ERR_INVALID_AUTH_CREDENTIALS)\b/.test(message)
-        || (error as any).statusCode === 407 || /^Received blocked status code: 407\b/.test(message);
-    if (transport || auth || context.__anycrawlLeaseFailure || error instanceof BrowserIdentityChangedError || error.name === 'TargetClosedError'
-        || /^(?:browserType\.launch: |browser\.newPage: )?Browser has been closed/.test(message)) {
-        decision.scope = 'lease'; decision.leaseAction = 'retire'; decision.retryAllowed = true;
-        decision.proxyAction = transport && (data._originalProxy ?? data.options?.proxy) === 'auto' ? 'upgrade' : 'rotate';
-        return finish(auth ? 'proxy_auth' : transport ? 'proxy_transport' : 'browser');
-    }
     if ((error as any).statusCode === 429 || /^Received blocked status code: 429\b/.test(message)) return finish('rate_limited');
     const upgrade = message === 'ANYCRAWL_PROXY_ACTION_UPGRADE_TO_STEALTH' || message === 'ANYCRAWL_PROXY_UPGRADE_TO_STEALTH';
     const rotate = message === 'ANYCRAWL_PROXY_ACTION_ROTATE_PROXY' || message === 'ANYCRAWL_STEALTH_RETRY_WITH_NEW_PROXY';

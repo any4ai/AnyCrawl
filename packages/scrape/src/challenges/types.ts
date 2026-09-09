@@ -13,6 +13,9 @@ export interface ChallengeState {
     phase?: 'native' | 'solver' | 'settling' | 'ready' | 'failed' | 'cancelled';
     cleared?: boolean;
     contentReady?: boolean;
+    contentValidationVersion?: number;
+    contentRecoveryReloads?: number;
+    contentEvidence?: string[];
     requiresContentRecovery?: boolean;
     sessionReused?: boolean;
     verificationGeneration?: number;

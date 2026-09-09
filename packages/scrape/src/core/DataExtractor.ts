@@ -1,3 +1,6 @@
+import { ensureChallengeState } from '../challenges/ChallengeContext.js';
+import { CloudflareRecoveryError } from '../challenges/cloudflare/CloudflarePageRecovery.js';
+import type { VerifiedContentSnapshot } from '../challenges/cloudflare/ContentIntegrity.js';
 import { log } from "@anycrawl/libs"
 import { extractUrlsFromCheerio } from "crawlee"
 import { htmlToMarkdown } from "@anycrawl/libs/html-to-markdown";
@@ -265,10 +268,12 @@ export class DataExtractor {
     /**
      * Extract base content (url, title, html) in a unified way
      */
-    async extractBaseContent(context: any, $: any): Promise<BaseContent> {
+    async extractBaseContent(context: any, $: any, verifiedHtml?: string): Promise<BaseContent> {
         let rawHtml = "";
         try {
-            if (context.body) {
+            if (verifiedHtml !== undefined) {
+                rawHtml = verifiedHtml;
+            } else if (context.body) {
                 // body (Cheerio engine) is available
                 rawHtml = context.body.toString("utf-8");
             } else if (context.page && context.page.content) {
@@ -436,8 +441,16 @@ export class DataExtractor {
      */
     async extractData(context: CrawlingContext): Promise<any> {
         try {
-            const $ = await this.getCheerioInstance(context);
-            const baseContent = await this.extractBaseContent(context, $);
+            const cfState = ensureChallengeState(context.request);
+            const snapshot = cfState.requiresContentRecovery
+                ? (context as any).__anycrawlVerifiedContentSnapshot as VerifiedContentSnapshot | undefined : undefined;
+            if (cfState.requiresContentRecovery && (!snapshot || !cfState.contentReady || snapshot.version !== 1)) {
+                throw new CloudflareRecoveryError('CF_CONTENT_UNVERIFIED');
+            }
+            (context as any).__anycrawlAbortSignal?.throwIfAborted();
+            if (cfState.requiresContentRecovery) (context.request.userData as any)._anycrawlExtractionStarted = true;
+            const $ = snapshot ? this.convertTextToCheerio(snapshot.html) : await this.getCheerioInstance(context);
+            const baseContent = await this.extractBaseContent(context, $, snapshot?.html);
             const metadata = this.extractMetadata($);
             const formats = context.request.userData?.options?.formats || [];
             const options = context.request.userData?.options || {};
@@ -581,6 +594,7 @@ export class DataExtractor {
             });
             return this.assembleData(context, baseContent, metadata, additionalFields);
         } catch (error) {
+            if (error instanceof CloudflareRecoveryError) throw error;
             return this.handleExtractionError(context, error as Error);
         }
     }

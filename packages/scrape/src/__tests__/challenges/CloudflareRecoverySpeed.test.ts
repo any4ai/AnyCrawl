@@ -5,7 +5,7 @@ import { Deadline } from '../../utils/Deadline.js';
 
 class Page extends EventEmitter {
     content = { url: 'https://example.com/article', readyState: 'complete', hasContent: true,
-        loading: false, fingerprint: 'full body', textLength: 400 };
+        loading: false, fingerprint: 'full body', textLength: 400, html: '<html><body><article>Body</article></body></html>' };
     mainFrame = () => this;
     url = () => this.content.url;
     isClosed = () => false;

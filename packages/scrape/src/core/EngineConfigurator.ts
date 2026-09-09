@@ -414,6 +414,7 @@ export class EngineConfigurator {
                     done: false,
                 })).filter(k => k.key && k.rules.length > 0);
 
+                if (keyCfgs.length > 0) request.userData._anycrawlPreNavCaptureConfigured = true;
                 if (keyCfgs.length === 0) {
                     log.debug(`[preNav] no valid rules after parsing for templateId=${templateId}`);
                     return;

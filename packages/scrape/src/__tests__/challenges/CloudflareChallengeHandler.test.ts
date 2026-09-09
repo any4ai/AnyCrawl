@@ -16,9 +16,9 @@ class Page extends EventEmitter {
     constructor(readonly browserContext = new EventEmitter()) { super(); }
     context = () => this.browserContext;
     document = { ...normal };
-    content = { url: normal.url, readyState: 'complete', hasContent: true, loading: false, fingerprint: 'body', textLength: 200 };
+    content = { url: normal.url, readyState: 'complete', hasContent: true, loading: false, fingerprint: 'body', textLength: 200, html: '<html><body><article>Body</article></body></html>' };
     closed = false;
-    evaluate = jest.fn(async (fn: any) => fn.name === 'readRecoverySample' ? this.content : this.document);
+    evaluate = jest.fn(async (fn: any, _options?: any) => fn.name === 'readRecoverySample' ? this.content : this.document);
     mainFrame = () => this;
     frames = () => [];
     isClosed = () => this.closed;
@@ -100,7 +100,8 @@ describe('CF native and post-challenge lifecycle', () => {
         const second = recovery.settle(new Deadline(Date.now() + 20000));
         await jest.advanceTimersByTimeAsync(1000); page.content.loading = false;
         await jest.advanceTimersByTimeAsync(3000); await Promise.all([first, second]);
-        const probes = page.evaluate.mock.calls.filter(([fn]) => fn.name === 'readRecoverySample');
+        const probes = page.evaluate.mock.calls.filter(([fn, options]) => fn.name === 'readRecoverySample' && !options?.captureHtml);
+        expect(page.evaluate.mock.calls.filter(([, options]) => options?.captureHtml)).toHaveLength(0);
         expect(probes.length).toBeLessThanOrEqual(5); expect(recovery.settledEpoch).toBe(1); page.finish();
     });
     test('completed recovery is reused after its stage budget, but a new document cannot restart it', async () => {

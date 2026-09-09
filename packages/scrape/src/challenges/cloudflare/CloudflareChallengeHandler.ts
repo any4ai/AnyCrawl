@@ -1,3 +1,5 @@
+import { browserResourceFailure } from '../../core/BrowserRecoveryPolicy.js';
+import { reserveCloudflareReload } from './CloudflareReload.js';
 import { log } from "@anycrawl/libs";
 import { resetChallengeState, ensureChallengeState, requestProxyAction } from "../ChallengeContext.js";
 import { CDPTurnstileSolver } from "../../solvers/CDPTurnstileSolver.js";
@@ -17,6 +19,7 @@ export class CloudflareChallengeHandler implements ChallengePlugin {
             page.__anycrawlAllowCloudflareResources = false;
             startCloudflareRecovery(page);
             const challengeState = resetChallengeState(request, "cloudflare");
+            delete request.__anycrawlContentRecoveryError;
             const shared = cloudflareSession(page, request.url);
             if (shared?.state.flight) {
                 const flight = shared.state.flight;
@@ -147,7 +150,7 @@ export class CloudflareChallengeHandler implements ChallengePlugin {
             if (!detection.detected && !session?.state.seen) return;
             state.requiresContentRecovery = true;
             state.sessionReused = !detection.detected && Boolean(session?.state.seen);
-            state.contentReady = false; state.nativeClickCount = 0;
+            state.contentReady = false; state.nativeClickCount ??= 0;
             page.__anycrawlAllowCloudflareResources = true;
             const previousStart = Number(request.userData._cloudflareStealthStartedAt);
             const recoveryStart = previousStart > 0 ? previousStart : started;
@@ -187,7 +190,7 @@ export class CloudflareChallengeHandler implements ChallengePlugin {
                     // Followers must inspect their OWN document. An already
                     // committed challenge page may need one refresh to use the cookie.
                     detection = await deadline.run(() => this.detectChallenge(page), signal);
-                    if (!verification.leader && detection.detected && !refreshed) {
+                    if (!verification.leader && detection.detected && !refreshed && reserveCloudflareReload(request, 'challenge')) {
                         refreshed = true;
                         const latest = await deadline.run(() => page.reload({
                             waitUntil: 'domcontentloaded', timeout: deadline.remainingMs,
@@ -220,6 +223,7 @@ export class CloudflareChallengeHandler implements ChallengePlugin {
             state.lastError = { code: 'CF_CHALLENGE_REAPPEARED' };
             this.requestFallback(request, Boolean(solver), deadline);
         } catch (error) {
+            if (error instanceof Error && browserResourceFailure(error)) request.__anycrawlContentRecoveryError = error;
             const contentTimeout = state.cleared && (error instanceof DeadlineExceededError || error instanceof CloudflareRecoveryError && error.code === 'CF_CONTENT_TIMEOUT');
             state.phase = recovery.controller.signal.aborted ? 'cancelled' : 'failed';
             state.contentReady = false;
@@ -406,7 +410,9 @@ export class CloudflareChallengeHandler implements ChallengePlugin {
     }
 
     private async detectChallenge(page: any) {
-        return inspectCloudflarePage(page, await getCloudflareRecovery(page)?.documentResponse());
+        const response = await getCloudflareRecovery(page)?.documentResponse();
+        if (response?.status === 407) throw Object.assign(new Error('Proxy authentication failed'), { statusCode: 407 });
+        return inspectCloudflarePage(page, response);
     }
 }
 
@@ -426,30 +432,99 @@ export async function ensureCloudflarePageRecovered(page: any, request: any): Pr
     const recovery = getCloudflareRecovery(page);
     if (!recovery || !state.deadlineAt) throw new CloudflareRecoveryError('CF_RECOVERY_STATE_MISSING');
     const stoppedCode = page.isClosed?.() || recovery.controller.signal.aborted ? 'CF_CANCELLED'
-        : recovery.settledEpoch !== recovery.epoch && Date.now() >= state.deadlineAt ? 'CF_CONTENT_TIMEOUT' : undefined;
+        : !recovery.isSettled && Date.now() >= state.deadlineAt ? 'CF_CONTENT_TIMEOUT' : undefined;
     if (stoppedCode) {
         state.contentReady = false; state.phase = stoppedCode === 'CF_CANCELLED' ? 'cancelled' : 'failed';
         state.lastError = { code: stoppedCode, message: stoppedCode };
         delete request.userData._anycrawlPostChallengeSettled;
         throw new CloudflareRecoveryError(stoppedCode);
     }
-    if (recovery.settledEpoch === recovery.epoch) return;
+    if (recovery.isSettled) return;
     state.contentReady = false; state.phase = 'settling';
     delete request.userData._anycrawlPostChallengeSettled;
     const started = Date.now();
+    const deadline = new Deadline(state.deadlineAt);
     try {
-        await recovery.settle(new Deadline(state.deadlineAt));
+        while (true) {
+            try { await recovery.settle(deadline); break; }
+            catch (error) {
+                if (!(error instanceof CloudflareRecoveryError)
+                    || !['CF_CONTENT_INVALID', 'CF_CONTENT_UNVERIFIED'].includes(error.code)
+                    || deadline.remainingMs <= 0 || typeof page.reload !== 'function'
+                    || !reserveCloudflareReload(request, 'content')) throw error;
+                state.contentRecoveryReloads = (state.contentRecoveryReloads ?? 0) + 1;
+                state.contentEvidence = recovery.lastSample?.evidence;
+                const response = await deadline.run(() => page.reload({ waitUntil: 'domcontentloaded',
+                    timeout: Math.min(deadline.remainingMs, Number(request.userData?.options?.timeout) || 30000) }), recovery.controller.signal);
+                if (response) recovery.lastResponse = response;
+                // Navigation resets evidence/snapshot in the observer. A new CF
+                // challenge is handled by the existing outer verification loop.
+            }
+        }
         state.contentReady = true; state.phase = 'ready'; state.settledDocumentEpoch = recovery.epoch;
+        state.contentValidationVersion = recovery.snapshot?.version;
+        state.contentEvidence = recovery.lastSample?.evidence;
         state.lastError = undefined; state.contentRecoveryElapsedMs = Date.now() - started;
         request.userData._anycrawlPostChallengeSettled = true;
         log.info(`[cloudflare] content_recovered request=${request.id ?? request.userData?.jobId ?? 'unknown'} elapsedMs=${state.contentRecoveryElapsedMs} textLength=${recovery.lastSample?.textLength ?? 0}`);
     } catch (error) {
+        if (error instanceof Error && browserResourceFailure(error)) {
+            request.__anycrawlContentRecoveryError = error; state.phase = 'failed'; state.contentReady = false;
+            throw error;
+        }
         const code = error instanceof DeadlineExceededError ? 'CF_CONTENT_TIMEOUT'
             : error instanceof CloudflareRecoveryError ? error.code
             : recovery.controller.signal.aborted ? 'CF_CANCELLED' : 'CF_CONTENT_RECOVERY_ERROR';
         state.lastError = { code, message: error instanceof Error ? error.message : String(error) };
-        state.phase = code === 'CF_CANCELLED' ? 'cancelled' : 'failed';
+        state.contentEvidence = recovery.lastSample?.evidence;
+        state.contentReady = false; state.phase = code === 'CF_CANCELLED' ? 'cancelled' : 'failed';
         if (code === 'CF_CHALLENGE_REAPPEARED') { state.cleared = false; state.solved = false; state.unresolved = true; }
         throw new CloudflareRecoveryError(code);
+    }
+}
+
+/** Final gate before templates or expensive transformations start. */
+export async function prepareCloudflareSnapshot(context: any): Promise<void> {
+    const state = ensureChallengeState(context.request);
+    if (!state.requiresContentRecovery) return;
+    const recovery = getCloudflareRecovery(context.page);
+    if (!recovery || !state.deadlineAt) throw new CloudflareRecoveryError('CF_CONTENT_UNVERIFIED');
+    const deadline = new Deadline(state.deadlineAt);
+    while (true) {
+        if (context.request.__anycrawlContentRecoveryError) throw context.request.__anycrawlContentRecoveryError;
+        try {
+            await ensureCloudflarePageRecovered(context.page, context.request);
+            if (!state.contentReady || !recovery.isSettled) throw new CloudflareRecoveryError(state.lastError?.code ?? 'CF_CONTENT_UNVERIFIED');
+            try {
+                // This is the sole HTML acquisition, after user-requested waits
+                // and before template/format work. Live signals share that read.
+                context.__anycrawlVerifiedContentSnapshot = await recovery.captureSnapshot(deadline);
+            } catch (error) {
+                if (error instanceof CloudflareRecoveryError && error.code === 'CF_CONTENT_CHANGED') continue;
+                if (error instanceof CloudflareRecoveryError && ['CF_CONTENT_INVALID', 'CF_CONTENT_UNVERIFIED'].includes(error.code)) {
+                    await ensureCloudflarePageRecovered(context.page, context.request);
+                    continue;
+                }
+                throw error;
+            }
+            state.contentValidationVersion = 1;
+            if (recovery.lastResponse) context.response = recovery.lastResponse;
+            return;
+        } catch (error) {
+            const orchestrator = context.request.__anycrawlChallengeOrchestrator;
+            if (error instanceof CloudflareRecoveryError && error.code === 'CF_CHALLENGE_REAPPEARED' && orchestrator) {
+                await orchestrator.onPostNavigation(context);
+                if (state.contentReady && state.cleared) continue;
+            }
+            state.contentReady = false; state.phase = recovery.controller.signal.aborted ? 'cancelled' : 'failed';
+            if (state.proxyAction && !recovery.controller.signal.aborted && deadline.remainingMs > 0) {
+                throw new Error(state.proxyAction === 'upgrade_to_stealth' ? 'ANYCRAWL_PROXY_ACTION_UPGRADE_TO_STEALTH' : 'ANYCRAWL_PROXY_ACTION_ROTATE_PROXY');
+            }
+            if (error instanceof Error && browserResourceFailure(error)) throw error;
+            const code = error instanceof DeadlineExceededError ? 'CF_CONTENT_TIMEOUT'
+                : error instanceof CloudflareRecoveryError ? error.code : recovery.controller.signal.aborted ? 'CF_CANCELLED' : 'CF_CONTENT_RECOVERY_ERROR';
+            state.lastError = { code }; context.request.noRetry = true;
+            throw new CloudflareRecoveryError(code);
+        }
     }
 }

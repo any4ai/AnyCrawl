@@ -79,8 +79,9 @@ export class CacheManager {
 
             log.info(`[CACHE] Cache hit for ${url} (cached at ${cached.scrapedAt.toISOString()})`);
 
+            const { _anycrawlContentValidation: _validation, ...publicContent } = content;
             return {
-                ...content,
+                ...publicContent,
                 cachedAt: cached.scrapedAt,
                 fromCache: true,
             };
@@ -101,6 +102,7 @@ export class CacheManager {
             statusCode?: number;
             contentType?: string;
             contentLength?: number;
+            contentValidationVersion?: number;
         }
     ): Promise<void> {
         const config = getCacheConfig();
@@ -128,7 +130,9 @@ export class CacheManager {
             const now = new Date();
 
             // Save to S3
-            const s3Key = await saveContentToS3(urlHash, result);
+            const persisted = pageMetadata?.contentValidationVersion
+                ? { ...result, _anycrawlContentValidation: { version: pageMetadata.contentValidationVersion } } : result;
+            const s3Key = await saveContentToS3(urlHash, persisted);
 
             const title = typeof (result as any).title === "string" ? String((result as any).title).trim() : null;
             const description = (() => {

@@ -1,3 +1,5 @@
+import { reserveCloudflareReload } from '../challenges/cloudflare/CloudflareReload.js';
+import { Deadline } from '../utils/Deadline.js';
 import { freshBrowserRequestData } from "../core/BrowserRecoveryPolicy.js";
 import { BrowserCrawlingContext, CheerioCrawlingContext, Configuration, enqueueLinks, PlaywrightCrawlingContext, ProxyConfiguration, PuppeteerCrawlingContext, RequestQueue, sleep, Request } from "crawlee";
 import { Dictionary } from "crawlee";
@@ -26,7 +28,7 @@ import { BandwidthManager } from "../managers/Bandwidth.js";
 import { getResolvedProxyModeName } from "../managers/Proxy.js";
 import { ensureChallengeState, consumeProxyAction } from "../challenges/ChallengeContext.js";
 import { ProxyCacheManager } from "../managers/ProxyCacheManager.js";
-import { ensureCloudflarePageRecovered } from "../challenges/cloudflare/CloudflareChallengeHandler.js";
+import { ensureCloudflarePageRecovered, prepareCloudflareSnapshot } from "../challenges/cloudflare/CloudflareChallengeHandler.js";
 import { getCloudflareRecovery, CloudflareRecoveryError } from "../challenges/cloudflare/CloudflarePageRecovery.js";
 import { smartWaitForDOMStable } from "../utils/smartWait.js";
 import { proxyConfigurationId, proxyForCache } from "../core/StickyProxyContext.js";
@@ -683,16 +685,16 @@ export abstract class BaseEngine {
             }
 
             const userData = (context.request.userData || {}) as any;
-            if (userData._anycrawlPostChallengeReloadAttempted) {
-                return null;
-            }
-            userData._anycrawlPostChallengeReloadAttempted = true;
+            if (!reserveCloudflareReload(context.request, 'status')) return null;
 
             const options = userData.options || {};
             const timeoutMs = Number(options.timeout) > 0
                 ? Number(options.timeout)
                 : config.navigation.timeoutMs;
             const { playwright: playwrightWaitUntil, puppeteer: puppeteerWaitUntil } = resolveWaitUntil(options.wait_until as string);
+            const deadline = new Deadline(Math.min(ensureChallengeState(context.request).deadlineAt ?? Infinity,
+                userData._anycrawlBrowserDeadlineAt ?? Infinity, Date.now() + timeoutMs));
+            const signal = page.__anycrawlAbortSignal;
 
             try {
                 log.info(
@@ -701,15 +703,15 @@ export abstract class BaseEngine {
 
                 let reloadResponse: any = null;
                 if (typeof page.waitForLoadState === "function") {
-                    reloadResponse = await page.reload({
+                    reloadResponse = await deadline.run(() => page.reload({
                         waitUntil: playwrightWaitUntil as "load" | "domcontentloaded" | "networkidle",
-                        timeout: timeoutMs,
-                    });
+                        timeout: deadline.remainingMs,
+                    }), signal);
                 } else {
-                    reloadResponse = await page.reload({
+                    reloadResponse = await deadline.run(() => page.reload({
                         waitUntil: puppeteerWaitUntil as "load" | "domcontentloaded" | "networkidle0",
-                        timeout: timeoutMs,
-                    });
+                        timeout: deadline.remainingMs,
+                    }), signal);
                 }
 
                 if (reloadResponse) {
@@ -717,11 +719,9 @@ export abstract class BaseEngine {
                 }
                 delete userData._anycrawlFinalNavigationStatus;
 
-                await smartWaitForDOMStable(page, context.request.url, {
-                    label: "postReload",
-                    useCache: false,
-                    maxWaitMs: 3000,
-                });
+                await deadline.run(() => smartWaitForDOMStable(page, context.request.url, {
+                    label: "postReload", useCache: false, maxWaitMs: Math.min(3000, deadline.remainingMs),
+                }), signal);
 
                 const refreshedRaw = context.response
                     ? this.extractResponseStatus(context.response as CrawlerResponse)
@@ -824,6 +824,7 @@ export abstract class BaseEngine {
                 // Ignore errors when accessing proxyInfo or session
             }
 
+            if ((context.request as any).__anycrawlContentRecoveryError) throw (context.request as any).__anycrawlContentRecoveryError;
             const cfState = ensureChallengeState(context.request);
             if (cfState.cleared && (context as any).page) {
                 const latest = getCloudflareRecovery((context as any).page)?.lastResponse;
@@ -1057,6 +1058,8 @@ export abstract class BaseEngine {
                         return payload;
                     }
                 };
+
+                await prepareCloudflareSnapshot(context);
 
                 // Check if this is a template-based request BEFORE extraction
                 const templateId = context.request.userData.options?.template_id;
@@ -1389,6 +1392,7 @@ export abstract class BaseEngine {
                                     statusCode: status.statusCode,
                                     contentType,
                                     contentLength,
+                                    contentValidationVersion: cfState.contentValidationVersion,
                                 }
                             );
                         }

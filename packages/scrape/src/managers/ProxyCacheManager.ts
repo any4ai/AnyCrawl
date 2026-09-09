@@ -190,6 +190,31 @@ export class ProxyCacheManager {
     return this.getDomainEntry(key);
   }
 
+  /** Sticky v2 ignores legacy failure inferences; only successful attempts write it. */
+  async getStickyDomainEntry(domain: string): Promise<DomainCacheEntry | null> {
+    const entry = await this.getDomainEntry(`${this.options.redisKeyPrefix}sticky:v2:${domain}`);
+    return entry && entry.expiresAt > Date.now() ? entry : null;
+  }
+
+  async recordStickySuccess(domain: string, template: string, mode: ResolvedProxyMode, upgradeEvidence: boolean, startedAt: number): Promise<void> {
+    if (mode !== 'base' && mode !== 'stealth') return;
+    const key = `${this.options.redisKeyPrefix}sticky:v2:${domain}`;
+    const now = Date.now();
+    const entry: DomainCacheEntry = { mode: mode === 'stealth' && upgradeEvidence ? 'stealth' : 'base',
+      ...(mode === 'base' ? { baseWorkingProxy: template } : { stealthWorkingProxy: template }),
+      totalFailures: 0, lastSuccessAt: now, createdAt: startedAt, updatedAt: startedAt, expiresAt: now + 1800000 };
+    try {
+      const redis = Utils.getInstance().getRedisConnection();
+      // Compare request start times atomically across workers; a slow old success cannot overwrite a newer one.
+      await (redis as any).eval(`local old = redis.call('GET', KEYS[1])
+        if old then local ok, value = pcall(cjson.decode, old)
+          if ok and tonumber(value.updatedAt or 0) > tonumber(ARGV[2]) then return 0 end end
+        return redis.call('SET', KEYS[1], ARGV[1], 'EX', 1800)`, 1, key, JSON.stringify(entry), startedAt);
+    } catch (error) {
+      log.warning(`[ProxyCache] Sticky v2 success cache unavailable: ${error instanceof Error ? error.name : 'Error'}`);
+    }
+  }
+
   /**
    * Record domain failure and potentially upgrade to stealth
    * Called for ALL proxy modes (base, stealth, auto)

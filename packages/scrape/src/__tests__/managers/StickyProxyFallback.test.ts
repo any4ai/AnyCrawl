@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
 import proxy, { resolveProxyModeWithFallback } from '../../managers/Proxy.js';
 import { ProxyCacheManager } from '../../managers/ProxyCacheManager.js';
-import { stickyProxySelection, proxyForCache } from '../../core/StickyProxyContext.js';
+import { stickyProxySelection, stickyLeasePreference, proxyConfigurationId, proxyForCache } from '../../core/StickyProxyContext.js';
 import { Utils } from '../../Utils.js';
 const base = 'http://base-{sessionId}:password@base.test:8080';
 const backup = 'http://backup-{sessionId}:password@backup.test:8080';
@@ -16,6 +16,7 @@ describe('sticky integration with existing proxy selection', () => {
         process.env = { ...originalEnv, ANYCRAWL_PROXY_URL: base+','+backup, ANYCRAWL_PROXY_STEALTH_URL: stealth, ANYCRAWL_PROXY_CONFIG: '', ANYCRAWL_PROXY_STICKY_ENABLED: 'true', ANYCRAWL_PROXY_STICKY_TTL_SECS: '120' };
         cache = ProxyCacheManager.getInstance();
         jest.spyOn(cache,'getDomainCacheEntry').mockResolvedValue(null);
+        jest.spyOn(cache,'getStickyDomainEntry').mockResolvedValue(null);
         jest.spyOn(cache,'isProxyFailureActive').mockResolvedValue(false);
     });
     afterEach(() => { jest.restoreAllMocks(); process.env = originalEnv; });
@@ -25,24 +26,47 @@ describe('sticky integration with existing proxy selection', () => {
         expect(resolveProxyModeWithFallback('stealth')).toEqual([[stealth],[base,backup]]);
         expect(resolveProxyModeWithFallback(base)).toEqual([[base]]);
     });
-    it('upgrades auto retries to the configured stealth proxy', async () => {
+    it('does not infer escalation from an ordinary retry', async () => {
+        expect([base,backup]).toContain((await select('auto',1))?.url);
+    });
+    it('upgrades only on an explicit recovery action and reports the actual mode', async () => {
+        const req = request('auto',1) as any;
+        req.userData._anycrawlRecoveryAction = 'upgrade';
+        const result = await stickyProxySelection.run(true, () => proxy.newProxyInfo('test', {request:req}));
+        expect(result?.url).toBe(stealth);
+        expect(req.userData.options.proxy).toBe('stealth');
+        expect(req.userData._originalProxy).toBe('auto');
+    });
+    it('excludes failed authentication configurations without introducing a new custom pool', async () => {
+        const req = request(base,1) as any;
+        req.userData._anycrawlRecoveryAction = 'rotate';
+        req.userData._anycrawlExcludedProxyIds = [proxyConfigurationId(base)];
+        await expect(stickyProxySelection.run(true, () => proxy.newProxyInfo('test',{request:req}))).rejects.toThrow('No permitted');
+    });
+    it('prefers a healthy warm lease only within the selected candidates', async () => {
+        const choose = jest.fn((values: string[]) => values.includes(backup) ? backup : undefined);
+        const result = await stickyLeasePreference.run(choose, () => select('base'));
+        expect(result?.url).toBe(backup);
+        expect(choose.mock.calls[0]![0]).not.toContain(stealth);
+    });
+    it('ignores legacy permanent mode inference', async () => {
+        jest.mocked(cache.getDomainCacheEntry).mockResolvedValue({mode:'stealth'} as any);
         expect([base,backup]).toContain((await select('auto'))?.url);
-        expect((await select('auto',1))?.url).toBe(stealth);
     });
     it('does not let cached stealth override the selected fallback tier', async () => {
-        jest.mocked(cache.getDomainCacheEntry).mockResolvedValue({mode:'stealth',stealthWorkingProxy:stealth} as any);
+        jest.mocked(cache.getStickyDomainEntry).mockResolvedValue({mode:'stealth',stealthWorkingProxy:stealth} as any);
         expect([base,backup]).toContain((await select('stealth',1,1))?.url);
     });
     it('does not revive old cached runtime sessions', async () => {
-        jest.mocked(cache.getDomainCacheEntry).mockResolvedValue({mode:'base',baseWorkingProxy:base.replace('{sessionId}','expired')} as any);
+        jest.mocked(cache.getStickyDomainEntry).mockResolvedValue({mode:'base',baseWorkingProxy:base.replace('{sessionId}','expired')} as any);
         expect([base,backup]).toContain((await select('base'))?.url);
     });
     it('ignores cached templates removed from the configured pool', async () => {
-        jest.mocked(cache.getDomainCacheEntry).mockResolvedValue({mode:'base',baseWorkingProxy:'http://removed-{sessionId}:password@removed.test:8080'} as any);
+        jest.mocked(cache.getStickyDomainEntry).mockResolvedValue({mode:'base',baseWorkingProxy:'http://removed-{sessionId}:password@removed.test:8080'} as any);
         expect([base,backup]).toContain((await select('base'))?.url);
     });
     it('keeps a valid cached template for lease allocation', async () => {
-        jest.mocked(cache.getDomainCacheEntry).mockResolvedValue({mode:'base',baseWorkingProxy:backup} as any);
+        jest.mocked(cache.getStickyDomainEntry).mockResolvedValue({mode:'base',baseWorkingProxy:backup} as any);
         expect((await select('base'))?.url).toBe(backup);
     });
     it('keeps explicit custom proxies fixed across retries', async () => {

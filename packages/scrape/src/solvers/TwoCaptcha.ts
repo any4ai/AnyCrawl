@@ -1,6 +1,9 @@
 import axios, { type AxiosError } from 'axios';
+import { Deadline, DeadlineExceededError } from '../utils/Deadline.js';
 
 export interface TwoCaptchaTurnstileInput {
+    deadlineAt?: number;
+    signal?: AbortSignal;
     pageUrl: string;
     sitekey: string;
     data?: string;
@@ -76,24 +79,38 @@ export class TwoCaptchaTurnstileClient {
     }
 
     async solve(input: TwoCaptchaTurnstileInput): Promise<TwoCaptchaTurnstileSolveResult> {
+        const deadline = new Deadline(Math.min(Date.now() + this.timeoutMs, input.deadlineAt ?? Infinity));
+        const controller = new AbortController();
+        const signal = input.signal ? AbortSignal.any([input.signal, controller.signal]) : controller.signal;
+        let timer: ReturnType<typeof setTimeout> | undefined;
         try {
-            const taskId = await this.createTask(input);
-            const pollResult = await this.pollTaskResult(taskId);
+            deadline.check();
+            signal.throwIfAborted();
+            timer = setTimeout(() => controller.abort(), deadline.remainingMs);
+            const taskId = await deadline.run(() => this.createTask(input, deadline, signal), signal);
+            const pollResult = await this.pollTaskResult(taskId, deadline, signal);
             return {
                 ...pollResult,
                 taskId,
             };
         } catch (error) {
+            if (error instanceof DeadlineExceededError || deadline.remainingMs <= 0)
+                return { success: false, errorCode: 'TWOCAPTCHA_TIMEOUT', errorDescription: '2captcha execution deadline exceeded' };
+            if (input.signal?.aborted)
+                return { success: false, errorCode: 'TWOCAPTCHA_CANCELLED', errorDescription: '2captcha request was cancelled' };
             const normalized = this.normalizeError(error);
             return {
                 success: false,
                 errorCode: normalized.errorCode,
                 errorDescription: normalized.errorDescription,
             };
+        } finally {
+            if (timer) clearTimeout(timer);
+            controller.abort();
         }
     }
 
-    private async createTask(input: TwoCaptchaTurnstileInput): Promise<string> {
+    private async createTask(input: TwoCaptchaTurnstileInput, deadline: Deadline, signal: AbortSignal): Promise<string> {
         const task: Record<string, unknown> = {
             type: 'TurnstileTaskProxyless',
             websiteURL: input.pageUrl,
@@ -111,7 +128,8 @@ export class TwoCaptchaTurnstileClient {
                 clientKey: this.apiKey,
                 task,
             }, {
-                timeout: this.requestTimeoutMs,
+                timeout: Math.max(1, Math.min(this.requestTimeoutMs, deadline.remainingMs)),
+                signal,
                 headers: {
                     'content-type': 'application/json',
                 },
@@ -131,10 +149,9 @@ export class TwoCaptchaTurnstileClient {
         return String(responseData.taskId);
     }
 
-    private async pollTaskResult(taskId: string): Promise<TwoCaptchaTurnstileSolveResult> {
-        const startAt = Date.now();
-
-        while (Date.now() - startAt < this.timeoutMs) {
+    private async pollTaskResult(taskId: string, deadline: Deadline, signal: AbortSignal): Promise<TwoCaptchaTurnstileSolveResult> {
+        while (deadline.remainingMs > 0) {
+            signal.throwIfAborted();
             let responseData: TwoCaptchaGetTaskResultResponse;
             try {
                 const numericTaskId = Number(taskId);
@@ -142,13 +159,16 @@ export class TwoCaptchaTurnstileClient {
                     clientKey: this.apiKey,
                     taskId: Number.isFinite(numericTaskId) ? numericTaskId : taskId,
                 }, {
-                    timeout: this.requestTimeoutMs,
+                    timeout: Math.max(1, Math.min(this.requestTimeoutMs, deadline.remainingMs)),
+                    signal,
                     headers: {
                         'content-type': 'application/json',
                     },
                 });
                 responseData = response.data;
             } catch (error) {
+                if (deadline.remainingMs <= 0) throw new DeadlineExceededError();
+                if (signal.aborted) throw signal.reason;
                 const normalized = this.normalizeError(error, 'getTaskResult');
                 return {
                     success: false,
@@ -197,7 +217,7 @@ export class TwoCaptchaTurnstileClient {
                 };
             }
 
-            await new Promise((resolve) => setTimeout(resolve, this.pollIntervalMs));
+            await deadline.sleep(this.pollIntervalMs, signal);
         }
 
         return {

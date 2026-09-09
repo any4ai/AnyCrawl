@@ -1,16 +1,50 @@
-import { log, resolveWaitUntil } from "@anycrawl/libs";
+import { log } from "@anycrawl/libs";
 import { resetChallengeState, ensureChallengeState, requestProxyAction } from "../ChallengeContext.js";
 import { CDPTurnstileSolver } from "../../solvers/CDPTurnstileSolver.js";
 import { TwoCaptchaTurnstileProvider } from "../../solvers/providers/TwoCaptchaTurnstileProvider.js";
+import { Deadline, DeadlineExceededError } from "../../utils/Deadline.js";
+import { inspectCloudflarePage } from "./CloudflareDetection.js";
+import { CloudflareNativeInteraction } from "./CloudflareNativeInteraction.js";
+import { CloudflareRecoveryError, getCloudflareRecovery, startCloudflareRecovery } from "./CloudflarePageRecovery.js";
+import { cloudflareSession, cloudflareOrigin, verifyCloudflareOnce, type VerificationResult } from './CloudflareSessionRegistry.js';
 import type { ChallengePlugin } from "../ChallengePlugin.js";
 
 export class CloudflareChallengeHandler implements ChallengePlugin {
     public readonly name = "cloudflare";
-
-    async onPreNavigation({ page, request, session }: any): Promise<void> {
+    async onPreNavigation({ page, request, session, nativeFingerprint = false }: any): Promise<void> {
         try {
             if (!page) return;
+            page.__anycrawlAllowCloudflareResources = false;
+            startCloudflareRecovery(page);
             const challengeState = resetChallengeState(request, "cloudflare");
+            const shared = cloudflareSession(page, request.url);
+            if (shared?.state.flight) {
+                const flight = shared.state.flight;
+                const started = Number(request.userData._cloudflareStealthStartedAt) || Date.now();
+                request.userData._cloudflareStealthStartedAt = started;
+                const deadline = new Deadline(Math.min(page.__anycrawlBrowserDeadlineAt ?? Infinity,
+                    request.userData._anycrawlBrowserDeadlineAt ?? Infinity,
+                    started + this.readEnvPositiveInt('ANYCRAWL_STEALTH_TIMEOUT_MS', 120000)));
+                challengeState.deadlineAt = deadline.expiresAt;
+                challengeState.requiresContentRecovery = true;
+                challengeState.verificationGeneration = shared.state.generation;
+                challengeState.verificationLeader = false;
+                const signal = getCloudflareRecovery(page)!.controller.signal;
+                let result: VerificationResult;
+                try { result = await deadline.run(() => flight, signal); }
+                catch (error) { result = { cleared: false, code: signal.aborted ? 'CF_CANCELLED'
+                    : error instanceof DeadlineExceededError ? 'CF_RECOVERY_TIMEOUT' : 'CF_RECOVERY_ERROR' }; }
+                challengeState.clearanceElapsedMs = Date.now() - started;
+                if (!result.cleared) {
+                    challengeState.phase = result.code === 'CF_CANCELLED' ? 'cancelled' : 'failed';
+                    challengeState.lastError = { code: result.code || 'CF_NATIVE_NOT_CLEARED' };
+                    challengeState.unresolved = true;
+                    if (challengeState.phase !== 'cancelled') this.requestFallback(request,
+                        this.resolveProxyMode(request) === 'stealth' && Boolean(process.env.ANYCRAWL_2CAPTCHA_API_KEY?.trim()), deadline);
+                    getCloudflareRecovery(page)?.dispose();
+                    return;
+                }
+            }
 
             if (this.resolveProxyMode(request) !== "stealth") {
                 return;
@@ -22,7 +56,7 @@ export class CloudflareChallengeHandler implements ChallengePlugin {
                     : (request.loadedUrl || (typeof page.url === "function" ? page.url() : ""))
             );
 
-            if (session && requestUrl) {
+            if (session && requestUrl && !request.userData?._anycrawlBrowserDeadlineAt) {
                 try {
                     const cookies = await session.getCookies(requestUrl);
                     const cfClearance = cookies?.find((c: any) => c.key === "cf_clearance")?.value;
@@ -52,7 +86,7 @@ export class CloudflareChallengeHandler implements ChallengePlugin {
 
             const solveTimeoutMs = this.readEnvPositiveInt("ANYCRAWL_2CAPTCHA_TIMEOUT_MS", 60_000);
             const stealthTimeoutMs = this.readEnvPositiveInt("ANYCRAWL_STEALTH_TIMEOUT_MS", 120_000);
-            const maxRetries = this.readEnvPositiveInt("ANYCRAWL_2CAPTCHA_MAX_RETRIES", 1);
+            const maxRetries = this.readEnvPositiveInt("ANYCRAWL_2CAPTCHA_MAX_RETRIES", 1, 0);
             const userData = (request?.userData || {}) as any;
 
             if (!Number.isFinite(Number(userData._cloudflareStealthStartedAt)) || Number(userData._cloudflareStealthStartedAt) <= 0) {
@@ -71,6 +105,7 @@ export class CloudflareChallengeHandler implements ChallengePlugin {
             const solver = new CDPTurnstileSolver({
                 provider,
                 solveTimeoutMs,
+                preserveUserAgent: nativeFingerprint,
             });
 
             await solver.setup(page);
@@ -88,180 +123,226 @@ export class CloudflareChallengeHandler implements ChallengePlugin {
         }
     }
 
-    async onPostNavigation({ page, request }: any): Promise<void> {
+    private readonly releaseVerification = new WeakMap<object, (success: boolean) => void>();
+
+    async onPostNavigation({ page, request, response }: any): Promise<void> {
+        if (!page || !request || page.isClosed?.()) return;
+        const started = Date.now();
+        const recovery = getCloudflareRecovery(page) ?? startCloudflareRecovery(page);
+        recovery.lastResponse ??= response;
+        const state = ensureChallengeState(request);
+        const solver = page.__cloudflareSolver as CDPTurnstileSolver | undefined;
+        state.solverEnabled = Boolean(solver);
+        const native = new CloudflareNativeInteraction();
         try {
-            if (!page || !request) return;
-
-            const userData = (request.userData || {}) as any;
-            const challengeState = ensureChallengeState(request);
-            challengeState.provider = "cloudflare";
-
-            const queueName = userData.queueName || "unknown";
-            const jobId = userData.jobId || "unknown";
-            const proxyMode = this.resolveProxyMode(request);
-            const requestUrl = (
-                typeof request.url === "string" && request.url
-                    ? request.url
-                    : (request.loadedUrl || (typeof page.url === "function" ? page.url() : ""))
-            );
-            const solver = (page as any).__cloudflareSolver as CDPTurnstileSolver | undefined;
-            const solverEnabled = Boolean(solver);
-            challengeState.solverEnabled = solverEnabled;
-
-            const markChallengeUnresolved = (errorCode: string, errorDescription: string) => {
-                challengeState.solved = false;
-                challengeState.unresolved = true;
-                challengeState.lastError = {
-                    code: errorCode,
-                    message: errorDescription,
-                };
-            };
-
-            const markChallengeSolved = () => {
-                challengeState.solved = true;
-                challengeState.unresolved = false;
-                challengeState.retryRequested = false;
-                challengeState.lastError = undefined;
-            };
-
-            const detection = await this.detectChallenge(page, solverEnabled ? solver : undefined);
-            const challengeDetected = detection.detected;
-            challengeState.detected = challengeDetected;
-            if (!challengeDetected) {
-                challengeState.unresolved = false;
-                challengeState.retryRequested = false;
-                challengeState.lastError = undefined;
-                return;
-            }
-
-            if (!solverEnabled || !solver || !requestUrl) {
-                markChallengeUnresolved(
-                    "CHALLENGE_SOLVER_UNAVAILABLE",
-                    "challenge detected but solver is not available"
-                );
-                if (proxyMode === "auto" && this.hasStealthProxyConfigured()) {
-                    userData.options = userData.options || {};
-                    // Save original proxy value for cache key consistency
-                    userData._originalProxy = userData.options.proxy || proxyMode;
-                    userData.options.proxy = "stealth";
-                    requestProxyAction(request, "upgrade_to_stealth", "cloudflare_challenge_detected_auto_proxy");
-                    log.warning(
-                        `[CloudflareSolverPostHook] [${queueName}] [${jobId}] challenge detected on auto proxy, requesting stealth upgrade: ${request.url}`
-                    );
+            let session = cloudflareSession(page);
+            let observedGeneration = session?.state.generation ?? 0;
+            const outerDeadline = Math.min(page.__anycrawlBrowserDeadlineAt ?? Infinity,
+                request.userData?._anycrawlBrowserDeadlineAt ?? Infinity);
+            const initialDeadline = new Deadline(Math.min(outerDeadline,
+                Date.now() + this.readEnvPositiveInt('ANYCRAWL_NAV_TIMEOUT', 30000)));
+            let detection = await initialDeadline.run(() => this.detectChallenge(page), recovery.controller.signal);
+            state.detected = detection.detected;
+            state.pageKind = detection.kind; state.evidence = detection.evidence;
+            if (!detection.detected && !session?.state.seen) return;
+            state.requiresContentRecovery = true;
+            state.sessionReused = !detection.detected && Boolean(session?.state.seen);
+            state.contentReady = false; state.nativeClickCount = 0;
+            page.__anycrawlAllowCloudflareResources = true;
+            const previousStart = Number(request.userData._cloudflareStealthStartedAt);
+            const recoveryStart = previousStart > 0 ? previousStart : started;
+            request.userData._cloudflareStealthStartedAt = recoveryStart;
+            state.deadlineAt = Math.min(outerDeadline, recoveryStart +
+                (state.stealthTimeoutMs || this.readEnvPositiveInt('ANYCRAWL_STEALTH_TIMEOUT_MS', 120000)));
+            const deadline = new Deadline(state.deadlineAt);
+            let refreshed = false;
+            for (let attempt = 0; attempt < 2; attempt++) {
+                const signal = recovery.controller.signal;
+                deadline.check(); signal.throwIfAborted();
+                if (detection.detected) {
+                    state.detected = true; state.unresolved = true; state.cleared = false;
+                    state.phase = 'native';
+                    // Redirects get their own origin state; no clearance is copied.
+                    if (session?.origin !== cloudflareOrigin(page)) {
+                        session = cloudflareSession(page); observedGeneration = session?.state.generation ?? 0;
+                    }
+                    const operation = (ownerSignal: AbortSignal) => this.verifyCurrentPage(
+                        page, request, deadline, native, started, ownerSignal)
+                        .then(result => ({ ...result, origin: cloudflareOrigin(page) }));
+                    const verification = session
+                        ? verifyCloudflareOnce(session, observedGeneration, deadline, signal, operation)
+                        : { leader: true, generation: 1, promise: operation(signal) };
+                    state.verificationGeneration = verification.generation;
+                    state.verificationLeader = verification.leader;
+                    const result = await verification.promise;
+                    state.clearanceElapsedMs = Date.now() - started;
+                    if (!verification.leader) state.nativeWaitElapsedMs = state.clearanceElapsedMs;
+                    if (!result.cleared) {
+                        state.phase = result.code === 'CF_CANCELLED' ? 'cancelled' : 'failed';
+                        state.lastError = { code: result.code || 'CF_NATIVE_NOT_CLEARED' };
+                        state.unresolved = true; state.cleared = false; state.solved = false;
+                        if (state.phase !== 'cancelled') this.requestFallback(request, Boolean(solver), deadline);
+                        return;
+                    }
+                    // Followers must inspect their OWN document. An already
+                    // committed challenge page may need one refresh to use the cookie.
+                    detection = await deadline.run(() => this.detectChallenge(page), signal);
+                    if (!verification.leader && detection.detected && !refreshed) {
+                        refreshed = true;
+                        const latest = await deadline.run(() => page.reload({
+                            waitUntil: 'domcontentloaded', timeout: deadline.remainingMs,
+                        }), signal);
+                        if (latest) recovery.lastResponse = latest;
+                        detection = await deadline.run(() => this.detectChallenge(page), signal);
+                    }
+                    observedGeneration = verification.generation;
+                    if (detection.detected) continue;
                 }
-                return;
-            }
-
-            const stateStealthTimeoutMs = Number(challengeState.stealthTimeoutMs);
-            const stealthTimeoutMs = Number.isFinite(stateStealthTimeoutMs) && stateStealthTimeoutMs > 0
-                ? Math.floor(stateStealthTimeoutMs)
-                : this.readEnvPositiveInt("ANYCRAWL_STEALTH_TIMEOUT_MS", 120_000);
-            const stateMaxRetries = Number(challengeState.maxRetries);
-            const maxRetries = Number.isFinite(stateMaxRetries) && stateMaxRetries >= 0
-                ? Math.floor(stateMaxRetries)
-                : this.readEnvPositiveInt("ANYCRAWL_2CAPTCHA_MAX_RETRIES", 1);
-            const maxAttempts = Math.max(1, maxRetries + 1);
-            const startedAtRaw = Number(userData._cloudflareStealthStartedAt);
-            const startedAt = Number.isFinite(startedAtRaw) && startedAtRaw > 0
-                ? startedAtRaw
-                : Date.now();
-            userData._cloudflareStealthStartedAt = startedAt;
-            const retryCountRaw = Number(userData._cloudflareStealthRetryCount);
-            const retryCount = Number.isFinite(retryCountRaw) && retryCountRaw >= 0
-                ? Math.floor(retryCountRaw)
-                : 0;
-            challengeState.maxRetries = maxRetries;
-            challengeState.retryCount = retryCount;
-            const attempt = Math.min(maxAttempts, retryCount + 1);
-
-            const elapsedMs = Date.now() - startedAt;
-            if (elapsedMs >= stealthTimeoutMs) {
-                markChallengeUnresolved(
-                    "TWOCAPTCHA_STEALTH_TIMEOUT",
-                    `2captcha exhausted stealth timeout budget (${stealthTimeoutMs}ms)`
-                );
-                return;
-            }
-
-            if (retryCount > 0 && typeof (solver as any).clearCapturedParams === "function") {
-                (solver as any).clearCapturedParams();
-            }
-
-            const lastSolveResult = await solver.solveDirect(requestUrl, page, {
-                forceAttempt: true,
-                skipInFlightWait: true,
-            });
-            log.info(
-                `[CloudflareSolverPostHook] [${queueName}] [${jobId}] 2captcha attempt ${attempt}/${maxAttempts}: ${JSON.stringify(lastSolveResult)}`
-            );
-
-            if (lastSolveResult?.success) {
-                const requestTimeout = Number(userData?.options?.timeout);
-                const settleTimeoutMs = Number.isFinite(requestTimeout) && requestTimeout > 0
-                    ? requestTimeout
-                    : this.readEnvPositiveInt("ANYCRAWL_NAV_TIMEOUT", 30_000);
-
-                const challengeCleared = await this.waitForChallengeClearance(
-                    page,
-                    request,
-                    solver,
-                    settleTimeoutMs
-                );
-
-                if (challengeCleared) {
-                    markChallengeSolved();
+                // A known origin with no current challenge gets content recovery,
+                // without any native click, paid task or unconditional reload.
+                while (detection.kind === 'unknown' && deadline.remainingMs > 0) {
+                    await deadline.sleep(500, signal);
+                    detection = await deadline.run(() => this.detectChallenge(page), signal);
+                }
+                state.pageKind = detection.kind; state.evidence = detection.evidence;
+                if (detection.detected) continue;
+                if (!detection.ready) throw new CloudflareRecoveryError('CF_DOCUMENT_NOT_READY');
+                this.markCleared(request);
+                try {
+                    await ensureCloudflarePageRecovered(page, request);
                     return;
+                } catch (error) {
+                    if (!(error instanceof CloudflareRecoveryError) || error.code !== 'CF_CHALLENGE_REAPPEARED') throw error;
+                    detection = await deadline.run(() => this.detectChallenge(page), signal);
                 }
-
-                markChallengeUnresolved(
-                    "TWOCAPTCHA_CHALLENGE_NOT_CLEARED",
-                    "2captcha solved token but challenge page is still present"
-                );
-
-                const canRetryAfterSolve = retryCount < maxRetries && (Date.now() - startedAt) < stealthTimeoutMs;
-                if (canRetryAfterSolve) {
-                    userData._cloudflareStealthRetryCount = retryCount + 1;
-                    challengeState.retryRequested = true;
-                    challengeState.retryCount = retryCount + 1;
-                    requestProxyAction(request, "rotate_proxy", "cloudflare_challenge_not_cleared_after_solve");
-                    log.warning(
-                        `[CloudflareSolverPostHook] [${queueName}] [${jobId}] challenge still present after solve, retrying with proxy rotation (${retryCount + 1}/${maxRetries}): ${request.url}`
-                    );
-                    return;
-                }
-
-                log.warning(
-                    `[CloudflareSolverPostHook] [${queueName}] [${jobId}] challenge still present after solve and retry budget exhausted: ${request.url}`
-                );
-                return;
             }
-
-            const totalElapsedMs = Date.now() - startedAt;
-            if (totalElapsedMs >= stealthTimeoutMs) {
-                markChallengeUnresolved(
-                    "TWOCAPTCHA_STEALTH_TIMEOUT",
-                    `2captcha exhausted stealth timeout budget (${stealthTimeoutMs}ms)`
-                );
-                return;
-            }
-
-            markChallengeUnresolved(
-                lastSolveResult?.errorCode || "TWOCAPTCHA_SOLVE_FAILED",
-                lastSolveResult?.errorDescription || `2captcha failed after ${maxAttempts} attempts`
-            );
-
-            const canRetry = retryCount < maxRetries;
-            if (canRetry) {
-                userData._cloudflareStealthRetryCount = retryCount + 1;
-                challengeState.retryRequested = true;
-                challengeState.retryCount = retryCount + 1;
-                requestProxyAction(request, "rotate_proxy", "cloudflare_solver_failed");
-                log.warning(
-                    `[CloudflareSolverPostHook] [${queueName}] [${jobId}] scheduling retry with proxy rotation (${retryCount + 1}/${maxRetries}): ${request.url}`
-                );
-            }
+            state.phase = 'failed'; state.unresolved = true; state.cleared = false;
+            state.lastError = { code: 'CF_CHALLENGE_REAPPEARED' };
+            this.requestFallback(request, Boolean(solver), deadline);
         } catch (error) {
-            log.debug(`[CloudflareSolverPostHook] Check error: ${error instanceof Error ? error.message : String(error)}`);
+            const contentTimeout = state.cleared && (error instanceof DeadlineExceededError || error instanceof CloudflareRecoveryError && error.code === 'CF_CONTENT_TIMEOUT');
+            state.phase = recovery.controller.signal.aborted ? 'cancelled' : 'failed';
+            state.contentReady = false;
+            state.lastError = { code: contentTimeout ? 'CF_CONTENT_TIMEOUT' : recovery.controller.signal.aborted ? 'CF_CANCELLED'
+                : error instanceof DeadlineExceededError ? 'CF_RECOVERY_TIMEOUT' : error instanceof CloudflareRecoveryError ? error.code : 'CF_RECOVERY_ERROR',
+                message: error instanceof Error ? error.message : String(error) };
+            state.unresolved = !state.cleared;
+            // Plugin errors are caught by the orchestrator. Base gates extraction.
+        } finally {
+            if (state.detected) state.nativeWaitElapsedMs ??= Date.now() - started;
+            state.postNavigationElapsedMs = Date.now() - started;
+            await native.dispose();
+            if (!state.requiresContentRecovery || ['failed', 'cancelled'].includes(state.phase ?? '')) recovery.dispose();
+        }
+    }
+
+    private async verifyCurrentPage(page: any, request: any, deadline: Deadline,
+        native: CloudflareNativeInteraction, started: number, signal: AbortSignal): Promise<VerificationResult> {
+        const state = ensureChallengeState(request);
+        const recovery = getCloudflareRecovery(page)!;
+        const solver = page.__cloudflareSolver as CDPTurnstileSolver | undefined;
+        const nativeDeadline = new Deadline(Math.min(started + 60000, deadline.expiresAt));
+        while (nativeDeadline.remainingMs > 0) {
+            signal.throwIfAborted();
+            let detection;
+            try { detection = await nativeDeadline.run(() => this.detectChallenge(page), signal); }
+            catch (error) { if (!signal.aborted && nativeDeadline.remainingMs <= 0) break; throw error; }
+            state.pageKind = detection.kind; state.evidence = detection.evidence;
+            if (detection.ready) {
+                state.nativeWaitElapsedMs ??= Date.now() - started;
+                this.markCleared(request);
+                return { cleared: true };
+            }
+            if (['blocked', 'rate_limited', 'http_error'].includes(detection.kind)) break;
+            if (detection.detected && (state.nativeClickCount ?? 0) < 2) {
+                const epoch = recovery.epoch;
+                try {
+                    const click = await nativeDeadline.run(() => native.tryClick(page, nativeDeadline, signal, () => recovery.epoch === epoch, epoch), signal);
+                    if (click) {
+                        state.nativeClickCount = (state.nativeClickCount ?? 0) + 1;
+                        state.nativeClickMethod = click.source;
+                        state.nativeClickAcknowledged = click.acknowledged;
+                        log.info(`[cloudflare] native_click_applied method=${click.source} count=${state.nativeClickCount}`);
+                    }
+                } catch (error) {
+                    if (signal.aborted) throw error;
+                    if (nativeDeadline.remainingMs <= 0) break;
+                    // Navigation invalidates the pending lookup; observe the current document again.
+                }
+            }
+            if (nativeDeadline.remainingMs <= 0) break;
+            try { await nativeDeadline.sleep(500, signal); }
+            catch (error) { if (!signal.aborted && nativeDeadline.remainingMs <= 0) break; throw error; }
+        }
+        state.nativeWaitElapsedMs = Date.now() - started;
+        await native.dispose();
+        deadline.check(); signal.throwIfAborted();
+        // Navigation can commit at the native-stage boundary. Continue a
+        // loading document under the SAME total budget; HTTP 200 alone is
+        // never clearance and never permits extraction.
+        let transition = await deadline.run(() => this.detectChallenge(page), signal);
+        while (transition.kind === 'unknown' && deadline.remainingMs > 0) {
+            await deadline.sleep(500, signal);
+            transition = await deadline.run(() => this.detectChallenge(page), signal);
+        }
+        if (transition.ready) { this.markCleared(request); return { cleared: true }; }
+        // Reserve time for verification and the post-CF document. Never start a task we cannot await.
+        const solverDeadline = new Deadline(deadline.expiresAt - 30000);
+        if (solver && solverDeadline.remainingMs >= 10000) {
+            state.phase = 'solver';
+            const solveStarted = Date.now();
+            const result = await solver.solveDirect(page.url(), page, { forceAttempt: true, deadlineAt: solverDeadline.expiresAt, signal });
+            state.solveElapsedMs = Date.now() - solveStarted;
+            // Native completion can race a failed/cancelled provider result.
+            const detection = await deadline.run(() => this.detectChallenge(page), signal);
+            state.pageKind = detection.kind; state.evidence = detection.evidence;
+            if (detection.ready) { this.markCleared(request); return { cleared: true }; }
+            if (result.success) {
+                while (deadline.remainingMs > 0) {
+                    const current = await deadline.run(() => this.detectChallenge(page), signal);
+                    if (current.ready) { this.markCleared(request); return { cleared: true }; }
+                    if (['blocked', 'rate_limited', 'http_error'].includes(current.kind)) break;
+                    // A new visible challenge after callback is not a solved document.
+                    if (current.detected && Date.now() - solveStarted - state.solveElapsedMs > 10000) break;
+                    await deadline.sleep(500, signal);
+                }
+            }
+            state.lastError = { code: result.errorCode || 'TWOCAPTCHA_CHALLENGE_NOT_CLEARED',
+                message: result.errorDescription || 'Solver result did not clear the current challenge' };
+        } else {
+            state.lastError = { code: solver ? 'CF_RECOVERY_BUDGET_EXHAUSTED' : 'CF_NATIVE_NOT_CLEARED',
+                message: solver ? 'Insufficient remaining budget for a solver task and page recovery' : 'Native challenge did not clear and no solver is available for this mode' };
+        }
+        state.phase = 'failed'; state.solved = false; state.unresolved = true;
+        return { cleared: false, code: state.lastError?.code };
+    }
+
+    private markCleared(request: any): void {
+        const state = ensureChallengeState(request);
+        this.releaseVerification.get(request)?.(true);
+        state.solved = true; state.cleared = true; state.unresolved = false;
+        state.retryRequested = false; state.proxyAction = undefined; state.reason = undefined; state.lastError = undefined;
+        request.userData._anycrawlProxyAction = undefined;
+        state.phase = 'settling';
+        log.info(`[cloudflare] clearance_confirmed request=${request.id ?? request.userData?.jobId ?? 'unknown'}`);
+    }
+
+    private requestFallback(request: any, solverAvailable: boolean, deadline: Deadline): void {
+        if (deadline.remainingMs <= 0) return;
+        const state = ensureChallengeState(request);
+        const mode = request.userData?._originalProxy ?? this.resolveProxyMode(request);
+        if (mode === 'auto' && this.hasStealthProxyConfigured()) {
+            request.userData._originalProxy ??= request.userData.options.proxy;
+            request.userData.options.proxy = 'stealth';
+            requestProxyAction(request, 'upgrade_to_stealth', 'cloudflare_native_not_cleared');
+            return;
+        }
+        const count = Number(request.userData._cloudflareStealthRetryCount) || 0;
+        const limit = state.maxRetries ?? this.readEnvPositiveInt('ANYCRAWL_2CAPTCHA_MAX_RETRIES', 1, 0);
+        if (solverAvailable && count < limit) {
+            state.retryRequested = true; state.retryCount = count + 1;
+            request.userData._cloudflareStealthRetryCount = count + 1;
+            requestProxyAction(request, 'rotate_proxy', 'cloudflare_challenge_not_cleared');
         }
     }
 
@@ -306,11 +387,11 @@ export class CloudflareChallengeHandler implements ChallengePlugin {
         return payload;
     }
 
-    private readEnvPositiveInt(name: string, defaultValue: number): number {
+    private readEnvPositiveInt(name: string, defaultValue: number, minimum = 1): number {
         const raw = process.env[name];
         if (!raw) return defaultValue;
         const parsed = parseInt(raw, 10);
-        return Number.isFinite(parsed) && parsed > 0 ? parsed : defaultValue;
+        return Number.isFinite(parsed) && parsed >= minimum ? parsed : defaultValue;
     }
 
     private resolveProxyMode(request: any): string {
@@ -324,144 +405,51 @@ export class CloudflareChallengeHandler implements ChallengePlugin {
         return raw.split(",").map((v) => v.trim()).filter(Boolean).length > 0;
     }
 
-    private async isLikelyCloudflareChallengePage(page: any): Promise<boolean> {
-        if (!page || page.isClosed?.() || typeof page.evaluate !== "function") return false;
-        try {
-            return await page.evaluate(() => {
-                const bodyText = (document.body?.innerText || "").toLowerCase();
-                const title = (document.title || "").toLowerCase();
-                const html = (document.documentElement?.outerHTML || "").toLowerCase();
-                const hasTurnstile =
-                    Boolean(document.querySelector(".cf-turnstile, [data-sitekey], [data-site-key]"))
-                    || Boolean(document.querySelector('input[name="cf-turnstile-response"]'));
-                const hasChallengeForm = Boolean(
-                    document.querySelector("form#challenge-form")
-                    || document.querySelector('form[action*="challenge"]')
-                    || document.querySelector('form[action*="/cdn-cgi/challenge-platform/"]')
-                );
-                const hasCloudflareRuntime = Boolean((window as any)._cf_chl_opt || (window as any).__cf_chl_opt);
-                const htmlMarkers = [
-                    "challenge-platform",
-                    "challenge-running",
-                    "challenge-stage",
-                    "cf-chl-widget",
-                    "challenges.cloudflare.com",
-                    "/cdn-cgi/challenge-platform/",
-                    "cf-turnstile",
-                ];
-                if (hasTurnstile || hasChallengeForm || hasCloudflareRuntime) return true;
-                if (htmlMarkers.some((marker) => html.includes(marker))) return true;
-
-                const titleMarkers = [
-                    "just a moment",
-                    "checking your browser",
-                    "performing security verification",
-                ];
-                const bodyMarkers = [
-                    "enable javascript and cookies to continue",
-                    "security service to protect itself from online attacks",
-                    "attention required",
-                    "cloudflare",
-                    "ray id",
-                ];
-
-                return titleMarkers.some((marker) => title.includes(marker))
-                    || bodyMarkers.some((marker) => bodyText.includes(marker));
-            });
-        } catch {
-            return false;
-        }
+    private async detectChallenge(page: any) {
+        return inspectCloudflarePage(page, await getCloudflareRecovery(page)?.documentResponse());
     }
+}
 
-    private async detectChallenge(
-        page: any,
-        solver?: CDPTurnstileSolver
-    ): Promise<{ detected: boolean; solverDetected: boolean; domDetected: boolean }> {
-        let solverDetected = false;
-        if (solver && typeof solver.isChallenge === "function") {
-            try {
-                solverDetected = await solver.isChallenge(page);
-            } catch {
-                solverDetected = false;
-            }
-        }
-
-        const domDetected = await this.isLikelyCloudflareChallengePage(page);
-        return {
-            detected: solverDetected || domDetected,
-            solverDetected,
-            domDetected,
-        };
+/** Run outside the best-effort plugin dispatcher so failed shared verification
+ * cannot be swallowed and followed by a fresh navigation/verification attempt. */
+export function throwIfCloudflarePreNavigationFailed(request: any): void {
+    const state = ensureChallengeState(request);
+    if (state.requiresContentRecovery && ['failed', 'cancelled'].includes(state.phase ?? '')) {
+        if (!state.proxyAction) request.noRetry = true;
+        throw new CloudflareRecoveryError(state.lastError?.code || 'CF_RECOVERY_ERROR');
     }
+}
 
-    private async waitForChallengeClearance(
-        page: any,
-        request: any,
-        solver: CDPTurnstileSolver | undefined,
-        timeoutMs: number
-    ): Promise<boolean> {
-        if (!page || page.isClosed?.()) return false;
-
-        await this.waitForPostChallengeNavigation(page, request, Math.min(timeoutMs, 10_000));
-
-        const deadline = Date.now() + Math.max(1_000, timeoutMs);
-        while (Date.now() < deadline) {
-            const detection = await this.detectChallenge(page, solver);
-            if (!detection.detected) {
-                return true;
-            }
-
-            const remainingMs = deadline - Date.now();
-            if (remainingMs <= 0) break;
-            await this.sleep(Math.min(750, Math.max(150, remainingMs)));
-        }
-
-        return false;
+export async function ensureCloudflarePageRecovered(page: any, request: any): Promise<void> {
+    const state = ensureChallengeState(request);
+    if (!(state.detected || state.requiresContentRecovery) || !state.cleared) return;
+    const recovery = getCloudflareRecovery(page);
+    if (!recovery || !state.deadlineAt) throw new CloudflareRecoveryError('CF_RECOVERY_STATE_MISSING');
+    const stoppedCode = page.isClosed?.() || recovery.controller.signal.aborted ? 'CF_CANCELLED'
+        : recovery.settledEpoch !== recovery.epoch && Date.now() >= state.deadlineAt ? 'CF_CONTENT_TIMEOUT' : undefined;
+    if (stoppedCode) {
+        state.contentReady = false; state.phase = stoppedCode === 'CF_CANCELLED' ? 'cancelled' : 'failed';
+        state.lastError = { code: stoppedCode, message: stoppedCode };
+        delete request.userData._anycrawlPostChallengeSettled;
+        throw new CloudflareRecoveryError(stoppedCode);
     }
-
-    private async sleep(ms: number): Promise<void> {
-        await new Promise((resolve) => setTimeout(resolve, ms));
-    }
-
-    private async waitForPostChallengeNavigation(page: any, request: any, timeoutMs: number): Promise<void> {
-        if (!page || page.isClosed?.()) return;
-        const options = request?.userData?.options || {};
-        const { playwright: playwrightWaitUntil, puppeteer: puppeteerWaitUntil } = resolveWaitUntil(options.wait_until);
-
-        const initialUrl = typeof page.url === "function" ? page.url() : String(request?.url || "");
-        const navigationTimeoutMs = Math.min(timeoutMs, 15_000);
-
-        // Prefer waiting for a real navigation/URL change after token injection.
-        if (typeof page.waitForURL === "function" && initialUrl) {
-            try {
-                await page.waitForURL((targetUrl: any) => String(targetUrl) !== initialUrl, {
-                    timeout: navigationTimeoutMs,
-                    waitUntil: playwrightWaitUntil as "load" | "domcontentloaded" | "networkidle",
-                });
-                return;
-            } catch {
-                // fall through to generic navigation/load wait
-            }
-        }
-
-        if (typeof page.waitForNavigation === "function") {
-            try {
-                await page.waitForNavigation({
-                    waitUntil: puppeteerWaitUntil as "load" | "domcontentloaded" | "networkidle0",
-                    timeout: navigationTimeoutMs,
-                });
-                return;
-            } catch {
-                // ignore challenge settle wait errors
-            }
-        }
-
-        if (typeof page.waitForLoadState === "function") {
-            try {
-                await page.waitForLoadState(playwrightWaitUntil as "load" | "domcontentloaded" | "networkidle", { timeout: timeoutMs });
-            } catch {
-                // ignore challenge settle wait errors
-            }
-        }
+    if (recovery.settledEpoch === recovery.epoch) return;
+    state.contentReady = false; state.phase = 'settling';
+    delete request.userData._anycrawlPostChallengeSettled;
+    const started = Date.now();
+    try {
+        await recovery.settle(new Deadline(state.deadlineAt));
+        state.contentReady = true; state.phase = 'ready'; state.settledDocumentEpoch = recovery.epoch;
+        state.lastError = undefined; state.contentRecoveryElapsedMs = Date.now() - started;
+        request.userData._anycrawlPostChallengeSettled = true;
+        log.info(`[cloudflare] content_recovered request=${request.id ?? request.userData?.jobId ?? 'unknown'} elapsedMs=${state.contentRecoveryElapsedMs} textLength=${recovery.lastSample?.textLength ?? 0}`);
+    } catch (error) {
+        const code = error instanceof DeadlineExceededError ? 'CF_CONTENT_TIMEOUT'
+            : error instanceof CloudflareRecoveryError ? error.code
+            : recovery.controller.signal.aborted ? 'CF_CANCELLED' : 'CF_CONTENT_RECOVERY_ERROR';
+        state.lastError = { code, message: error instanceof Error ? error.message : String(error) };
+        state.phase = code === 'CF_CANCELLED' ? 'cancelled' : 'failed';
+        if (code === 'CF_CHALLENGE_REAPPEARED') { state.cleared = false; state.solved = false; state.unresolved = true; }
+        throw new CloudflareRecoveryError(code);
     }
 }

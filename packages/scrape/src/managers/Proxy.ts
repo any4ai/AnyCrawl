@@ -9,7 +9,7 @@ import * as https from 'https';
 
 import { cryptoRandomObjectId } from '@apify/utilities';
 import { ProxyCacheManager } from './ProxyCacheManager.js';
-import { materializeHttpProxy, proxyConfigurationId, stickyProxySelection, STICKY_SESSION_TOKEN, StickyProxyConfigurationError, validateStickyProxyTemplate } from '../core/StickyProxyContext.js';
+import { materializeHttpProxy, proxyConfigurationId, stickyLeasePreference, stickyProxySelection, STICKY_SESSION_TOKEN, StickyProxyConfigurationError, validateStickyProxyTemplate } from '../core/StickyProxyContext.js';
 
 export type { ProxyMode, ResolvedProxyMode };
 export { isProxyMode, getResolvedProxyMode as getResolvedProxyModeName };
@@ -787,8 +787,52 @@ function findProxyForUrl(requestUrl: string): string | null {
     return null;
 }
 
+/** Resolve permissions first; lease affinity never expands the selected candidates. */
+async function selectStickyProxy(request: any, requestedTier = 0): Promise<string | null> {
+    const data = request?.userData ?? {};
+    const mode = data._originalProxy ?? data.options?.proxy;
+    const matchUrl = data.original_url || request?.url;
+    const rule = matchUrl ? findProxyForUrl(matchUrl) : null;
+    const action = data._anycrawlRecoveryAction ?? 'none';
+    const excluded = new Set<string>(data._anycrawlExcludedProxyIds ?? []);
+    const cache = ProxyCacheManager.getInstance();
+    const domain = matchUrl ? cache.extractDomain(matchUrl) : null;
+    const entry = domain ? await cache.getStickyDomainEntry(domain) : null;
+    const tiers = resolveProxyModeWithFallback(mode) ?? [getBaseProxyUrls()];
+    let tier = Math.max(0, Math.min(Number.isFinite(requestedTier) ? requestedTier : 0, tiers.length - 1));
+    if (mode === 'auto' && (action === 'upgrade' || data._anycrawlSelectedMode === 'stealth' || entry?.mode === 'stealth')) {
+        const stealth = getStealthProxyUrls();
+        const index = tiers.findIndex(values => values.some(value => value && stealth.includes(value)));
+        if (index >= 0) tier = index;
+    }
+    let candidates = (tiers[tier] ?? []).filter((value): value is string => Boolean(value));
+    if (rule && action === 'none') candidates = [rule];
+    else if (rule) candidates = [...new Set([rule, ...tiers.flat().filter((value): value is string => Boolean(value))])];
+    candidates = candidates.filter(value => !excluded.has(proxyConfigurationId(value)));
+    // Authentication excludes a configuration, not merely its current session. Only allowed tiers may supply a backup.
+    if (!candidates.length && action !== 'none' && !rule) {
+        candidates = tiers.flat().filter((value): value is string => Boolean(value) && !excluded.has(proxyConfigurationId(value!)));
+    }
+    if (!candidates.length) {
+        if (action !== 'none' || mode || rule) throw new StickyProxyConfigurationError('No permitted sticky proxy candidate remains');
+        return null;
+    }
+    const cached = tier === 0 && mode === 'stealth' || mode === 'auto' && entry?.mode === 'stealth'
+        ? entry?.stealthWorkingProxy : entry?.baseWorkingProxy;
+    const selected = stickyLeasePreference.getStore()?.(candidates)
+        ?? (action === 'none' && cached && candidates.includes(cached) ? cached : candidates[proxyModeRotationIndex++ % candidates.length]!);
+    const actualMode = getStealthProxyUrls().includes(selected) ? 'stealth' : getBaseProxyUrls().includes(selected) ? 'base' : 'custom';
+    data._anycrawlSelectedMode = actualMode;
+    data._anycrawlStickyCachePolicy = 2;
+    // Keep the caller's permissions separately while exposing the actual tier to existing solver/billing paths.
+    if (isProxyMode(mode)) { data._originalProxy ??= mode; data.options.proxy = actualMode === 'custom' ? mode : actualMode; }
+    return selected;
+}
+
+
 const proxyConfiguration = new ProxyConfiguration({
     newUrlFunction: async (_sessionId: string | number, options?: { request?: Request; proxyTier?: number }): Promise<string | null> => {
+        if (stickyProxySelection.getStore()) return selectStickyProxy(options?.request, (options?.request?.userData as any)?._proxyTier ?? options?.proxyTier);
         const requestUrl = options?.request?.url || 'unknown';
         const originalUrl = (options?.request?.userData as any)?.original_url;
         const matchUrl = originalUrl || requestUrl;

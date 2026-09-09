@@ -19,6 +19,8 @@ export class TwoCaptchaTurnstileProvider implements TurnstileSolverProvider {
 
     async solve(input: TurnstileSolverInput): Promise<TurnstileSolverResult> {
         return this.client.solve({
+            deadlineAt: input.deadlineAt,
+            signal: input.signal,
             pageUrl: input.pageUrl,
             sitekey: input.sitekey,
             data: input.data,

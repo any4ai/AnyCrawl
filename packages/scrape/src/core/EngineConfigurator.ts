@@ -6,12 +6,14 @@ import { ProgressManager } from "../managers/Progress.js";
 import { JOB_TYPE_CRAWL } from "@anycrawl/libs";
 import { CrawlLimitReachedError } from "../errors/index.js";
 import { getOrCreateBandwidthTracker } from "./BandwidthTracker.js";
-import { CloudflareChallengeHandler } from "../challenges/cloudflare/CloudflareChallengeHandler.js";
+import { CloudflareChallengeHandler, throwIfCloudflarePreNavigationFailed } from "../challenges/cloudflare/CloudflareChallengeHandler.js";
+import { ensureChallengeState } from "../challenges/ChallengeContext.js";
 import { ChallengeOrchestrator } from "../challenges/ChallengeOrchestrator.js";
 import { ProxyCacheManager } from "../managers/ProxyCacheManager.js";
 import { smartWaitForDOMStable } from "../utils/smartWait.js";
 import { applyCloakBrowserHumanize, cloakBrowserHumanWarmup, CLOAKBROWSER_RUNTIME } from "./CloakBrowserLauncher.js";
 import { shouldResolveBrowserGeoip } from "./BrowserLaunchOptions.js";
+import { applyBrowserRecovery } from "./BrowserRecoveryPolicy.js";
 import { proxyForCache, StickyProxyConfigurationError } from "./StickyProxyContext.js";
 
 /**
@@ -28,7 +30,7 @@ const shouldHumanizeRequest = (request: any): boolean => {
     // "auto": only when escalating — explicit stealth proxy, or any retry (403/
     // challenge/proxy-upgrade all route through retryCount > 0).
     const retryCount = typeof request?.retryCount === "number" ? request.retryCount : 0;
-    return options.proxy === "stealth" || retryCount > 0;
+    return options.proxy === "stealth" || (config.proxy.stickyEnabled ? Boolean(request?.userData?._anycrawlRecoveryAction && request.userData._anycrawlRecoveryAction !== "none") : retryCount > 0);
 };
 
 export enum ConfigurableEngineType {
@@ -213,6 +215,19 @@ export class EngineConfigurator {
             } catch { return; }
             if (!cdp) return;
             (page as any).__anycrawlCdpSession = cdp;
+            // Enable necessary challenge rendering as soon as its main response arrives,
+            // before the challenge's image/font requests can be paused and aborted.
+            const observeChallengeResponse = (response: any) => {
+                try {
+                    const request = response.request();
+                    if (!request.isNavigationRequest() || request.frame() !== page.mainFrame()) return;
+                    const headers = response.headers();
+                    if (Object.entries(headers).some(([key, value]) => key.toLowerCase() === 'cf-mitigated' && value === 'challenge'))
+                        page.__anycrawlAllowCloudflareResources = true;
+                } catch { /* Not a current main response. */ }
+            };
+            page.on('response', observeChallengeResponse);
+            page.once('close', () => page.off('response', observeChallengeResponse));
 
             const formats: string[] = request?.userData?.options?.formats || [];
             const needsScreenshot = formats.some(
@@ -246,6 +261,10 @@ export class EngineConfigurator {
 
                 cdp.on("Fetch.requestPaused", async (e: any) => {
                     try {
+                        if (page.__anycrawlAllowCloudflareResources && ['Image', 'Font'].includes(e.resourceType)) {
+                            await cdp.send('Fetch.continueRequest', { requestId: e.requestId });
+                            return;
+                        }
                         log.debug(`[resourceBlocking] Blocked ${e.resourceType}: ${e.request?.url?.substring(0, 100)}`);
                         await cdp.send("Fetch.failRequest", {
                             requestId: e.requestId,
@@ -340,7 +359,8 @@ export class EngineConfigurator {
             if (args?.request) {
                 (args.request as any).__anycrawlChallengeOrchestrator = challengeOrchestrator;
             }
-            await challengeOrchestrator.onPreNavigation(args);
+            await challengeOrchestrator.onPreNavigation({ ...args, nativeFingerprint });
+            throwIfCloudflarePreNavigationFailed(args.request);
         };
 
         // Pre-navigation capture hook for preNav rules
@@ -581,6 +601,7 @@ export class EngineConfigurator {
 
         const smartWaitPostHook = async ({ page, request }: any) => {
             if (!page) return;
+            if (ensureChallengeState(request).requiresContentRecovery || ensureChallengeState(request).detected) return;
             await smartWaitForDOMStable(page, request.url, { label: "postNav" });
         };
 
@@ -589,6 +610,7 @@ export class EngineConfigurator {
         const humanizeWarmupPostHook = async ({ page, request }: any) => {
             if (engineType !== ConfigurableEngineType.PLAYWRIGHT) return;
             if (!page || !request?.__anycrawlHumanizeActive) return;
+            if (ensureChallengeState(request).requiresContentRecovery || ensureChallengeState(request).detected) return;
             await cloakBrowserHumanWarmup(page);
         };
 
@@ -603,8 +625,9 @@ export class EngineConfigurator {
 
         // Let 403 pages reach requestHandler; do not fail early in Crawlee blocked-page detection.
         options.retryOnBlocked = false;
+        if (config.proxy.stickyEnabled) options.persistCookiesPerSession = false;
 
-        options.maxRequestRetries = 3;
+        options.maxRequestRetries ??= 3;
 
         // Configure session pool
         if (options.useSessionPool !== false) {
@@ -667,6 +690,10 @@ export class EngineConfigurator {
         // Configure how errors are evaluated
         options.errorHandler = async (context: any, error: Error) => {
             log.debug(`Error handler triggered: ${error.message}`);
+            if (context.proxyInfo?.stickyProxyTemplate || context.request?.userData?._anycrawlBrowserDeadlineAt) {
+                applyBrowserRecovery(context, error);
+                return;
+            }
 
             if (error instanceof StickyProxyConfigurationError) {
                 context.request.noRetry = true;
@@ -676,6 +703,7 @@ export class EngineConfigurator {
             // Handle CrawlLimitReachedError specially - log as INFO instead of ERROR
             if (error instanceof CrawlLimitReachedError) {
                 log.info(`[EXPECTED] Crawl limit reached for job ${error.jobId}: ${error.reason} - continuing with processed pages`);
+                context.request.noRetry = true;
                 return false; // Don't retry, don't mark as failed
             }
 
@@ -759,6 +787,8 @@ export class EngineConfigurator {
                 return true; // Retry with new session
             }
 
+            // Crawlee ignores return values; set the actual flag.
+            context.request.noRetry = true;
             // For all other errors, don't retry
             log.debug('Unknown error type, not retrying');
             return false;

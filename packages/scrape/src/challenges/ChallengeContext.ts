@@ -23,6 +23,25 @@ export const ensureChallengeState = (request: any): ChallengeState => {
 export const resetChallengeState = (request: any, provider: string): ChallengeState => {
     const state = ensureChallengeState(request);
     state.provider = provider;
+    state.pageKind = undefined;
+    state.evidence = undefined;
+    state.deadlineAt = undefined;
+    state.phase = undefined;
+    state.cleared = false;
+    state.contentReady = false;
+    state.requiresContentRecovery = false;
+    state.sessionReused = false;
+    state.verificationGeneration = undefined;
+    state.verificationLeader = undefined;
+    state.nativeClickCount = 0;
+    state.nativeClickMethod = undefined;
+    state.nativeClickAcknowledged = undefined;
+    state.settledDocumentEpoch = undefined;
+    state.contentRecoveryElapsedMs = undefined;
+    state.solveElapsedMs = undefined;
+    state.nativeWaitElapsedMs = undefined;
+    state.clearanceElapsedMs = undefined;
+    state.postNavigationElapsedMs = undefined;
     state.detected = false;
     state.solved = false;
     state.unresolved = false;
@@ -34,6 +53,8 @@ export const resetChallengeState = (request: any, provider: string): ChallengeSt
 
     const userData = getUserData(request);
     userData[PROXY_ACTION_KEY] = undefined;
+    delete userData._anycrawlPostChallengeSettled;
+    delete userData._anycrawlFinalNavigationStatus;
     return state;
 };
 

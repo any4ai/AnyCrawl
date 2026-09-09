@@ -4,6 +4,7 @@ import { NonRetryableError } from "crawlee";
 import { config } from "@anycrawl/libs";
 
 export const STICKY_SESSION_TOKEN = "{sessionId}";
+export const stickyLeasePreference = new AsyncLocalStorage<(templates: string[]) => string | undefined>();
 export const stickyProxySelection = new AsyncLocalStorage<boolean>();
 
 export class StickyProxyConfigurationError extends NonRetryableError {}

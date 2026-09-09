@@ -7,6 +7,25 @@ export interface ChallengeErrorInfo {
 
 export interface ChallengeState {
     provider?: string;
+    pageKind?: import("./cloudflare/CloudflareDetection.js").CloudflarePageKind;
+    evidence?: string[];
+    deadlineAt?: number;
+    phase?: 'native' | 'solver' | 'settling' | 'ready' | 'failed' | 'cancelled';
+    cleared?: boolean;
+    contentReady?: boolean;
+    requiresContentRecovery?: boolean;
+    sessionReused?: boolean;
+    verificationGeneration?: number;
+    verificationLeader?: boolean;
+    nativeClickCount?: number;
+    nativeClickMethod?: string;
+    nativeClickAcknowledged?: boolean;
+    settledDocumentEpoch?: number;
+    contentRecoveryElapsedMs?: number;
+    solveElapsedMs?: number;
+    nativeWaitElapsedMs?: number;
+    clearanceElapsedMs?: number;
+    postNavigationElapsedMs?: number;
     detected?: boolean;
     solved?: boolean;
     unresolved?: boolean;

@@ -24,7 +24,10 @@
         "test:coverage": "NODE_OPTIONS=--experimental-vm-modules dotenv-run -r ../.. -- jest --coverage --detectOpenHandles --forceExit",
         "test:browser-score": "dotenv-run -r ../.. -- tsx tests/browser-score/run.ts",
         "test:browser-score:unit": "NODE_OPTIONS=--experimental-vm-modules jest --config jest.browser-score.config.mjs --runInBand --detectOpenHandles",
-        "typecheck:browser-score": "tsc --project tests/browser-score/tsconfig.json --noEmit"
+        "typecheck:browser-score": "tsc --project tests/browser-score/tsconfig.json --noEmit",
+        "test:sticky-lifecycle": "pnpm run build && dotenv-run -r ../.. -- node tests/sticky-lifecycle.mjs",
+        "test:sticky-cache": "pnpm run build && dotenv-run -r ../.. -- node tests/sticky-cache.mjs",
+        "test:sticky-recovery": "pnpm run build && dotenv-run -r ../.. -- node tests/sticky-recovery.mjs"
     },
     "exports": {
         ".": {

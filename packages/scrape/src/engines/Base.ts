@@ -1,3 +1,4 @@
+import { freshBrowserRequestData } from "../core/BrowserRecoveryPolicy.js";
 import { BrowserCrawlingContext, CheerioCrawlingContext, Configuration, enqueueLinks, PlaywrightCrawlingContext, ProxyConfiguration, PuppeteerCrawlingContext, RequestQueue, sleep, Request } from "crawlee";
 import { Dictionary } from "crawlee";
 import { Utils } from "../Utils.js";
@@ -25,6 +26,8 @@ import { BandwidthManager } from "../managers/Bandwidth.js";
 import { getResolvedProxyModeName } from "../managers/Proxy.js";
 import { ensureChallengeState, consumeProxyAction } from "../challenges/ChallengeContext.js";
 import { ProxyCacheManager } from "../managers/ProxyCacheManager.js";
+import { ensureCloudflarePageRecovered } from "../challenges/cloudflare/CloudflareChallengeHandler.js";
+import { getCloudflareRecovery, CloudflareRecoveryError } from "../challenges/cloudflare/CloudflarePageRecovery.js";
 import { smartWaitForDOMStable } from "../utils/smartWait.js";
 import { proxyConfigurationId, proxyForCache } from "../core/StickyProxyContext.js";
 
@@ -466,9 +469,7 @@ export abstract class BaseEngine {
                     ...(includeRegexps.length > 0 ? { regexps: includeRegexps } : {}),
                     ...(exclude.length > 0 ? { exclude } : {}),
                     // Pass along the userData to new requests
-                    userData: {
-                        ...context.request.userData,
-                    },
+                    userData: freshBrowserRequestData(context.request.userData),
                     // Use 'all' strategy to crawl more broadly, or 'same-domain' for same domain
                     strategy: strategy,
                     // Keep original limit to ensure we don't under-enqueue
@@ -796,16 +797,8 @@ export abstract class BaseEngine {
                 return;
             }
 
-            const userData = (context.request.userData || {}) as any;
-            if (userData._anycrawlPostChallengeSettled) {
-                return;
-            }
-            userData._anycrawlPostChallengeSettled = true;
+            await ensureCloudflarePageRecovered(page, context.request);
 
-            await smartWaitForDOMStable(page, context.request.url, {
-                label: "postChallenge",
-                useCache: false,
-            });
         };
 
         const requestHandler = async (context: CrawlingContext) => {
@@ -831,11 +824,30 @@ export abstract class BaseEngine {
                 // Ignore errors when accessing proxyInfo or session
             }
 
+            const cfState = ensureChallengeState(context.request);
+            if (cfState.cleared && (context as any).page) {
+                const latest = getCloudflareRecovery((context as any).page)?.lastResponse;
+                if (latest) (context as any).response = latest;
+            }
+            if (['failed', 'cancelled'].includes(cfState.phase ?? '') && !cfState.proxyAction
+                && Boolean(cfState.lastError?.code?.startsWith('CF_'))) {
+                context.request.noRetry = true;
+                throw new CloudflareRecoveryError(cfState.lastError?.code || 'CF_CONTENT_TIMEOUT');
+            }
+            if ((cfState.requiresContentRecovery || cfState.cleared) && (context as any).page) {
+                await ensureCloudflarePageRecovered((context as any).page, context.request);
+                const latest = getCloudflareRecovery((context as any).page)?.lastResponse;
+                if (latest) (context as any).response = latest;
+            }
             const httpCheck = await checkHttpError(context);
             const isHttpError = httpCheck.isHttpError;
             const effectiveStatus = httpCheck.effectiveStatus;
+            if (config.proxy.stickyEnabled && effectiveStatus?.statusCode === 407) {
+                throw Object.assign(new Error('Proxy authentication failed'), { statusCode: 407 });
+            }
 
-            if (isHttpError && httpCheck.rawStatus) {
+            const unresolvedChallenge = cfState.detected && cfState.unresolved;
+            if ((isHttpError && httpCheck.rawStatus) || unresolvedChallenge) {
                 const userData = (context.request.userData || {}) as any;
                 const challengeState = ensureChallengeState(context.request);
                 const queueName = userData.queueName || "unknown";
@@ -873,7 +885,7 @@ export abstract class BaseEngine {
                     throw retryError;
                 }
 
-                if (effectiveStatus?.statusCode === 403) {
+                if (effectiveStatus?.statusCode === 403 && !config.proxy.stickyEnabled) {
                     try {
                         const session = (context as any).session;
                         if (session && typeof session.retire === "function") {
@@ -891,6 +903,7 @@ export abstract class BaseEngine {
                     retryError.name = "AnycrawlHttp403RetryError";
                     throw retryError;
                 }
+                if (unresolvedChallenge) throw new CloudflareRecoveryError('CF_CHALLENGE_UNRESOLVED');
             }
 
             await settleAfterSolvedChallenge(context);
@@ -1168,6 +1181,7 @@ export abstract class BaseEngine {
                                 log.debug(`[templateExecutionContext] created with keys: ${Object.keys(templateExecutionContext).join(',')}, preNavHost exists: ${!!templateExecutionContext.preNavHost}`);
 
                                 log.info(`[${context.request.userData.queueName}] [${context.request.userData.jobId}] Template execution started: ${templateId}`);
+                                (context.request.userData as any)._anycrawlSideEffectsStarted = true;
                                 const result = await this.templateClient!.executeTemplate(templateId as string, templateExecutionContext);
                                 log.info(`[${context.request.userData.queueName}] [${context.request.userData.jobId}] Template execution completed: ${templateId}`);
                                 return result;
@@ -1211,7 +1225,9 @@ export abstract class BaseEngine {
                     templateExecutionResolver?.();
                 }
 
+                (context as any).__anycrawlAbortSignal?.throwIfAborted();
                 data = await enrichChallengePayload(data);
+                (context as any).__anycrawlAbortSignal?.throwIfAborted();
 
                 // Run custom handler if provided
                 if (customRequestHandler) {
@@ -1364,6 +1380,7 @@ export abstract class BaseEngine {
                                 browser_runtime: getBrowserRuntimeForCache((context.request.userData as any).engine),
                             };
 
+                            (context as any).__anycrawlAbortSignal?.throwIfAborted();
                             await CacheManager.getInstance().saveToCache(
                                 context.request.url,
                                 cacheKeyOptions as any,
@@ -1393,7 +1410,12 @@ export abstract class BaseEngine {
                             if (domain) {
                                 const stableProxy = proxyForCache(context)!;
                                 log.debug(`[ProxyCache] Recording success: domain=${domain}, proxy=${proxyConfigurationId(stableProxy)}, mode=${proxyMode}`);
-                                proxyCache.recordDomainSuccess(domain, stableProxy, proxyMode).catch(() => {
+                                const data = context.request.userData as any;
+                                const success = proxyInfo.stickyProxyTemplate
+                                    ? proxyCache.recordStickySuccess(domain, stableProxy, data._anycrawlSelectedMode ?? proxyMode,
+                                        Boolean(data._anycrawlUpgradeEvidence), data._anycrawlBrowserStartedAt ?? Date.now())
+                                    : proxyCache.recordDomainSuccess(domain, stableProxy, proxyMode);
+                                await success.catch(() => {
                                     // Ignore cache recording errors
                                 });
                             }
@@ -1451,6 +1473,7 @@ export abstract class BaseEngine {
             const { queueName, jobId } = context.request.userData;
 
             log.info(`[${queueName}] [${jobId}] Persisting result for ${context.request.url}`);
+            (context as any).__anycrawlAbortSignal?.throwIfAborted();
             // store into job table
 
             // Update job status if jobId exists

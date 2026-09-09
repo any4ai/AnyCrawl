@@ -84,7 +84,12 @@ describe('sticky browser lifecycle', () => {
         pool = new FakePool(options.browserPoolOptions); manager.attach(pool);
     });
     afterEach(async () => { await manager.destroy(); jest.useRealTimers(); });
-    const context = () => ({ id: String(++sequence), request: { noRetry: false }, proxyInfo: { url: template }, page: undefined as any });
+    it('prevents Crawlee session error scoring and cookie replay from overriding lease health', () => {
+        expect(manager.configure({useSessionPool:true,persistCookiesPerSession:true})).toMatchObject({
+            useSessionPool:false,persistCookiesPerSession:false,
+        });
+    });
+    const context = () => ({ id: String(++sequence), request: { url: "https://target.test/", userData: {}, noRetry: false }, proxyInfo: { url: template }, page: undefined as any });
     const request = async (url = template, action: (ctx: any) => Promise<void> = async () => {}, budget = 30_000) => {
         const ctx = context();
         try {
@@ -105,6 +110,33 @@ describe('sticky browser lifecycle', () => {
         expect(a.proxyInfo.url).not.toContain('{sessionId}');
         expect((b.proxyInfo as any).stickyProxyTemplate).toBe(template);
         expect(pool.launched).toHaveLength(1);
+    });
+    it('keeps the healthy identity after a content timeout and disables retry', async () => {
+        const first = await request(); let failed: any;
+        await expect(request(template, async ctx => {
+            failed = ctx; const error = new Error('CF_CONTENT_TIMEOUT'); error.name = 'TimeoutError'; throw error;
+        })).rejects.toThrow('CF_CONTENT_TIMEOUT');
+        expect(failed.request.noRetry).toBe(true);
+        const next = await request();
+        expect(next.proxyInfo.url).toBe(first.proxyInfo.url);
+    });
+    it('excludes the failed origin but leaves the lease usable for other origins', async () => {
+        const first = await request();
+        await expect(request(template, async () => { throw new Error('ANYCRAWL_PROXY_ACTION_ROTATE_PROXY'); })).rejects.toThrow('ROTATE');
+        const ctx = context(); ctx.request.url = 'https://other.test/';
+        await manager.run(ctx, 30000, async () => { ctx.page = await pool.newPage({id:ctx.id,proxyUrl:template}); });
+        await ctx.page.close();
+        expect(ctx.proxyInfo.url).toBe(first.proxyInfo.url);
+        expect((await request()).proxyInfo.url).not.toBe(first.proxyInfo.url);
+    });
+    it('shares the original execution deadline across retries', async () => {
+        const ctx = context();
+        await expect(manager.run(ctx, 30000, async () => { throw new Error('net::ERR_PROXY_CONNECTION_FAILED'); })).rejects.toThrow('PROXY');
+        await jest.advanceTimersByTimeAsync(30001);
+        const operation = jest.fn(async () => {});
+        await expect(manager.run(ctx, 30000, operation)).rejects.toThrow('timed out');
+        expect(operation).not.toHaveBeenCalled();
+        expect(ctx.request.noRetry).toBe(true);
     });
     it('shares concurrent capacity without launching two browsers with one session', async () => {
         const gate = deferred(), ready = deferred(); let opened = 0;
@@ -134,6 +166,7 @@ describe('sticky browser lifecycle', () => {
         expect(a.page.controller.closed).toBe(true);
         expect(pool.activeBrowserControllers.size).toBe(0);
         expect(pool.launched).toHaveLength(1);
+        expect(manager.lifecycleHistory()).toEqual([expect.objectContaining({retireReason:'ttl'})]);
         const b = await request(); expect(b.proxyInfo.url).not.toBe(a.proxyInfo.url);
     });
     it('rejects incompatible task budgets before launching', async () => {

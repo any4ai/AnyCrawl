@@ -1,5 +1,6 @@
 import { DomainCache } from "./DomainCache.js";
 import { log } from "@anycrawl/libs";
+import { Deadline } from "./Deadline.js";
 
 const cache = new DomainCache<{ avgMs: number; samples: number }>("ac:swait");
 
@@ -8,6 +9,7 @@ export interface SmartWaitOptions {
     stableMs?: number;
     useCache?: boolean;
     label?: string;
+    deadlineAt?: number;
 }
 
 export async function smartWaitForDOMStable(
@@ -16,12 +18,14 @@ export async function smartWaitForDOMStable(
     opts: SmartWaitOptions = {},
 ): Promise<void> {
     const {
-        maxWaitMs = 5000,
+        maxWaitMs: configuredMaxWaitMs = 5000,
         stableMs = 300,
         useCache = true,
         label = "smartWait",
     } = opts;
     if (!page || page.isClosed?.()) return;
+    const maxWaitMs = Math.max(0, Math.min(configuredMaxWaitMs, (opts.deadlineAt ?? Infinity) - Date.now()));
+    if (maxWaitMs <= 0) return;
 
     let domain: string;
     try {
@@ -44,7 +48,7 @@ export async function smartWaitForDOMStable(
 
     const start = Date.now();
     try {
-        await page.evaluate(
+        await new Deadline(Math.min(Date.now() + maxWaitMs, opts.deadlineAt ?? Infinity)).run(() => page.evaluate(
             ({ maxWaitMs, stableMs }: { maxWaitMs: number; stableMs: number }) =>
                 new Promise<void>((resolve) => {
                     const target = document.body || document.documentElement;
@@ -73,7 +77,7 @@ export async function smartWaitForDOMStable(
                     mt = setTimeout(done, maxWaitMs);
                 }),
             { maxWaitMs, stableMs },
-        );
+        ));
     } catch {
         // page closed or navigated during evaluate
     }

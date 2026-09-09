@@ -1,4 +1,6 @@
 export interface TurnstileSolverInput {
+    deadlineAt?: number;
+    signal?: AbortSignal;
     pageUrl: string;
     sitekey: string;
     data?: string;

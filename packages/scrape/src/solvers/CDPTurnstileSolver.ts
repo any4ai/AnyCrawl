@@ -1,4 +1,8 @@
 import { log } from '@anycrawl/libs';
+import { randomUUID } from 'node:crypto';
+import { captureTurnstileBinding, injectTurnstileBinding, releaseTurnstileBinding } from '../challenges/cloudflare/TurnstileBinding.js';
+import { Deadline, DeadlineExceededError } from '../utils/Deadline.js';
+import { inspectCloudflarePage } from '../challenges/cloudflare/CloudflareDetection.js';
 import { TwoCaptchaTurnstileProvider } from './providers/TwoCaptchaTurnstileProvider.js';
 import type { TurnstileSolverProvider } from './providers/TurnstileSolverProvider.js';
 
@@ -27,6 +31,8 @@ export interface CDPTurnstileSolveDirectResult {
 interface CDPTurnstileSolveDirectOptions {
     forceAttempt?: boolean;
     skipInFlightWait?: boolean;
+    deadlineAt?: number;
+    signal?: AbortSignal;
 }
 
 export interface CDPTurnstileSolverOptions {
@@ -34,6 +40,7 @@ export interface CDPTurnstileSolverOptions {
     twoCaptchaKey?: string;
     provider?: TurnstileSolverProvider;
     solveTimeoutMs?: number;
+    preserveUserAgent?: boolean;
 }
 
 interface TurnstileInterceptParams {
@@ -45,7 +52,7 @@ interface TurnstileInterceptParams {
     userAgent?: string;
 }
 
-const TURNSTILE_INTERCEPT_SCRIPT = `
+export const TURNSTILE_INTERCEPT_SCRIPT = `
 (function () {
     if (window.__anycrawlTurnstileHookInstalled) return;
     window.__anycrawlTurnstileHookInstalled = true;
@@ -196,7 +203,6 @@ const TURNSTILE_INTERCEPT_SCRIPT = `
             userAgent: navigator.userAgent
         };
 
-        window.__anycrawlTurnstileSolving = true;
         window.__anycrawlTurnstileParams = params;
         if (typeof opts.callback === 'function') {
             window.__anycrawlTurnstileCallback = opts.callback;
@@ -209,7 +215,6 @@ const TURNSTILE_INTERCEPT_SCRIPT = `
         }
 
         try {
-            console.log('intercepted-params:' + JSON.stringify(params));
             console.log('anycrawl-turnstile-params:' + JSON.stringify(params));
         } catch (e) {}
 
@@ -217,87 +222,33 @@ const TURNSTILE_INTERCEPT_SCRIPT = `
     };
     window.__anycrawlCaptureTurnstile = capture;
 
-    const proxyTurnstile = {
-        __isAnycrawlProxy: true,
-        render: function (container, options) {
-            if (window.__anycrawlTurnstileSolved || window.__turnstileSolved) return 'already-solved';
-            try { capture(container, options || {}); } catch (e) {}
-            return 'anycrawl-proxy-widget-id';
-        },
-        execute: function (container, options) {
-            if (window.__anycrawlTurnstileSolved || window.__turnstileSolved) return 'already-solved';
-            return this.render(container, options || {});
-        },
-        getResponse: function () {
-            return null;
-        },
-        reset: function () {
-            return undefined;
-        },
-        remove: function () {
-            return undefined;
-        },
-        isExpired: function () {
-            return false;
-        }
-    };
-
-    let currentTurnstile = proxyTurnstile;
-
-    try {
-        Object.defineProperty(window, 'turnstile', {
-            configurable: true,
-            get: function () {
-                return currentTurnstile;
-            },
-            set: function (value) {
-                window.__anycrawlTurnstileDetected = true;
-                currentTurnstile = proxyTurnstile;
-            }
-        });
-    } catch (e) {
-        // ignore defineProperty errors; polling fallback will handle late-loaded real turnstile
-    }
-
-    window.__anycrawlTurnstileReady = true;
-})();
-`;
-
-const TURNSTILE_POLLING_SCRIPT = `
-(function () {
-    if (window.__anycrawlTurnstilePollingInstalled) return;
-    window.__anycrawlTurnstilePollingInstalled = true;
-
-    const intervalId = setInterval(function () {
+    // Capture initialization parameters while preserving the real widget and callbacks.
+    const wrapped = new WeakSet();
+    const wrap = function (value) {
+        if (!value || (typeof value !== 'object' && typeof value !== 'function') || wrapped.has(value)) return value;
+        if (typeof value.render !== 'function') return value;
+        const render = value.render;
         try {
-            if (window.__anycrawlTurnstileSolved || window.__turnstileSolved) {
-                clearInterval(intervalId);
-                return;
-            }
-
-            const capture = window.__anycrawlCaptureTurnstile;
-            const turnstile = window.turnstile;
-            if (typeof capture !== 'function' || !turnstile) return;
-            if (turnstile.__isAnycrawlProxy || turnstile.__isAnycrawlPatched) return;
-
-            turnstile.__isAnycrawlPatched = true;
-
-            turnstile.render = function (container, options) {
-                if (window.__anycrawlTurnstileSolved || window.__turnstileSolved) return 'already-solved';
+            value.render = function (container, options) {
                 try { capture(container, options || {}); } catch (e) {}
-                return 'anycrawl-intercepted-widget';
+                return Reflect.apply(render, this, arguments);
             };
-            if (typeof turnstile.execute === 'function') {
-                turnstile.execute = function (container, options) {
-                    return turnstile.render(container, options || {});
-                };
-            }
+            wrapped.add(value);
         } catch (e) {}
-    }, 1);
-
-    setTimeout(function () {
-        clearInterval(intervalId);
-    }, 20000);
+        return value;
+    };
+    // Never predefine window.turnstile: the real loader can treat its presence as
+    // an already-initialized API. Observe the real object, then preserve its calls.
+    wrap(window.turnstile);
+    const interval = setInterval(function () {
+        const value = window.turnstile;
+        wrap(value);
+        if (value && wrapped.has(value)) clearInterval(interval);
+    }, 10);
+    const stop = function () { clearInterval(interval); };
+    window.addEventListener('pagehide', stop, { once: true });
+    setTimeout(stop, 20000);
+    window.__anycrawlTurnstileReady = true;
 })();
 `;
 
@@ -307,10 +258,13 @@ const TURNSTILE_POLLING_SCRIPT = `
 export class CDPTurnstileSolver {
     private readonly provider: TurnstileSolverProvider | null;
     private readonly solveTimeoutMs: number;
+    private readonly preserveUserAgent: boolean;
 
+    private inFlightSolve: { page: any; promise: Promise<CDPTurnstileSolveDirectResult> } | null = null;
     private detected = false;
     private solving = false;
     private solved = false;
+    private navigationListener: ((frame: any) => void) | null = null;
     private consoleListener: ((msg: any) => void) | null = null;
     private lastResult: CDPTurnstileSolverResult | null = null;
     private lastCapturedParams: TurnstileInterceptParams | null = null;
@@ -319,6 +273,7 @@ export class CDPTurnstileSolver {
 
     constructor(options: CDPTurnstileSolverOptions) {
         this.solveTimeoutMs = options.solveTimeoutMs ?? 60000;
+        this.preserveUserAgent = options.preserveUserAgent ?? false;
         if (options.provider) {
             this.provider = options.provider;
             return;
@@ -358,37 +313,58 @@ export class CDPTurnstileSolver {
         page?: any,
         options?: CDPTurnstileSolveDirectOptions
     ): Promise<CDPTurnstileSolveDirectResult> {
-        return this.solveByProvider(pageUrl, page, options);
+        if (this.inFlightSolve) {
+            if (this.inFlightSolve.page === page) return this.inFlightSolve.promise;
+            return { success: false, errorCode: 'TWOCAPTCHA_SOLVER_BUSY', errorDescription: 'Solver is already bound to another page' };
+        }
+        const promise = Promise.resolve().then(() => this.solveDirectOnce(pageUrl, page, options));
+        this.inFlightSolve = { page, promise };
+        try { return await promise; }
+        finally { if (this.inFlightSolve?.promise === promise) this.inFlightSolve = null; }
+    }
+
+    private async solveDirectOnce(
+        pageUrl: string,
+        page?: any,
+        options?: CDPTurnstileSolveDirectOptions
+    ): Promise<CDPTurnstileSolveDirectResult> {
+        const deadline = new Deadline(Math.min(Date.now() + this.solveTimeoutMs, options?.deadlineAt ?? Infinity));
+        const controller = new AbortController();
+        const onClose = () => controller.abort();
+        page?.once?.('close', onClose);
+        options?.signal?.addEventListener('abort', onClose, { once: true });
+        if (options?.signal?.aborted) controller.abort();
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        try {
+            deadline.check();
+            timer = setTimeout(() => controller.abort(), deadline.remainingMs);
+            return await this.solveByProvider(pageUrl, page, options, deadline, controller.signal);
+        } catch (error) {
+            const errorCode = error instanceof DeadlineExceededError || deadline.remainingMs <= 0
+                ? 'TWOCAPTCHA_TIMEOUT' : controller.signal.aborted ? 'TWOCAPTCHA_CANCELLED' : 'TWOCAPTCHA_SOLVER_ERROR';
+            this.lastResult = { enabled: Boolean(this.provider), attempted: this.detected, solved: false,
+                errorCode, errorDescription: error instanceof Error ? error.message : String(error) };
+            if (page) page.__anycrawlTurnstileSolveResult = this.lastResult;
+            return { success: false, errorCode, errorDescription: this.lastResult.errorDescription };
+        } finally {
+            if (timer) clearTimeout(timer);
+            controller.abort();
+            page?.off?.('close', onClose);
+            options?.signal?.removeEventListener('abort', onClose);
+        }
     }
 
     /**
      * Check if the current page is a Cloudflare Challenge page.
      */
     async isChallenge(page: any): Promise<boolean> {
-        try {
-            return await page.evaluate(() => {
-                const title = (document.title || '').toLowerCase();
-                const bodyText = (document.body?.innerText || '').toLowerCase();
-
-                return (
-                    title.includes('just a moment')
-                    || title.includes('checking your browser')
-                    || title.includes('performing security verification')
-                    || bodyText.includes('performing security verification')
-                    || bodyText.includes('security service to protect against malicious bots')
-                    || bodyText.includes('enable javascript and cookies to continue')
-                );
-            });
-        } catch {
-            return false;
-        }
+        return (await inspectCloudflarePage(page)).detected;
     }
 
     async setup(page: any): Promise<void> {
         if (!page || (page as any).__anycrawlTurnstileSolverSetup) return;
         (page as any).__anycrawlTurnstileSolverSetup = true;
 
-        await this.setupChallengeScriptInterception(page);
         await this.installInterceptScript(page);
 
         if (!this.consoleListener) {
@@ -396,6 +372,8 @@ export class CDPTurnstileSolver {
                 void this.handleConsoleMessage(page, msg);
             };
             page.on('console', this.consoleListener);
+            this.navigationListener = (frame: any) => { if (frame === page.mainFrame?.()) this.clearCapturedParams(); };
+            page.on('framenavigated', this.navigationListener);
             page.once('close', () => {
                 void this.cleanup(page);
             });
@@ -412,6 +390,8 @@ export class CDPTurnstileSolver {
                 // ignore
             }
         }
+        if (page && this.navigationListener) page.off?.('framenavigated', this.navigationListener);
+        this.navigationListener = null;
         this.consoleListener = null;
         this.lastCapturedParams = null;
         this.lastCapturedAt = 0;
@@ -419,9 +399,13 @@ export class CDPTurnstileSolver {
 
     private async solveByProvider(
         pageUrl: string,
-        page?: any,
-        options?: CDPTurnstileSolveDirectOptions
+        page: any,
+        options: CDPTurnstileSolveDirectOptions | undefined,
+        deadline: Deadline,
+        signal: AbortSignal
     ): Promise<CDPTurnstileSolveDirectResult> {
+        deadline.check();
+        signal.throwIfAborted();
         const forceAttempt = Boolean(options?.forceAttempt);
         if (!this.provider) {
             const errorCode = 'TWOCAPTCHA_CLIENT_MISSING';
@@ -460,7 +444,7 @@ export class CDPTurnstileSolver {
         const cachedParams = this.getFreshCapturedParams(pageUrl);
         if (cachedParams?.sitekey) {
             log.debug(`[CDPTurnstileSolver] Using cached captured params for ${pageUrl}`);
-            return this.solveWithTurnstileParams(page, cachedParams);
+            return this.solveWithTurnstileParams(page, cachedParams, deadline, signal);
         }
 
         // Fast guard: if page is clearly not a Turnstile/Cloudflare challenge,
@@ -506,7 +490,9 @@ export class CDPTurnstileSolver {
             }
         }
 
-        const params = await this.extractTurnstileParams(page, pageUrl);
+        const params = await deadline.run(() => this.extractTurnstileParams(page, pageUrl, deadline, signal, forceAttempt), signal);
+        deadline.check();
+        signal.throwIfAborted();
         if (!params || !params.sitekey) {
             const errorCode = 'TWOCAPTCHA_PARAMS_MISSING';
             const errorDescription = 'Could not extract Turnstile params from page runtime';
@@ -525,7 +511,7 @@ export class CDPTurnstileSolver {
             };
         }
 
-        return this.solveWithTurnstileParams(page, params);
+        return this.solveWithTurnstileParams(page, params, deadline, signal);
     }
 
     private setCapturedParams(params: TurnstileInterceptParams): void {
@@ -543,6 +529,13 @@ export class CDPTurnstileSolver {
         if (!this.lastCapturedParams?.sitekey) return null;
         const ageMs = Date.now() - this.lastCapturedAt;
         if (ageMs > Math.min(this.solveTimeoutMs, 120000)) return null;
+        if (this.lastCapturedParams.pageurl) {
+            try {
+                const expected = new URL(pageUrl), captured = new URL(this.lastCapturedParams.pageurl);
+                const clean = (url: URL) => { url.hash = ''; for (const key of [...url.searchParams.keys()]) if (key.startsWith('__cf_chl_')) url.searchParams.delete(key); return url.href; };
+                if (clean(expected) !== clean(captured)) return null;
+            } catch { return null; }
+        }
         if (!this.lastCapturedParams.pageurl) {
             return {
                 ...this.lastCapturedParams,
@@ -554,7 +547,9 @@ export class CDPTurnstileSolver {
 
     private async solveWithTurnstileParams(
         page: any,
-        params: TurnstileInterceptParams
+        params: TurnstileInterceptParams,
+        deadline: Deadline,
+        signal: AbortSignal
     ): Promise<CDPTurnstileSolveDirectResult> {
         if (!this.provider) {
             return {
@@ -577,16 +572,38 @@ export class CDPTurnstileSolver {
         this.solving = true;
         this.detected = true;
         this.solved = false;
+        const bindingId = randomUUID();
+        let boundContext: any;
 
         try {
-            const solveResult = await this.provider.solve({
+            for (const context of [page, ...(page.frames?.() ?? [])]) {
+                deadline.check(); signal.throwIfAborted();
+                try {
+                    if (await deadline.run(() => context.evaluate(captureTurnstileBinding, { id: bindingId, params }), signal)) {
+                        boundContext = context; break;
+                    }
+                } catch (error) { if (deadline.remainingMs <= 0 || signal.aborted) throw error; }
+            }
+            if (!boundContext) {
+                this.lastResult = { enabled: true, attempted: false, solved: false,
+                    errorCode: 'TWOCAPTCHA_CONTEXT_UNBOUND', errorDescription: 'Cannot bind current parameters to a live callback or response field' };
+                page.__anycrawlTurnstileSolveResult = this.lastResult;
+                return { success: false, errorCode: this.lastResult.errorCode, errorDescription: this.lastResult.errorDescription };
+            }
+            deadline.check();
+            signal.throwIfAborted();
+            const solveResult = await deadline.run(() => this.provider!.solve({
                 pageUrl: normalizedPageUrl,
                 sitekey: params.sitekey,
                 data: params.data,
                 pagedata: params.pagedata,
                 action: params.action,
                 userAgent: params.userAgent,
-            });
+                deadlineAt: deadline.expiresAt,
+                signal,
+            }), signal);
+            deadline.check();
+            signal.throwIfAborted();
 
             if (!solveResult.success || !solveResult.token) {
                 this.lastResult = {
@@ -606,11 +623,32 @@ export class CDPTurnstileSolver {
                 };
             }
 
-            await this.applySolvedUserAgent(page, solveResult.userAgent);
+            if (this.preserveUserAgent && solveResult.userAgent && solveResult.userAgent !== params.userAgent) {
+                this.lastResult = { enabled: true, attempted: true, solved: false,
+                    errorCode: 'TWOCAPTCHA_USER_AGENT_MISMATCH',
+                    errorDescription: 'Solver returned a different user agent; native browser identity was preserved' };
+                page.__anycrawlTurnstileSolveResult = this.lastResult;
+                return { success: false, errorCode: this.lastResult.errorCode, errorDescription: this.lastResult.errorDescription };
+            }
+            if (!this.preserveUserAgent)
+                await deadline.run(() => this.applySolvedUserAgent(page, solveResult.userAgent), signal);
+            deadline.check();
+            signal.throwIfAborted();
             this.lastInjectError = null;
-            let injectMethod = await this.injectTurnstileToken(page, solveResult.token);
+            let injectMethod: string;
+            try { injectMethod = await deadline.run(() => boundContext.evaluate(injectTurnstileBinding, { id: bindingId, token: solveResult.token! }), signal); }
+            catch (error) {
+                if (signal.aborted || deadline.remainingMs <= 0) throw error;
+                injectMethod = 'stale-binding';
+            }
+            if (injectMethod === 'stale-binding') {
+                this.lastResult = { enabled: true, attempted: true, solved: false, taskId: solveResult.taskId,
+                    errorCode: 'TWOCAPTCHA_STALE_RESULT', errorDescription: 'Document, challenge parameters, or callback changed while solving' };
+                page.__anycrawlTurnstileSolveResult = this.lastResult;
+                return { success: false, taskId: solveResult.taskId, errorCode: this.lastResult.errorCode, errorDescription: this.lastResult.errorDescription };
+            }
 
-            const solved = injectMethod !== 'no-target' && injectMethod !== 'inject-error';
+            const solved = !['no-target', 'inject-error', 'callback-error'].includes(injectMethod);
             const injectErrorDescription = injectMethod === 'inject-error'
                 ? (this.lastInjectError || 'Token generated but injection script execution failed')
                 : 'Token generated but injection target not found';
@@ -637,6 +675,7 @@ export class CDPTurnstileSolver {
                 errorDescription: solved ? undefined : injectErrorDescription,
             };
         } catch (error) {
+            if (error instanceof DeadlineExceededError || signal.aborted) throw error;
             const message = error instanceof Error ? error.message : String(error);
             this.lastResult = {
                 enabled: true,
@@ -653,6 +692,11 @@ export class CDPTurnstileSolver {
             };
         } finally {
             this.solving = false;
+            if (!this.solved && boundContext && !page.isClosed?.() && !signal.aborted && deadline.remainingMs > 0) {
+                // No new page evaluation after cancellation/deadline. A replaced document discards its map.
+                await new Deadline(Math.min(deadline.expiresAt, Date.now() + 1000))
+                    .run(() => boundContext.evaluate(releaseTurnstileBinding, bindingId), signal).catch(() => {});
+            }
         }
     }
 
@@ -705,13 +749,15 @@ export class CDPTurnstileSolver {
         }
     }
 
-    private async extractTurnstileParams(page: any, pageUrl: string): Promise<TurnstileInterceptParams | null> {
+    private async extractTurnstileParams(page: any, pageUrl: string, deadline: Deadline, signal: AbortSignal, confirmedChallenge: boolean): Promise<TurnstileInterceptParams | null> {
         const envAttempts = parseInt(process.env.ANYCRAWL_2CAPTCHA_PARAM_ATTEMPTS || '', 10);
         const envWaitMs = parseInt(process.env.ANYCRAWL_2CAPTCHA_PARAM_WAIT_MS || '', 10);
         const waitMs = Number.isFinite(envWaitMs) && envWaitMs > 0 ? envWaitMs : 300;
         const maxAttempts = Number.isFinite(envAttempts) && envAttempts > 0 ? envAttempts : 45;
 
         for (let attempt = 0; attempt < maxAttempts; attempt++) {
+            deadline.check();
+            signal.throwIfAborted();
             if (!page || page.isClosed?.()) return null;
 
             // Console interception may capture params asynchronously while we are polling.
@@ -730,8 +776,9 @@ export class CDPTurnstileSolver {
             }
 
             // If the page has already moved away from challenge and still has no turnstile hints,
-            // abort early to avoid unnecessary waiting.
-            if (attempt >= 6 && attempt % 3 === 0) {
+            // abort early only when the caller did not confirm a blocking response.
+            // A branded challenge can lack these DOM hints while its widget is still loading.
+            if (!confirmedChallenge && attempt >= 6 && attempt % 3 === 0) {
                 const challengeStill = await this.isChallenge(page);
                 if (!challengeStill) {
                     const hasTurnstileHints = await page.evaluate(() => {
@@ -776,7 +823,7 @@ export class CDPTurnstileSolver {
                     log.debug(`[CDPTurnstileSolver] Param polling captured params before sleep for ${pageUrl} (attempt=${attempt + 1})`);
                     return cachedBeforeSleep;
                 }
-                await new Promise((resolve) => setTimeout(resolve, waitMs));
+                await deadline.sleep(waitMs);
             }
         }
 
@@ -1389,58 +1436,12 @@ export class CDPTurnstileSolver {
         return mainResult;
     }
 
-    private async setupChallengeScriptInterception(page: any): Promise<void> {
-        const isPlaywrightLike = typeof page?.route === 'function' && typeof page?.context === 'function';
-        if (!isPlaywrightLike) return;
-        if ((page as any).__anycrawlTurnstileRouteHookInstalled) return;
-        (page as any).__anycrawlTurnstileRouteHookInstalled = true;
-
-        try {
-            await page.route('**/*', async (route: any) => {
-                const proceed = async () => {
-                    if (typeof route?.fallback === 'function') {
-                        return route.fallback();
-                    }
-                    return route.continue();
-                };
-
-                const requestUrl = route.request().url();
-                const isChallengeScript = requestUrl.includes('challenges.cloudflare.com')
-                    && (requestUrl.includes('/turnstile/') || requestUrl.includes('/cdn-cgi/'));
-                if (!isChallengeScript) {
-                    return proceed();
-                }
-
-                try {
-                    for (let i = 0; i < 8; i++) {
-                        const scriptReady = await page.evaluate(() => Boolean(
-                            (window as any).__anycrawlTurnstileHookInstalled
-                            && (window as any).__anycrawlTurnstileReady
-                        ))
-                            .catch(() => false);
-                        if (scriptReady) break;
-                        await new Promise((resolve) => setTimeout(resolve, 40));
-                    }
-                    await new Promise((resolve) => setTimeout(resolve, 40));
-                } catch {
-                    // ignore interception wait errors
-                }
-
-                return proceed();
-            });
-        } catch (error) {
-            log.debug(`[CDPTurnstileSolver] failed to install script interception route: ${error instanceof Error ? error.message : String(error)}`);
-        }
-    }
-
     private async installInterceptScript(page: any): Promise<void> {
         try {
             if (typeof page.addInitScript === 'function') {
                 await page.addInitScript(TURNSTILE_INTERCEPT_SCRIPT);
-                await page.addInitScript(TURNSTILE_POLLING_SCRIPT);
             } else if (typeof page.evaluateOnNewDocument === 'function') {
                 await page.evaluateOnNewDocument(TURNSTILE_INTERCEPT_SCRIPT);
-                await page.evaluateOnNewDocument(TURNSTILE_POLLING_SCRIPT);
             }
         } catch (error) {
             log.debug(`[CDPTurnstileSolver] failed to install intercept script: ${error instanceof Error ? error.message : String(error)}`);

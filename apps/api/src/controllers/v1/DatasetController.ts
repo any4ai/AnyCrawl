@@ -315,7 +315,7 @@ export class DatasetController {
             if (cursor === false) return;
 
             const page = await listDatasetRunItems(db, req.params.run_id!, { limit, cursor });
-            this.sendList(res, "items", page, serializeRecords(page.items));
+            this.sendList(res, "items", page, this.serializeItems(page.items));
         } catch (error) {
             this.handleError(error, res);
         }

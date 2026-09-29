@@ -11,6 +11,8 @@ import { jest, describe, it, expect, beforeEach } from "@jest/globals";
  */
 
 // --- Mocked collaborators (shared spies) -----------------------------------
+const getDatasetRun = jest.fn<(...args: any[]) => Promise<any>>();
+const listDatasetRunItems = jest.fn<(...args: any[]) => Promise<any>>();
 const getDB = jest.fn(async () => ({}));
 const getOwnedDataset = jest.fn<(db: any, id: string, owner: any) => Promise<any>>();
 const createDatasetExport = jest.fn<(db: any, params: any) => Promise<any>>();
@@ -34,8 +36,8 @@ jest.unstable_mockModule("@anycrawl/db", () => ({
     getDatasetProjectionFields: jest.fn(),
     getDatasetItems: jest.fn(),
     listDatasetRuns: jest.fn(),
-    getDatasetRun: jest.fn(),
-    listDatasetRunItems: jest.fn(),
+    getDatasetRun,
+    listDatasetRunItems,
     listDatasetChanges: jest.fn(),
     listRunWarnings: jest.fn(),
     // Pass-through: what the real helper does for a dataset with no retention policy.
@@ -240,5 +242,38 @@ describe("DatasetController.getExport (GET /v1/datasets/:id/exports/:export_id)"
 
         expect(getTemporaryUrl).not.toHaveBeenCalled();
         expect(res.body.data.download_url).toBeUndefined();
+    });
+});
+
+
+describe("DatasetController.runItems", () => {
+    it("returns a renderable document without renaming its nested keys", async () => {
+        getDatasetRun.mockResolvedValue({ uuid: "run-1" });
+        const document = { jsonResult: [{ userName: "example", nestedValue: null }] };
+        listDatasetRunItems.mockResolvedValue({
+            items: [{ uuid: "member-1", datasetItemId: "item-1", itemKey: "key-1", sourceUrl: "https://example.com", document, sequence: 1 }],
+            nextCursor: null,
+        });
+        const res = mockRes();
+        await new DatasetController().runItems(mockReq({ id: "ds-1", run_id: "run-1" }), res);
+        expect(res.statusCode).toBe(200);
+        expect(JSON.parse(JSON.stringify(res.body)).data.items[0]).toEqual({
+            uuid: "member-1", dataset_item_id: "item-1", item_key: "key-1",
+            source_url: "https://example.com", document, sequence: 1,
+        });
+        expect(getDatasetRun).toHaveBeenCalledWith(expect.anything(), "ds-1", "run-1");
+    });
+
+    it("does not read items for an inaccessible dataset or a run from another dataset", async () => {
+        getOwnedDataset.mockResolvedValueOnce(null);
+        const denied = mockRes();
+        await new DatasetController().runItems(mockReq({ id: "ds-1", run_id: "run-1" }), denied);
+        expect(denied.statusCode).toBe(404);
+        expect(listDatasetRunItems).not.toHaveBeenCalled();
+        getDatasetRun.mockResolvedValueOnce(null);
+        const mismatch = mockRes();
+        await new DatasetController().runItems(mockReq({ id: "ds-1", run_id: "other-run" }), mismatch);
+        expect(mismatch.statusCode).toBe(404);
+        expect(listDatasetRunItems).not.toHaveBeenCalled();
     });
 });

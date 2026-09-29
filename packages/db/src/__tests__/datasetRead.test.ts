@@ -28,6 +28,7 @@ process.env.ANYCRAWL_API_DB_TYPE = "sqlite";
 // Bare exports under test — Dataset.<method> detached from the class.
 let getDatasetItems: any;
 let listDatasetRuns: any;
+let listDatasetRunItems: any;
 let listDatasetChanges: any;
 let listDatasetsByOwner: any;
 let listRunWarnings: any;
@@ -84,6 +85,7 @@ beforeAll(async () => {
     ({
         getDatasetItems,
         listDatasetRuns,
+        listDatasetRunItems,
         listDatasetChanges,
         listDatasetsByOwner,
         listRunWarnings,
@@ -318,5 +320,56 @@ describe("Dataset.getItems jsonb filter/sort (json_extract via query_fields cata
         });
         expect(keysOf(p2)).toEqual([KEY(3)]);
         expect(p2.nextCursor).toBeNull();
+    });
+});
+
+
+describe("Dataset run items include documents", () => {
+    it("returns only the selected run's complete items in member cursor order", async () => {
+        const out = await seedSearch({
+            jobId: "run-document-1",
+            result: [
+                { url: "https://run.test/1", title: "One", nested: { camelCase: "preserved" } },
+                { url: "https://run.test/2", title: "Two" },
+                { url: "https://run.test/3", title: "Three" },
+            ],
+            dataset: { create: { name: "Run documents" } },
+        });
+        const runId = runIdOf(out.datasetId, "search", "run-document-1");
+        await seedSearch({
+            jobId: "run-document-2",
+            result: [{ url: "https://run.test/other", title: "Other run" }],
+            dataset: { datasetId: out.datasetId },
+        });
+        // A running producer may still have NULL sequence values. Those sort last.
+        sqlite.prepare("UPDATE dataset_run_items SET sequence = NULL WHERE dataset_run_id = ?").run(runId);
+        sqlite.prepare("UPDATE dataset_run_items SET sequence = 1 WHERE dataset_run_id = ? AND item_key = ?").run(runId, "https://run.test/2");
+        sqlite.prepare("UPDATE dataset_run_items SET sequence = 2 WHERE dataset_run_id = ? AND item_key = ?").run(runId, "https://run.test/1");
+        const members = sqlite.prepare("SELECT uuid, dataset_item_id, item_key FROM dataset_run_items WHERE dataset_run_id = ?").all(runId) as any[];
+        const items: any[] = [];
+        let cursor = null;
+        for (let i = 0; i < 3; i++) {
+            const page: { items: any[]; nextCursor: { v: number; id: string } | null } =
+                await listDatasetRunItems(db, runId, { limit: 1, cursor });
+            expect(page.items).toHaveLength(1);
+            const item = page.items[0];
+            const member = members.find(m => m.item_key === item.itemKey);
+            expect(item.uuid).toBe(member.uuid);
+            expect(item.datasetItemId).toBe(member.dataset_item_id);
+            expect(item.datasetRunId).toBe(runId);
+            expect(item.document).toEqual(expect.objectContaining({ url: item.sourceUrl }));
+            expect(item.firstSeenAt).toBeInstanceOf(Date);
+            expect(item.lastSeenAt).toBeInstanceOf(Date);
+            expect(item.isActive).toBe(true);
+            items.push(item);
+            cursor = page.nextCursor;
+            if (i < 2) expect(cursor).toEqual(expect.objectContaining({ id: member.uuid }));
+        }
+        expect(cursor).toBeNull();
+        expect(items.map(item => item.itemKey)).toEqual([
+            "https://run.test/2", "https://run.test/1", "https://run.test/3",
+        ]);
+        expect(items[1].document.nested).toEqual({ camelCase: "preserved" });
+        expect(await listDatasetRunItems(db, "missing-run", { limit: 1 })).toEqual({ items: [], nextCursor: null });
     });
 });

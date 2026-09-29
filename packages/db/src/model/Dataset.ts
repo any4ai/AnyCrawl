@@ -623,19 +623,25 @@ export class Dataset {
                 exprKeyset(seqExpr, schemas.datasetRunItems.uuid, "asc", Number(opts.cursor.v), opts.cursor.id)
             );
         }
-        // A run member is hidden when the item it points at is hidden. Join only
-        // when there is a cutoff, so datasets without a policy keep the old query.
+        // Keep member identity/order, but include the current document for rendering.
+        // Run membership is not a historical document snapshot.
         const { itemCutoff } = await datasetVisibilityCutoffsByRun(db, runId);
-        let query: any = db
-            .select({ item: schemas.datasetRunItems, sortValue: seqExpr })
-            .from(schemas.datasetRunItems);
-        if (itemCutoff) {
-            query = query.innerJoin(
+        const query = db
+            .select({
+                item: schemas.datasetRunItems,
+                document: schemas.datasetItems.document,
+                sourceUrl: schemas.datasetItems.sourceUrl,
+                firstSeenAt: schemas.datasetItems.firstSeenAt,
+                lastSeenAt: schemas.datasetItems.lastSeenAt,
+                isActive: schemas.datasetItems.isActive,
+                sortValue: seqExpr,
+            })
+            .from(schemas.datasetRunItems)
+            .innerJoin(
                 schemas.datasetItems,
                 eq(schemas.datasetRunItems.datasetItemId, schemas.datasetItems.uuid)
             );
-            conditions.push(visibleItemCondition(itemCutoff));
-        }
+        if (itemCutoff) conditions.push(visibleItemCondition(itemCutoff));
         const rows = await query
             .where(combine(conditions))
             .orderBy(sql`${seqExpr} ASC, ${schemas.datasetRunItems.uuid} ASC`)
@@ -647,7 +653,10 @@ export class Dataset {
         const nextCursor = hasMore && last
             ? { v: Number(last.sortValue), id: last.item.uuid }
             : null;
-        return { items: page.map((r: any) => r.item), nextCursor };
+        return {
+            items: page.map(({ item, sortValue, ...content }: any) => ({ ...item, ...content })),
+            nextCursor,
+        };
     }
 
     /** Dataset change history, filterable, cursor on (created_at DESC, uuid DESC). */

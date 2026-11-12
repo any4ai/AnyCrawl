@@ -55,6 +55,16 @@ Free trial available. Use code **PROXY90** for an exclusive 10% discount.
 
 [Rapidproxy](https://www.rapidproxy.io/?ref=AnyCrawl) — RapidProxy is a high-performance proxy provider offering clean residential proxies and native static ISP IPs for web scraping, browser automation, social media automation, e-commerce, multi-account management, and large-scale data operations. With 90M+ residential IPs, smart rotation, stable sessions, high concurrency, AI-powered CAPTCHA bypass, and non-expiring traffic, RapidProxy helps developers run reliable automation tasks at scale. Residential proxies start from $0.65/GB. Use code **RAPID10** for 10% off — try it now.
 
+<div align="center">
+  <p>
+    <a href="https://mangoproxy.com/?utm_source=any4ai&utm_medium=partner&utm_campaign=any4ai_github">
+      <img src="assets/sponsors/mangoproxy.png" alt="MangoProxy" width="560">
+    </a>
+  </p>
+</div>
+
+[MangoProxy](https://mangoproxy.com/?utm_source=any4ai&utm_medium=partner&utm_campaign=any4ai_github) — MangoProxy is a Residential, ISP, Mobile and Datacenter proxy service designed for professional tasks where stability, speed, and anonymity matter. Use code **ANY4AI** for 7% off Static ISP Proxies.
+
 ## 📖 Overview
 
 AnyCrawl is a high‑performance crawling and scraping toolkit:
